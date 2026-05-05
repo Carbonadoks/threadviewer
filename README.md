@@ -40,7 +40,7 @@ npm run dev
 Then open the local URL Vite prints, usually:
 
 ```text
-http://localhost:5173
+http://127.0.0.1:5173
 ```
 
 Useful checks:

@@ -958,7 +958,7 @@
 					</button>
 				{:else}
 					<ol class="post-list">
-						{#each posts as post, index (post.id)}
+						{#each posts as post (post.id)}
 							<li class="post-row" class:active={treeviewerSections.some((section) => section.href === post.treeHref)}>
 								<a
 									class="row-hit-link"
@@ -966,7 +966,6 @@
 									aria-label={`Open ${post.externalTitle || post.text} in Treeviewer`}
 									onclick={(event) => openThreadSection(event, post)}
 								></a>
-								<div class="rank">{index + 1}</div>
 								<div class="post-main">
 									<div class="post-title-line">
 										<a class="post-title" href={post.treeHref} onclick={(event) => openThreadSection(event, post)}
@@ -1389,8 +1388,7 @@
 	.post-row {
 		position: relative;
 		display: grid;
-		grid-template-columns: 9px minmax(0, 1fr);
-		gap: 3px;
+		grid-template-columns: minmax(0, 1fr);
 		padding: 6px 4px;
 		border-bottom: 1px solid color-mix(in srgb, var(--text-ink) 11%, transparent);
 		border-radius: 6px;
@@ -1416,17 +1414,6 @@
 	.post-row.active {
 		background: color-mix(in srgb, var(--accent) 10%, transparent);
 		box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 72%, var(--text-ink));
-	}
-
-	.rank {
-		position: relative;
-		z-index: 2;
-		pointer-events: none;
-		padding-top: 0;
-		color: var(--muted);
-		font-size: 0.68rem;
-		font-variant-numeric: tabular-nums;
-		text-align: right;
 	}
 
 	.post-main {
@@ -1815,15 +1802,6 @@
 		.session-panel {
 			align-items: flex-start;
 			width: 100%;
-		}
-
-		.post-row {
-			grid-template-columns: 28px minmax(0, 1fr);
-			gap: 10px;
-		}
-
-		.rank {
-			text-align: left;
 		}
 
 		.post-title-line {
