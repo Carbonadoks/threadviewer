@@ -1,0 +1,574 @@
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap');
+
+@font-face {
+	font-family: 'Virgil';
+	src: url('/Virgil.woff2') format('woff2');
+	font-weight: normal;
+	font-style: normal;
+	font-display: swap;
+}
+
+:root {
+	--bg-paper: #faf8ef;
+	--text-ink: #1e1e1e;
+	--accent: #e07a5f;
+	--accent-light: #f2c6b8;
+	--accent-contrast: #fffef9;
+	--muted: #6b6b6b;
+	--border-color: #333;
+	--font-hand: 'Virgil', cursive;
+	--font-matrix-ui: 'Share Tech Mono', 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', Menlo,
+		Monaco, Consolas, monospace;
+	--font-matrix-terminal: 'VT323', 'Share Tech Mono', 'IBM Plex Mono', 'JetBrains Mono',
+		'Fira Code', Menlo, Monaco, Consolas, monospace;
+	--card-bg: #fffef9;
+	--card-bg-rgb: 255, 254, 249;
+	--muted-surface: #f0ede2;
+	--control-bg: rgba(255, 252, 245, 0.9);
+	--control-bg-hover: rgba(255, 255, 255, 0.96);
+	--control-border: rgba(61, 64, 91, 0.18);
+	--control-border-hover: rgba(61, 64, 91, 0.3);
+	--shadow-soft: 0 10px 24px rgba(26, 35, 44, 0.08);
+	--shadow-medium: 0 16px 36px rgba(26, 35, 44, 0.12);
+	--warning-bg: #fff3cd;
+	--error-bg: #ffeaea;
+	--link-card-bg: color-mix(in srgb, var(--card-bg) 88%, white 12%);
+	--panel-bg: linear-gradient(
+			145deg,
+			color-mix(in srgb, var(--card-bg) 92%, #fff9e8 8%),
+			color-mix(in srgb, var(--card-bg) 94%, white 6%)
+		),
+		var(--card-bg);
+	--panel-bg-plain: color-mix(in srgb, var(--card-bg) 92%, transparent);
+	--panel-bg-muted: color-mix(in srgb, var(--muted-surface) 74%, var(--card-bg));
+	--input-bg: color-mix(in srgb, var(--card-bg) 88%, white 12%);
+	--active-bg: color-mix(in srgb, var(--accent) 16%, var(--card-bg));
+	--warm-border: rgba(113, 84, 56, 0.16);
+	--warm-text: #945531;
+	--danger-text: #9c4131;
+	--landing-bg: #fbf3df;
+	--landing-grid: rgba(60, 45, 25, 0.045);
+	--landing-grid-strong: rgba(90, 67, 39, 0.055);
+	--landing-paper: #fff9ea;
+	--landing-card: #fffdf4;
+	--landing-ink: #211d18;
+	--landing-muted-ink: rgba(33, 29, 24, 0.78);
+	--landing-soft-ink: rgba(33, 29, 24, 0.5);
+	--landing-shadow: 0 18px 60px rgba(69, 53, 30, 0.14);
+	--landing-card-shadow: 8px 10px 0 rgba(33, 29, 24, 0.09);
+	--landing-tape: rgba(255, 219, 117, 0.55);
+	--landing-note: #fff6c9;
+	--landing-map-note: #dff1ff;
+	--landing-inline: rgba(255, 255, 255, 0.58);
+	--landing-section: rgba(255, 253, 244, 0.5);
+	--landing-section-alt: rgba(216, 243, 235, 0.42);
+	--landing-step-chip: #ffd9c7;
+	--landing-button-bg: #fff7c8;
+	--landing-button-primary-bg: #211d18;
+	--landing-button-primary-text: #fffdf4;
+	--landing-node-root: #fff1ac;
+	--landing-node-reply-one: #d8f3eb;
+	--landing-node-reply-two: #dceafd;
+	--landing-node-leaf: #e8efb7;
+	--landing-node-branch: #ffd9c7;
+	--landing-node-quote: #efd8f2;
+	--landing-line-teal: rgba(29, 127, 110, 0.72);
+	--landing-line-purple: rgba(138, 79, 131, 0.72);
+	--landing-line-accent: rgba(217, 95, 67, 0.72);
+	--landing-map-dot-two: #1d7f6e;
+	--landing-map-dot-three: #245e91;
+	--landing-map-dot-four: #8a4f83;
+	--landing-feature-thread: #d95f43;
+	--landing-feature-chat: #1d7f6e;
+	--landing-feature-board: #245e91;
+	--landing-feature-tree: #7b6a21;
+	--landing-feature-parallel: #8a4f83;
+	--landing-feature-analyzer: #2f7366;
+	--landing-feature-cluster: #315f9a;
+	--landing-feature-semantic: #a35b2d;
+	--landing-feature-summary: #5d6d26;
+	--landing-feature-wordcloud: #7a536f;
+	--landing-feature-follow: #286f8c;
+	--landing-feature-dialogue: #b64f4c;
+	--landing-feature-judge: #4f6d3a;
+	--landing-feature-matrix: #237466;
+	--landing-feature-toponomy: #79622e;
+	--landing-feature-town: #3d668f;
+	color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+	--bg-paper: #141821;
+	--text-ink: #f2eadc;
+	--accent: #4f7cff;
+	--accent-light: #26396a;
+	--accent-contrast: #fffef9;
+	--muted: #b6ad9e;
+	--border-color: #d8cdbb;
+	--card-bg: #202633;
+	--card-bg-rgb: 32, 38, 51;
+	--muted-surface: #2b3240;
+	--control-bg: rgba(32, 38, 51, 0.88);
+	--control-bg-hover: rgba(42, 49, 64, 0.96);
+	--control-border: rgba(216, 205, 187, 0.22);
+	--control-border-hover: rgba(79, 124, 255, 0.52);
+	--shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.32);
+	--shadow-medium: 0 18px 46px rgba(0, 0, 0, 0.42);
+	--warning-bg: #4c3f1c;
+	--error-bg: #4b2227;
+	--link-card-bg: color-mix(in srgb, var(--card-bg) 86%, #111722 14%);
+	--panel-bg: linear-gradient(
+			145deg,
+			color-mix(in srgb, var(--card-bg) 90%, #283244 10%),
+			color-mix(in srgb, var(--card-bg) 92%, #111722 8%)
+		),
+		var(--card-bg);
+	--panel-bg-plain: color-mix(in srgb, var(--card-bg) 94%, transparent);
+	--panel-bg-muted: color-mix(in srgb, var(--muted-surface) 84%, var(--card-bg));
+	--input-bg: color-mix(in srgb, var(--card-bg) 88%, #111722 12%);
+	--active-bg: color-mix(in srgb, var(--accent) 20%, var(--card-bg));
+	--warm-border: rgba(216, 205, 187, 0.2);
+	--warm-text: #aebfff;
+	--danger-text: #ff9a88;
+	--landing-bg: var(--bg-paper);
+	--landing-grid: rgba(216, 205, 187, 0.055);
+	--landing-grid-strong: rgba(216, 205, 187, 0.075);
+	--landing-paper: #1a202d;
+	--landing-card: #202837;
+	--landing-ink: var(--text-ink);
+	--landing-muted-ink: color-mix(in srgb, var(--text-ink) 76%, var(--muted));
+	--landing-soft-ink: rgba(242, 234, 220, 0.42);
+	--landing-shadow: 0 22px 70px rgba(0, 0, 0, 0.38);
+	--landing-card-shadow: 8px 10px 0 rgba(0, 0, 0, 0.22);
+	--landing-tape: rgba(79, 124, 255, 0.24);
+	--landing-note: #26324a;
+	--landing-map-note: #1f3048;
+	--landing-inline: rgba(242, 234, 220, 0.1);
+	--landing-section: rgba(20, 24, 33, 0.68);
+	--landing-section-alt: rgba(30, 42, 58, 0.58);
+	--landing-step-chip: color-mix(in srgb, var(--accent) 20%, var(--card-bg));
+	--landing-button-bg: var(--control-bg);
+	--landing-button-primary-bg: var(--accent);
+	--landing-button-primary-text: var(--accent-contrast);
+	--landing-node-root: #4b4261;
+	--landing-node-reply-one: #224a45;
+	--landing-node-reply-two: #223d61;
+	--landing-node-leaf: #3f4b2c;
+	--landing-node-branch: #4a3442;
+	--landing-node-quote: #403454;
+	--landing-line-teal: rgba(78, 207, 192, 0.64);
+	--landing-line-purple: rgba(194, 140, 255, 0.58);
+	--landing-line-accent: rgba(111, 141, 255, 0.62);
+	--landing-map-dot-two: #4ecfc0;
+	--landing-map-dot-three: #7bb7ff;
+	--landing-map-dot-four: #c28cff;
+	--landing-feature-thread: #6f8dff;
+	--landing-feature-chat: #4ecfc0;
+	--landing-feature-board: #7bb7ff;
+	--landing-feature-tree: #b9cd68;
+	--landing-feature-parallel: #c28cff;
+	--landing-feature-analyzer: #5ad3b6;
+	--landing-feature-cluster: #82aaff;
+	--landing-feature-semantic: #67b7ff;
+	--landing-feature-summary: #9fcb6a;
+	--landing-feature-wordcloud: #c99cff;
+	--landing-feature-follow: #6dd6ef;
+	--landing-feature-dialogue: #ff8da1;
+	--landing-feature-judge: #9bcf7a;
+	--landing-feature-matrix: #57d6b8;
+	--landing-feature-toponomy: #c7bd76;
+	--landing-feature-town: #8cbcff;
+	color-scheme: dark;
+}
+
+* {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+body {
+	font-family: var(--font-hand);
+	background-color: var(--bg-paper);
+	color: var(--text-ink);
+	line-height: 1.6;
+	min-height: 100vh;
+	transition:
+		background-color 180ms ease,
+		color 180ms ease;
+}
+
+.wobbly-border {
+	border: 2px solid var(--border-color);
+	border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px;
+}
+
+.wobbly-border-light {
+	border: 1.5px solid var(--muted);
+	border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px;
+}
+
+a {
+	color: var(--accent);
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+button {
+	font-family: inherit;
+	cursor: pointer;
+}
+
+input,
+button,
+select,
+textarea {
+	font-family: inherit;
+	background-color: var(--card-bg);
+	color: var(--text-ink);
+	border-color: var(--control-border);
+}
+
+::selection {
+	background: color-mix(in srgb, var(--accent) 34%, transparent);
+}
+
+:root[data-theme='dark'] img,
+:root[data-theme='dark'] video,
+:root[data-theme='dark'] canvas {
+	color-scheme: dark;
+}
+
+:root[data-theme='dark'] .wobbly-border-light {
+	border-color: var(--control-border);
+}
+
+:root[data-theme='dark'] .wobbly-border {
+	border-color: var(--border-color);
+}
+
+:root[data-theme='dark'] body {
+	background: var(--bg-paper);
+	color: var(--text-ink);
+}
+
+:root[data-theme='dark']
+	:is(
+		.lookup-panel,
+		.search-panel,
+		.lookup-card,
+		.hero-card,
+		.panel,
+		.pane-head,
+		.post-card,
+		.post-preview-card,
+		.thread-card,
+		.chat-card,
+		.ransom-card,
+		.conspiracy-card,
+		.index-card,
+		.map-card,
+		.status-card,
+		.summary-card,
+		.summary-side,
+		.cached-panel,
+		.cached-card,
+		.cached-account,
+		.cached-judgments,
+		.cache-card,
+		.sidebar-card,
+		.control-card,
+		.control-strip,
+		.ranked-card,
+		.judge-card,
+		.judge-baseline,
+		.judge-explainer,
+		.judge-baseline-metric,
+		.judge-metric,
+		.judge-row,
+		.judge-glossary,
+		.judge-raw,
+		.town-stage-card,
+		.info-card,
+		.author-info,
+		.meta-pill,
+		.load-controls,
+		.load-mode-toggle,
+		.winning-move-summary,
+		.winning-move-status,
+		.featured-post-card,
+		.winning-trail-card,
+		.source-card,
+		.loom-card,
+		.author-chip,
+		.stat,
+		.board-stage,
+		.completion-card,
+		.suggestion-rail,
+		.suggestion-row,
+		.markov-panel,
+		.markov-controls,
+		.markov-row,
+		.example,
+		.tree-panel,
+		.tree-canvas,
+		.tree-lane,
+		.tree-lane-body,
+		.forum-thread,
+		.chat-panel,
+		.detail-panel,
+		.detail-card,
+		.card-quote-picker,
+		.card-quote-picker-post,
+		.overlay-card,
+		.metric-summary-side,
+		.metric-empty,
+		.weirdness-card,
+		.weirdness-stat,
+		.weirdness-map-panel,
+		.weirdness-list,
+		.weirdness-detail,
+		.weirdness-score-card,
+		.classification-card,
+		.classification-item,
+		.novelty-card,
+		.novelty-stat,
+		.novelty-controls,
+		.novelty-detail,
+		.novelty-list,
+		.novelty-list-item,
+		.novelty-empty,
+		.lock-toggle,
+		.selection-bar,
+		.legend-chip,
+		.segment-block,
+		.atlas-header-card,
+		.cluster-list-panel,
+		.selected-classes-panel,
+		.cluster-list-item,
+		.cluster-list-clear,
+		.author-suggestions,
+		.atlas-stat,
+		.atlas-inspector,
+		.hover-card,
+		.rep-card,
+		.tree-search-panel,
+		.author-search,
+		.board-search-panel,
+		.map-overlay-note,
+		.map-control-btn,
+		.inspector-close,
+		.cluster-token,
+		.dimension-card-inner,
+		.tree-action-chip,
+		.tree-chip,
+		.author-match-card,
+		.board-mode-btn,
+		.board-control-btn,
+		.card-quote-embed,
+		.quote-thread-btn,
+		.bubble-received,
+		.typing-indicator,
+		.record-embed,
+		.linked-post-unavailable,
+		.follow-list-card,
+		.selected-follow-card,
+		.interaction-card,
+		.stat-chip,
+		.follow-row,
+		.frontpage-shell,
+		.cloud-wrapper,
+		.table-wrapper
+	) {
+	background: var(--panel-bg) !important;
+	color: var(--text-ink) !important;
+	border-color: var(--control-border) !important;
+	box-shadow: var(--shadow-soft);
+}
+
+:root[data-theme='dark']
+	:is(
+		.note-card,
+		.warning,
+		.warning-card,
+		.warning-banner,
+		.error-message,
+		.error-banner,
+		.atlas-search-error,
+		.search-status-success,
+		.board-search-status,
+		.info-banner,
+		.truncated-notice,
+		.truncation-warning,
+		.card-quote-panel,
+		.card-inline-quote,
+		.detail-quote-card,
+		.card-link-embed,
+		.detail-link-card,
+		.embed-quote,
+		.embed-link,
+		.post-preview-card
+	) {
+	background: var(--panel-bg-muted) !important;
+	color: var(--text-ink) !important;
+	border-color: var(--control-border) !important;
+}
+
+:root[data-theme='dark']
+	:is(
+		input,
+		select,
+		textarea,
+		.follow-search-input,
+		.follow-sort-select,
+		.tree-search-input,
+		.author-search-input,
+		.quote-search,
+		.load-field-input,
+		.judge-model-select,
+		.display-select,
+		.feed-select,
+		.panel-controls button
+	) {
+	background: var(--input-bg) !important;
+	color: var(--text-ink) !important;
+	border-color: var(--control-border) !important;
+	box-shadow: none !important;
+}
+
+:root[data-theme='dark']
+	:is(
+		.expand-btn,
+		.share-btn,
+		.open-btn,
+		.panel-reopen-btn,
+		.panel-close-btn,
+		.card-nav-btn,
+		.card-quote-btn,
+		.featured-card-focus-btn,
+		.featured-card-link,
+		.tree-search-btn,
+		.author-search-btn,
+		.load-submit-btn,
+		.secondary-btn,
+		.remove-author,
+		.accept-echo-btn,
+		.echo-link,
+		.detail-action-btn,
+		.detail-action-link,
+		.tree-mode-nav-btn-root,
+		.tree-mode-nav-btn-fork,
+		.tree-mode-child-btn,
+		.mode-btn,
+		.control-btn,
+		.user-card
+	) {
+	background: var(--control-bg) !important;
+	color: var(--text-ink) !important;
+	border-color: var(--control-border) !important;
+}
+
+:root[data-theme='dark']
+	:is(
+		.expand-btn,
+		.share-btn,
+		.open-btn,
+		.panel-reopen-btn,
+		.panel-close-btn,
+		.card-nav-btn,
+		.card-quote-btn,
+		.featured-card-focus-btn,
+		.featured-card-link,
+		.tree-search-btn,
+		.author-search-btn,
+		.load-submit-btn,
+		.secondary-btn,
+		.remove-author,
+		.accept-echo-btn,
+		.echo-link,
+		.detail-action-btn,
+		.detail-action-link,
+		.tree-mode-nav-btn-root,
+		.tree-mode-nav-btn-fork,
+		.tree-mode-child-btn,
+		.mode-btn,
+		.control-btn,
+		.user-card
+	):hover {
+	background: var(--control-bg-hover) !important;
+	border-color: var(--control-border-hover) !important;
+}
+
+:root[data-theme='dark']
+	:is(
+		.primary-btn,
+			.judge-btn,
+			.search-btn,
+			.show-more-btn,
+			.show-more-button,
+			.session-button
+		) {
+		background: var(--accent) !important;
+		color: var(--accent-contrast) !important;
+		border-color: color-mix(in srgb, var(--accent) 74%, var(--control-border)) !important;
+	box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 20%, transparent) !important;
+}
+
+:root[data-theme='dark']
+	:is(
+		.primary-btn,
+			.judge-btn,
+			.search-btn,
+			.show-more-btn,
+			.show-more-button,
+			.session-button
+		):hover:not(:disabled) {
+		background: color-mix(in srgb, var(--accent) 88%, var(--card-bg) 12%) !important;
+	}
+
+:root[data-theme='dark']
+	:is(
+		.mode-btn.active,
+		.follow-row.active,
+		.board-mode-btn-active,
+		.route-nav-link.active,
+		.panel-controls button.active,
+		.cached-account.active,
+		.classification-item.active,
+		.legend-chip.active,
+		.lock-toggle.active,
+		.cluster-list-item.active,
+		.suggestion-row.selected
+	) {
+	background: var(--active-bg) !important;
+	color: var(--text-ink) !important;
+	border-color: color-mix(in srgb, var(--accent) 58%, var(--control-border)) !important;
+}
+
+:root[data-theme='dark']
+	:is(
+		.muted,
+		.hint,
+		.card-hint,
+		.page-subtitle,
+		.subtitle,
+		.timestamp,
+		.card-date,
+		.tree-search-subtitle,
+		.tree-search-label,
+		.board-search-label,
+		.post-preview-label,
+		.card-kicker,
+		.action-link,
+		.match-pill,
+		.candidate-pill
+	) {
+	color: var(--muted) !important;
+}
+
+:root[data-theme='dark'] :is(.match-pill, .candidate-pill) {
+	background: color-mix(in srgb, var(--accent) 14%, var(--card-bg)) !important;
+}

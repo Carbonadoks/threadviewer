@@ -1,0 +1,207 @@
+<script lang="ts">
+	import { buildViewerHref } from '$lib/utils/viewerLinks';
+
+	type RouteNavPage =
+		| 'landing'
+		| 'frontpage'
+		| 'home'
+		| 'threadviewer'
+		| 'viewer2'
+		| 'semantic'
+		| 'summary'
+		| 'summary2'
+		| 'followinteraction'
+		| 'dialogue'
+		| 'dialogue2'
+		| 'chat'
+		| 'board'
+		| 'treeviewer'
+		| 'town'
+		| 'parallelboard'
+		| 'loom'
+		| 'bisk2bisk'
+		| 'matrix'
+		| 'matrix-feed'
+		| 'judge'
+		| 'analyzer'
+		| 'cluster'
+		| 'toponomy'
+		| 'wordcloud';
+	type RouteNavAlign = 'start' | 'center';
+
+	type RouteNavItem = {
+		id: RouteNavPage;
+		href: string;
+		label: string;
+		compactLabel?: string;
+	};
+
+	export let current: RouteNavPage;
+	export let compact = false;
+	export let align: RouteNavAlign = 'start';
+	export let threadUrl: string | null = null;
+	export let handle: string | null = null;
+	export let dialogueHandleA: string | null = null;
+	export let dialogueHandleB: string | null = null;
+
+	const items: RouteNavItem[] = [
+		{ id: 'landing', href: '/', label: 'Landing', compactLabel: 'Start' },
+		{ id: 'frontpage', href: '/frontpage', label: 'Frontpage', compactLabel: 'Front' },
+		{ id: 'threadviewer', href: '/threadviewer', label: 'Thread Viewer', compactLabel: 'Viewer' },
+		{ id: 'viewer2', href: '/viewer2', label: 'Repo Viewer', compactLabel: 'Repo' },
+		{ id: 'semantic', href: '/semantic', label: 'Semantic', compactLabel: 'Semantic' },
+		{ id: 'summary', href: '/summary', label: 'Summary' },
+		{ id: 'summary2', href: '/summary2', label: 'Repo Summary', compactLabel: 'Repo Sum' },
+		{ id: 'followinteraction', href: '/followinteraction', label: 'Follow Interaction', compactLabel: 'Follow Int' },
+		{ id: 'dialogue', href: '/dialogue', label: 'Cache Dialogue' },
+		{ id: 'dialogue2', href: '/dialogue2', label: 'Dialogue', compactLabel: 'Repo Dlg' },
+		{ id: 'chat', href: '/chat', label: 'Chat' },
+		{ id: 'board', href: '/board', label: 'Board' },
+		{ id: 'treeviewer', href: '/treeviewer', label: 'Treeviewer', compactLabel: 'Tree' },
+		{ id: 'town', href: '/town', label: 'Town' },
+		{ id: 'parallelboard', href: '/parallelboard', label: 'Parallel Board', compactLabel: 'Parallel' },
+		{ id: 'loom', href: '/loom', label: 'Loom' },
+		{ id: 'bisk2bisk', href: '/bisk2bisk', label: 'Bisk2Bisk', compactLabel: 'Bisk2Bisk' },
+		{ id: 'matrix', href: '/matrix', label: 'Matrix' },
+		{ id: 'matrix-feed', href: '/matrix-feed', label: 'In Matrix', compactLabel: 'In Matrix' },
+		{ id: 'judge', href: '/judge', label: 'Judge' },
+		{ id: 'analyzer', href: '/analyzer', label: 'Analyze' },
+		{ id: 'toponomy', href: '/toponomy', label: 'Toponomy', compactLabel: 'Topo' },
+		{ id: 'wordcloud', href: '/wordcloud', label: 'Word Cloud', compactLabel: 'Words' }
+	];
+
+	function hrefFor(item: RouteNavItem): string {
+		if (
+			item.id === 'home' ||
+			item.id === 'threadviewer' ||
+			item.id === 'viewer2' ||
+			item.id === 'chat' ||
+			item.id === 'board' ||
+			item.id === 'treeviewer' ||
+			item.id === 'parallelboard' ||
+			item.id === 'bisk2bisk' ||
+			item.id === 'judge'
+		) {
+			return buildViewerHref(item.id, {
+				url: threadUrl,
+				handle
+			});
+		}
+
+		if (item.id === 'dialogue' || item.id === 'dialogue2') {
+			return buildViewerHref(item.id, {
+				url: threadUrl,
+				handleA: dialogueHandleA,
+				handleB: dialogueHandleB
+			});
+		}
+
+		if (item.id === 'matrix') {
+			const nextHandle = handle?.trim() ?? '';
+			return nextHandle ? `${item.href}?handle=${encodeURIComponent(nextHandle)}` : item.href;
+		}
+
+		const nextHandle = handle?.trim() ?? '';
+		if (
+			(item.id === 'analyzer' ||
+				item.id === 'summary' ||
+				item.id === 'summary2' ||
+				item.id === 'followinteraction' ||
+				item.id === 'wordcloud' ||
+				item.id === 'loom') &&
+			nextHandle
+		) {
+			return `${item.href}?handle=${encodeURIComponent(nextHandle)}`;
+		}
+
+		return item.href;
+	}
+</script>
+
+<nav
+	class="route-nav"
+	class:compact
+	class:center={align === 'center'}
+	aria-label="Primary"
+>
+	{#each items as item}
+		{@const active = item.id === current}
+		<a
+			href={hrefFor(item)}
+			class="route-nav-link wobbly-border-light"
+			class:active
+			aria-current={active ? 'page' : undefined}
+		>
+			{compact ? item.compactLabel ?? item.label : item.label}
+		</a>
+	{/each}
+</nav>
+
+<style>
+	.route-nav {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+		width: 100%;
+		margin-bottom: 14px;
+	}
+
+	.route-nav.center {
+		justify-content: center;
+	}
+
+	.route-nav.compact {
+		gap: 8px;
+		margin-bottom: 10px;
+	}
+
+	.route-nav-link {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 8px 12px;
+		border-radius: 999px;
+		background: var(--control-bg);
+		border: 1px solid var(--control-border);
+		box-shadow: var(--shadow-soft);
+		color: var(--text-ink);
+		font-size: 0.9rem;
+		font-weight: 600;
+		line-height: 1.1;
+		text-decoration: none;
+		transition:
+			transform 0.16s ease,
+			background 0.16s ease,
+			border-color 0.16s ease,
+			box-shadow 0.16s ease;
+	}
+
+	.route-nav-link:hover {
+		transform: translateY(-1px);
+		background: var(--control-bg-hover);
+		border-color: var(--control-border-hover);
+		box-shadow: var(--shadow-medium);
+	}
+
+	.route-nav-link.active {
+		background: color-mix(in srgb, var(--accent) 18%, var(--card-bg));
+		border-color: color-mix(in srgb, var(--accent) 58%, var(--control-border));
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent);
+	}
+
+	.route-nav.compact .route-nav-link {
+		padding: 6px 10px;
+		font-size: 0.78rem;
+	}
+
+	@media (max-width: 640px) {
+		.route-nav {
+			gap: 8px;
+		}
+
+		.route-nav-link {
+			padding: 7px 10px;
+			font-size: 0.84rem;
+		}
+	}
+</style>

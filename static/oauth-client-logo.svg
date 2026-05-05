@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="ATProto Codex logo">
+  <defs>
+    <linearGradient id="bg" x1="0%" x2="100%" y1="0%" y2="100%">
+      <stop offset="0%" stop-color="#07140b" />
+      <stop offset="100%" stop-color="#020503" />
+    </linearGradient>
+    <linearGradient id="glow" x1="0%" x2="100%" y1="0%" y2="100%">
+      <stop offset="0%" stop-color="#8aff72" />
+      <stop offset="100%" stop-color="#d6ff9d" />
+    </linearGradient>
+  </defs>
+
+  <rect width="256" height="256" rx="52" fill="url(#bg)" />
+  <rect x="14" y="14" width="228" height="228" rx="40" fill="none" stroke="#a0ffb4" stroke-opacity=".24" />
+  <path d="M44 56h168" stroke="#76ff7f" stroke-opacity=".22" stroke-width="4" />
+  <path d="M54 78h148" stroke="#76ff7f" stroke-opacity=".14" stroke-width="2" />
+  <path d="M78 182V74h24l26 48 26-48h24v108h-22v-70l-22 40h-12l-22-40v70z" fill="url(#glow)" />
+  <path d="M54 196h148" stroke="#76ff7f" stroke-opacity=".26" stroke-width="4" />
+</svg>

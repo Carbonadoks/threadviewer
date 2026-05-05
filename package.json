@@ -1,0 +1,48 @@
+{
+  "name": "atprotoreplythreadviewer",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "node --test --import tsx src/lib/api/bluesky.test.ts src/lib/utils/clusterPointsCompact.test.ts src/lib/utils/clusterPlot.test.ts src/lib/utils/clusterProjection.test.ts src/lib/utils/clusterAtlas.test.ts src/lib/utils/analyzerCompare.test.ts src/lib/utils/boardTree.test.ts src/lib/utils/threadWalker.test.ts src/lib/utils/viewerLinks.test.ts src/lib/utils/viewerCacheSync.test.ts src/lib/utils/recordEmbed.test.ts src/lib/utils/toponomyUmap.test.ts src/lib/utils/threadJudge.test.ts src/lib/utils/cachedSummary.test.ts src/lib/utils/followInteraction.test.ts src/lib/server/postCache.test.ts src/lib/server/threadJudge.test.ts",
+    "cluster:build": "node --import tsx scripts/build-cluster-snapshot.ts",
+    "toponomy:build": "node --import tsx scripts/build-toponomy-snapshot.ts",
+    "elephant:build": "node --import tsx scripts/build-elephant-plot.ts",
+    "embeddb:build": "node --import tsx scripts/build-post-embedding-db.ts",
+    "thread-embeddb:build": "node --import tsx scripts/build-thread-embedding-db.ts",
+    "window-embeddb:build": "node --import tsx scripts/build-window-embedding-db.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@atproto/api": "^0.19.0",
+    "@atproto/oauth-client-browser": "^0.3.41",
+    "@excaliburjs/plugin-tiled": "^0.32.0",
+    "@ipld/car": "^5.4.2",
+    "@ipld/dag-cbor": "^9.2.5",
+    "@sveltejs/adapter-cloudflare": "^4.0.0",
+    "@sveltejs/kit": "^2.53.4",
+    "@sveltejs/vite-plugin-svelte": "^6.2.4",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/xterm": "^6.0.0",
+    "excalibur": "^0.32.0",
+    "roughjs": "^4.6.6",
+    "sql.js": "^1.14.1",
+    "svelte": "^5.53.6",
+    "svelte-sonner": "^1.0.7",
+    "vite": "^7.3.1"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "^3.1003.0",
+    "@cloudflare/workers-types": "^4.20250214.0",
+    "svelte-check": "^4.4.4",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

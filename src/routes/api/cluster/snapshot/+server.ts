@@ -1,0 +1,41 @@
+import type { RequestHandler } from '@sveltejs/kit';
+import { SNAPSHOT_KEY } from '$lib/server/clusterSnapshot';
+
+const SNAPSHOT_CACHE_CONTROL = 'public, max-age=300, s-maxage=86400, stale-while-revalidate=86400';
+
+export const GET: RequestHandler = async ({ platform }) => {
+	const bucket = platform?.env?.POST_CACHE;
+	if (!bucket) {
+		return new Response('Cluster cache bucket is unavailable.', {
+			status: 503,
+			headers: {
+				'Content-Type': 'text/plain; charset=utf-8',
+				'Cache-Control': 'no-store'
+			}
+		});
+	}
+
+	const object = await bucket.get(SNAPSHOT_KEY);
+	if (!object) {
+		return new Response('Cluster snapshot not found.', {
+			status: 404,
+			headers: {
+				'Content-Type': 'text/plain; charset=utf-8',
+				'Cache-Control': 'no-store'
+			}
+		});
+	}
+
+	const headers = new Headers();
+	object.writeHttpMetadata(headers);
+	headers.set('Content-Type', headers.get('Content-Type') ?? 'application/json; charset=utf-8');
+	headers.set('Cache-Control', SNAPSHOT_CACHE_CONTROL);
+	if (object.httpEtag) {
+		headers.set('ETag', object.httpEtag);
+	}
+
+	return new Response(object.body, {
+		status: 200,
+		headers
+	});
+};
