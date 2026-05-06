@@ -31,6 +31,7 @@
 
 	type FrontpagePost = {
 		id: string;
+		authorDid: string;
 		authorHandle: string;
 		authorDisplayName?: string;
 		authorAvatar?: string;
@@ -49,12 +50,20 @@
 		embedPost: FrontpageEmbedPost;
 	};
 
+	type FrontpageAuthorProfile = ProfileInfo & {
+		description?: string;
+		followersCount?: number;
+		followsCount?: number;
+	};
+
 	type TreeviewerSection = {
 		id: string;
 		href: string;
 		sectionHref: string;
+		returnPostId?: string;
 		title: string;
 		author: string;
+		textPanelMode: TreeviewerTextPanelMode;
 		treeCollapsed: boolean;
 		chatCollapsed: boolean;
 		uiCollapsed: boolean;
@@ -62,9 +71,11 @@
 		createdAt: number;
 	};
 
+	type TreeviewerTextPanelMode = 'chat' | 'forum';
+
 	type TreeviewerSectionSettings = Pick<
 		TreeviewerSection,
-		'treeCollapsed' | 'chatCollapsed' | 'uiCollapsed' | 'allReplies'
+		'textPanelMode' | 'treeCollapsed' | 'chatCollapsed' | 'uiCollapsed' | 'allReplies'
 	>;
 
 	type FrontpageSettings = {
@@ -78,7 +89,9 @@
 	const FRONTPAGE_SETTINGS_STORAGE_KEY = 'frontpage-settings-v1';
 	const TREEVIEWER_PANEL_STATE_MESSAGE = 'atprotocodex:treeviewer:panel-state';
 	const PAGE_SIZE = 100;
+	const PHONE_VIEWPORT_QUERY = '(max-width: 720px)';
 	const DEFAULT_TREEVIEWER_SECTION_SETTINGS: TreeviewerSectionSettings = {
+		textPanelMode: 'forum',
 		treeCollapsed: false,
 		chatCollapsed: false,
 		uiCollapsed: false,
@@ -101,6 +114,14 @@
 	let error: string | null = $state(null);
 	let profile: ProfileInfo | null = $state(null);
 	let posts: FrontpagePost[] = $state([]);
+	let authorProfile: FrontpageAuthorProfile | null = $state(null);
+	let authorPosts: FrontpagePost[] = $state([]);
+	let authorCursor: string | undefined = $state(undefined);
+	let authorLoading = $state(false);
+	let authorLoadingMore = $state(false);
+	let authorError: string | null = $state(null);
+	let authorTargetLabel: string | null = $state(null);
+	let authorReturnPostId: string | null = $state(null);
 	let feedOptions: PersonalFeedOption[] = $state([]);
 	let selectedFeedId = $state(FOLLOWING_FEED_ID);
 	let switchingFeedId: string | null = $state(null);
@@ -109,6 +130,7 @@
 	let authClient: BrowserOAuthClient | null = null;
 	let authAgent: Agent | null = null;
 	let feedRequestToken = 0;
+	let authorRequestToken = 0;
 	let fontKey = $state('system');
 	let treeviewerSections = $state<TreeviewerSection[]>([]);
 	let workspaceElement: HTMLDivElement | null = $state(null);
@@ -117,16 +139,24 @@
 	let treePanePercent = $state(48);
 	let feedPaneCollapsed = $state(false);
 	let treeviewerPaneCollapsed = $state(false);
+	let mobileThreadFocused = $state(false);
+	let returnedPostHighlightId: string | null = $state(null);
 	let treeviewerDefaultSettings = $state<TreeviewerSectionSettings>({
 		...DEFAULT_TREEVIEWER_SECTION_SETTINGS
 	});
 	let frontpageSettingsRestored = $state(false);
 	let treeviewerSectionCounter = 0;
+	let returnHighlightTimeout: number | null = null;
 	const treeviewerFrames = new Map<string, HTMLIFrameElement>();
 	let fontFamily = $derived(fontFamilies[fontKey] ?? fontFamilies.system);
 
 	let selectedFeed = $derived(feedOptions.find((option) => option.id === selectedFeedId) ?? null);
 	let hasTreeviewerSections = $derived(treeviewerSections.length > 0);
+	let authorViewActive = $derived(authorLoading || Boolean(authorProfile));
+	let activePosts = $derived(authorViewActive ? authorPosts : posts);
+	let activeLoading = $derived(authorViewActive ? authorLoading : loading);
+	let activeLoadingMore = $derived(authorViewActive ? authorLoadingMore : loadingMore);
+	let activeCursor = $derived(authorViewActive ? authorCursor : cursor);
 	let feedPaneEffectiveCollapsed = $derived(feedPaneCollapsed && hasTreeviewerSections);
 	let treeviewerPaneEffectiveCollapsed = $derived(treeviewerPaneCollapsed && hasTreeviewerSections);
 	let showWorkspaceSplitter = $derived(
@@ -173,6 +203,10 @@
 		window.history.replaceState({}, '', url.toString());
 	}
 
+	function isPhoneViewport(): boolean {
+		return browser && window.matchMedia(PHONE_VIEWPORT_QUERY).matches;
+	}
+
 	function formatAuthError(err: unknown, fallback: string): string {
 		const message = String((err as { message?: string } | null | undefined)?.message ?? '');
 		if (message.includes('Missing required scope')) {
@@ -195,6 +229,7 @@
 		feedOptions = [];
 		selectedFeedId = FOLLOWING_FEED_ID;
 		cursor = undefined;
+		closeAuthorView();
 		authAgent = null;
 		if (clearPosts) posts = [];
 		updateFeedQuery(null);
@@ -250,9 +285,14 @@
 		return by?.handle ? `reposted by @${by.handle}` : undefined;
 	}
 
+	function replyReasonLabel(reply: AppBskyFeedDefs.FeedViewPost['reply']): string | undefined {
+		const parentAuthor = reply?.parent?.author?.handle;
+		return parentAuthor ? `replying to @${parentAuthor}` : undefined;
+	}
+
 	function mapFrontpagePost(item: AppBskyFeedDefs.FeedViewPost): FrontpagePost | null {
 		const post = item?.post;
-		if (!post?.uri || !post.author?.handle) return null;
+		if (!post?.uri || !post.author?.did || !post.author?.handle) return null;
 
 		const createdAt = new Date(
 			(typeof post.record === 'object' && post.record && 'createdAt' in post.record
@@ -261,11 +301,12 @@
 		);
 		const permalink = buildBskyPostUrl(post.uri, post.author.handle);
 		const external = extractExternal(post);
-		const sourceLabel = repostReasonLabel(item.reason);
+		const sourceLabel = repostReasonLabel(item.reason) ?? replyReasonLabel(item.reply);
 		const text = normalizeText(typeof post.record === 'object' && post.record ? String((post.record as any).text ?? '') : '');
 
 		return {
 			id: post.uri,
+			authorDid: post.author.did,
 			authorHandle: post.author.handle,
 			authorDisplayName: post.author.displayName,
 			authorAvatar: post.author.avatar,
@@ -423,11 +464,108 @@
 	}
 
 	async function handleRefreshNow() {
-		if (selectedFeed) await refreshFeed(selectedFeed);
+		if (authorProfile) {
+			await loadAuthorView(authorProfile.did);
+		} else if (selectedFeed) {
+			await refreshFeed(selectedFeed);
+		}
 	}
 
 	async function handleLoadMore() {
-		if (selectedFeed && cursor) await refreshFeed(selectedFeed, { append: true });
+		if (authorProfile && authorCursor) {
+			await loadAuthorView(authorProfile.did, { append: true });
+		} else if (selectedFeed && cursor) {
+			await refreshFeed(selectedFeed, { append: true });
+		}
+	}
+
+	async function fetchAuthorProfile(actor: string): Promise<FrontpageAuthorProfile> {
+		if (!authAgent) throw new Error('Connect Bluesky before opening author profiles.');
+		const res = await authAgent.app.bsky.actor.getProfile({ actor });
+		return {
+			did: res.data.did,
+			handle: res.data.handle,
+			displayName: res.data.displayName,
+			avatar: res.data.avatar,
+			description: res.data.description,
+			followersCount: res.data.followersCount,
+			followsCount: res.data.followsCount,
+			postsCount: res.data.postsCount ?? 0
+		};
+	}
+
+	async function loadAuthorView(actor: string, options: { append?: boolean } = {}) {
+		if (!authAgent) return;
+		const append = options.append ?? false;
+		const requestToken = ++authorRequestToken;
+
+		if (append) {
+			authorLoadingMore = true;
+		} else {
+			authorLoading = true;
+			authorError = null;
+			authorPosts = [];
+			authorCursor = undefined;
+		}
+
+		try {
+			let nextProfile = authorProfile;
+			if (!append) {
+				nextProfile = await fetchAuthorProfile(actor);
+				if (requestToken !== authorRequestToken) return;
+				authorProfile = nextProfile;
+				authorTargetLabel = `@${nextProfile.handle}`;
+			}
+
+			const targetActor = nextProfile?.did ?? actor;
+			const targetDid = nextProfile?.did;
+			const result = await authAgent.app.bsky.feed.getAuthorFeed({
+				actor: targetActor,
+				filter: 'posts_with_replies',
+				limit: 100,
+				cursor: append ? authorCursor : undefined
+			});
+			const mappedPosts = result.data.feed
+				.filter((item) => !targetDid || item.post.author?.did === targetDid)
+				.slice(0, PAGE_SIZE)
+				.map(mapFrontpagePost)
+				.filter((entry): entry is FrontpagePost => Boolean(entry));
+
+			if (requestToken !== authorRequestToken) return;
+			authorPosts = append ? mergePosts(authorPosts, mappedPosts) : uniquePosts(mappedPosts);
+			authorCursor = result.data.cursor;
+			void tick().then(() => workspaceElement?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+		} catch (err: any) {
+			if (requestToken !== authorRequestToken) return;
+			authorError = err?.message || `Could not load ${authorTargetLabel ?? 'that author'}.`;
+			if (!append) authorPosts = [];
+		} finally {
+			if (requestToken !== authorRequestToken) return;
+			authorLoading = false;
+			authorLoadingMore = false;
+		}
+	}
+
+	async function openAuthorView(event: MouseEvent, post: FrontpagePost) {
+		event.preventDefault();
+		event.stopPropagation();
+		authorTargetLabel = `@${post.authorHandle}`;
+		if (!authorViewActive) authorReturnPostId = post.id;
+		await loadAuthorView(post.authorDid);
+	}
+
+	function closeAuthorView(options: { returnToFeed?: boolean } = {}) {
+		const returnPostId = options.returnToFeed ? authorReturnPostId : null;
+		authorRequestToken++;
+		authorProfile = null;
+		authorPosts = [];
+		authorCursor = undefined;
+		authorLoading = false;
+		authorLoadingMore = false;
+		authorError = null;
+		authorTargetLabel = null;
+		authorReturnPostId = null;
+		if (returnPostId) scrollFeedPostIntoView(returnPostId);
 	}
 
 	async function selectFeed(nextId: string) {
@@ -459,24 +597,29 @@
 		if (!browser || !post.permalink) return;
 		rememberRecentThread(localStorage, {
 			url: post.permalink,
-			title: post.externalTitle || post.text,
+			title: post.text,
 			authorHandle: post.authorHandle
 		});
 	}
 
-	function buildTreeSectionHref(href: string): string {
+	function buildTreeSectionHref(href: string, textPanelMode: TreeviewerTextPanelMode = 'forum'): string {
 		try {
 			const url = new URL(href, 'http://atprotocodex.local');
 			url.searchParams.set('embed', 'thread-section');
+			url.searchParams.set('view', textPanelMode);
 			return `${url.pathname}${url.search}${url.hash}`;
 		} catch {
 			const separator = href.includes('?') ? '&' : '?';
-			return `${href}${separator}embed=thread-section`;
+			return `${href}${separator}embed=thread-section&view=${textPanelMode}`;
 		}
 	}
 
 	function normalizeTreeviewerSettings(settings?: Partial<TreeviewerSectionSettings>): TreeviewerSectionSettings {
 		const normalized = {
+			textPanelMode:
+				settings?.textPanelMode === 'chat' || settings?.textPanelMode === 'forum'
+					? settings.textPanelMode
+					: DEFAULT_TREEVIEWER_SECTION_SETTINGS.textPanelMode,
 			treeCollapsed:
 				typeof settings?.treeCollapsed === 'boolean'
 					? settings.treeCollapsed
@@ -502,6 +645,7 @@
 
 	function settingsFromSection(section: TreeviewerSection): TreeviewerSectionSettings {
 		return normalizeTreeviewerSettings({
+			textPanelMode: section.textPanelMode,
 			treeCollapsed: section.treeCollapsed,
 			chatCollapsed: section.chatCollapsed,
 			uiCollapsed: section.uiCollapsed,
@@ -558,22 +702,39 @@
 	function openThreadSection(event: MouseEvent, post: FrontpagePost) {
 		event.preventDefault();
 		rememberThread(post);
+		const phoneViewport = isPhoneViewport();
 		const defaultSettings = settingsForNewTreeviewerSection();
 		const nextSection: TreeviewerSection = {
 			id: `treeviewer-section-${Date.now()}-${++treeviewerSectionCounter}`,
 			href: post.treeHref,
-			sectionHref: buildTreeSectionHref(post.treeHref),
-			title: post.externalTitle || post.text,
+			sectionHref: buildTreeSectionHref(post.treeHref, defaultSettings.textPanelMode),
+			returnPostId: post.id,
+			title: post.text,
 			author: post.authorHandle,
 			...defaultSettings,
 			createdAt: Date.now()
 		};
-		treeviewerSections = [...treeviewerSections, nextSection];
+		if (phoneViewport) {
+			treeviewerFrames.clear();
+			treeviewerSections = [nextSection];
+			feedPaneCollapsed = false;
+			mobileThreadFocused = true;
+		} else {
+			treeviewerSections = [...treeviewerSections, nextSection];
+		}
 		treeviewerPaneCollapsed = false;
-		void tick().then(() => scrollTreeviewerSectionIntoView(nextSection.id));
+		void tick().then(() => {
+			if (phoneViewport) {
+				workspaceElement?.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+				scrollTreeviewerSectionIntoView(nextSection.id, 'start', 'nearest');
+				return;
+			}
+			scrollTreeviewerSectionIntoView(nextSection.id);
+		});
 	}
 
-	function closeThreadSection(sectionId: string) {
+	function closeThreadSection(sectionId: string, options: { returnToFeed?: boolean } = {}) {
+		const closedSection = treeviewerSections.find((section) => section.id === sectionId);
 		treeviewerFrames.delete(sectionId);
 		const wasDefaultSection = treeviewerSections[0]?.id === sectionId;
 		const nextSections = treeviewerSections.filter((section) => section.id !== sectionId);
@@ -584,8 +745,26 @@
 		if (nextSections.length === 0) {
 			feedPaneCollapsed = false;
 			treeviewerPaneCollapsed = false;
+			mobileThreadFocused = false;
 		}
 		if (nextSections.length <= 1) stopPaneSplitDrag();
+		if (options.returnToFeed) scrollFeedPostIntoView(closedSection?.returnPostId);
+	}
+
+	function scrollFeedPostIntoView(postId: string | undefined) {
+		if (!browser || !postId) return;
+		void tick().then(() => {
+			const postRows = Array.from(document.querySelectorAll<HTMLElement>('[data-frontpage-post-id]'));
+			const target = postRows.find((row) => row.dataset.frontpagePostId === postId);
+			if (!target) return;
+			target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+			returnedPostHighlightId = postId;
+			if (returnHighlightTimeout !== null) window.clearTimeout(returnHighlightTimeout);
+			returnHighlightTimeout = window.setTimeout(() => {
+				if (returnedPostHighlightId === postId) returnedPostHighlightId = null;
+				returnHighlightTimeout = null;
+			}, 1600);
+		});
 	}
 
 	function setFeedPaneCollapsed(nextCollapsed: boolean) {
@@ -599,19 +778,30 @@
 		treeviewerPaneCollapsed = nextCollapsed;
 		if (nextCollapsed) {
 			feedPaneCollapsed = false;
-			treeviewerFrames.clear();
+			mobileThreadFocused = false;
+		} else {
+			if (isPhoneViewport()) mobileThreadFocused = true;
+			void tick().then(() => {
+				for (const section of treeviewerSections) {
+					syncTreeviewerSectionState(section.id);
+				}
+			});
 		}
 	}
 
-	function scrollTreeviewerSectionIntoView(sectionId: string) {
+	function scrollTreeviewerSectionIntoView(
+		sectionId: string,
+		block: ScrollLogicalPosition = 'nearest',
+		inline: ScrollLogicalPosition = 'end'
+	) {
 		if (!treeviewerSectionsElement) return;
 		const sectionElement = treeviewerSectionsElement.querySelector<HTMLElement>(
 			`[data-treeviewer-section-id="${sectionId}"]`
 		);
 		sectionElement?.scrollIntoView({
 			behavior: 'smooth',
-			block: 'nearest',
-			inline: 'end'
+			block,
+			inline
 		});
 	}
 
@@ -719,6 +909,7 @@
 		frame.contentWindow.postMessage(
 			{
 				type: TREEVIEWER_PANEL_STATE_MESSAGE,
+				textPanelMode: section.textPanelMode,
 				treeCollapsed: section.treeCollapsed,
 				chatCollapsed: section.chatCollapsed,
 				uiCollapsed: section.uiCollapsed
@@ -761,6 +952,14 @@
 		const nextSection = updateTreeviewerSection(sectionId, (section) => ({
 			...section,
 			uiCollapsed: nextCollapsed
+		}));
+		sendTreeviewerPanelState(sectionId, nextSection);
+	}
+
+	function setEmbeddedTextPanelMode(sectionId: string, textPanelMode: TreeviewerTextPanelMode) {
+		const nextSection = updateTreeviewerSection(sectionId, (section) => ({
+			...section,
+			textPanelMode
 		}));
 		sendTreeviewerPanelState(sectionId, nextSection);
 	}
@@ -840,6 +1039,7 @@
 
 	onDestroy(() => {
 		stopPaneSplitDrag();
+		if (returnHighlightTimeout !== null) window.clearTimeout(returnHighlightTimeout);
 	});
 </script>
 
@@ -847,7 +1047,11 @@
 	<title>Frontpage</title>
 </svelte:head>
 
-<main class="frontpage-shell" style="font-family: {fontFamily}">
+<main
+	class="frontpage-shell"
+	class:mobile-thread-focused={mobileThreadFocused && hasTreeviewerSections && !treeviewerPaneEffectiveCollapsed}
+	style="font-family: {fontFamily}"
+>
 	<header class="frontpage-header">
 		<RouteNav current="frontpage" compact handle={profile?.handle ?? null} />
 		<div class="masthead">
@@ -857,20 +1061,28 @@
 					<h1>Frontpage</h1>
 					{#if profile}
 						<div class="feed-toolbar">
-							<label for="feed-picker">Feed</label>
-							<select
-								id="feed-picker"
-								bind:value={selectedFeedId}
-								onchange={handleFeedChange}
-								disabled={loadingFeeds || loadingMore || feedOptions.length === 0}
-							>
-								{#each feedOptions as feed (feed.id)}
-									<option value={feed.id}>{feed.label}</option>
-								{/each}
-							</select>
-							<span>{posts.length} items</span>
-							{#if selectedFeed?.description}
-								<span class="feed-description">{selectedFeed.description}</span>
+							{#if authorViewActive}
+								<button type="button" class="back-to-feed-button" onclick={() => closeAuthorView({ returnToFeed: true })}>
+									Back to feed
+								</button>
+								<span>{authorProfile ? `@${authorProfile.handle}` : (authorTargetLabel ?? 'Author')} profile</span>
+								<span>{activePosts.length} items</span>
+							{:else}
+								<label for="feed-picker">Feed</label>
+								<select
+									id="feed-picker"
+									bind:value={selectedFeedId}
+									onchange={handleFeedChange}
+									disabled={loadingFeeds || loadingMore || feedOptions.length === 0}
+								>
+									{#each feedOptions as feed (feed.id)}
+										<option value={feed.id}>{feed.label}</option>
+									{/each}
+								</select>
+								<span>{posts.length} items</span>
+								{#if selectedFeed?.description}
+									<span class="feed-description">{selectedFeed.description}</span>
+								{/if}
 							{/if}
 						</div>
 					{/if}
@@ -887,8 +1099,8 @@
 							<span>{profile.displayName || profile.handle}</span>
 						</span>
 						<span class="session-label">{sessionLabel}</span>
-						<button type="button" onclick={handleRefreshNow} disabled={loading || loadingFeeds}>
-							{loading ? 'Refreshing' : 'Refresh'}
+						<button type="button" onclick={handleRefreshNow} disabled={activeLoading || loadingFeeds}>
+							{activeLoading ? 'Refreshing' : 'Refresh'}
 						</button>
 						<button type="button" class="ghost" onclick={handleDisconnect}>Disconnect</button>
 					</div>
@@ -924,21 +1136,28 @@
 	{#if error}
 		<div class="frontpage-error">{error}</div>
 	{/if}
+	{#if authorError}
+		<div class="frontpage-error">{authorError}</div>
+	{/if}
 
 	{#if !profile && !restoringSession}
 		<section class="empty-state">
 			<h2>Connect Bluesky to build your front page.</h2>
 			<p>Your Following timeline and saved feeds will appear here, then each post can open as a tree.</p>
 		</section>
-	{:else if loading && posts.length === 0}
+	{:else if activeLoading && activePosts.length === 0}
 		<section class="empty-state">
-			<h2>Loading the front page...</h2>
-			<p>Fetching the newest posts from {selectedFeed?.label ?? 'your feed'}.</p>
+			<h2>{authorViewActive ? 'Loading author profile...' : 'Loading the front page...'}</h2>
+			<p>
+				{authorViewActive
+					? `Fetching posts and replies from ${authorTargetLabel ?? 'that author'}.`
+					: `Fetching the newest posts from ${selectedFeed?.label ?? 'your feed'}.`}
+			</p>
 		</section>
-	{:else if posts.length === 0 && profile}
+	{:else if activePosts.length === 0 && profile}
 		<section class="empty-state">
 			<h2>No posts found.</h2>
-			<p>Try refreshing or picking another saved feed.</p>
+			<p>{authorViewActive ? 'Try refreshing this author profile.' : 'Try refreshing or picking another saved feed.'}</p>
 		</section>
 	{:else}
 		<div
@@ -957,36 +1176,80 @@
 						Show feed
 					</button>
 				{:else}
+					{#if authorViewActive}
+						<section class="author-profile-card" aria-label="Author profile">
+							<button type="button" class="back-to-feed-button" onclick={() => closeAuthorView({ returnToFeed: true })}>
+								Back to feed
+							</button>
+							{#if authorProfile}
+								<div class="author-profile-main">
+									{#if authorProfile.avatar}
+										<img src={authorProfile.avatar} alt="" />
+									{/if}
+									<div>
+										<h2>{authorProfile.displayName || `@${authorProfile.handle}`}</h2>
+										<p class="author-handle">@{authorProfile.handle}</p>
+										{#if authorProfile.description}
+											<p class="author-description">{authorProfile.description}</p>
+										{/if}
+										<div class="author-stats">
+											<span>{authorProfile.postsCount} posts</span>
+											{#if typeof authorProfile.followersCount === 'number'}
+												<span>{authorProfile.followersCount} followers</span>
+											{/if}
+											{#if typeof authorProfile.followsCount === 'number'}
+												<span>{authorProfile.followsCount} following</span>
+											{/if}
+										</div>
+									</div>
+								</div>
+							{:else}
+								<p class="author-description">Loading {authorTargetLabel ?? 'author'}...</p>
+							{/if}
+						</section>
+					{/if}
 					<ol class="post-list">
-						{#each posts as post (post.id)}
-							<li class="post-row" class:active={treeviewerSections.some((section) => section.href === post.treeHref)}>
+						{#each activePosts as post (post.id)}
+							<li
+								class="post-row"
+								class:active={treeviewerSections.some((section) => section.href === post.treeHref)}
+								class:return-highlight={returnedPostHighlightId === post.id}
+								data-frontpage-post-id={post.id}
+							>
 								<a
 									class="row-hit-link"
 									href={post.treeHref}
-									aria-label={`Open ${post.externalTitle || post.text} in Treeviewer`}
+									aria-label={`Open ${post.text} in Treeviewer`}
 									onclick={(event) => openThreadSection(event, post)}
 								></a>
 								<div class="post-main">
-									<div class="post-title-line">
-										<a class="post-title" href={post.treeHref} onclick={(event) => openThreadSection(event, post)}
-											>{post.externalTitle || post.text}</a
-										>
-										{#if post.externalDomain}
-											<span class="domain">({post.externalDomain})</span>
-										{/if}
-									</div>
-									{#if post.externalTitle}
-										<p class="post-snippet">{post.text}</p>
-									{/if}
-									<PostEmbedPreview post={post.embedPost} compact />
-									<div class="post-meta">
+									<button
+										type="button"
+										class="post-author-line author-profile-button"
+										aria-label={`Open @${post.authorHandle} profile`}
+										onclick={(event) => openAuthorView(event, post)}
+									>
 										{#if post.authorAvatar}
 											<img src={post.authorAvatar} alt="" />
 										{/if}
-										<span>by @{post.authorHandle}</span>
+										<span>{post.authorDisplayName || `@${post.authorHandle}`}</span>
+										{#if post.authorDisplayName}
+											<small>@{post.authorHandle}</small>
+										{/if}
+									</button>
+									<div class="post-title-line">
+										<a class="post-title" href={post.treeHref} onclick={(event) => openThreadSection(event, post)}
+											>{post.text}</a
+										>
+									</div>
+									<PostEmbedPreview post={post.embedPost} compact />
+									<div class="post-meta">
 										<span>{post.createdAtLabel}</span>
 										<span>{post.replyCount} comments</span>
 										<span>{post.likeCount} likes</span>
+										{#if post.externalDomain}
+											<span>{post.externalDomain}</span>
+										{/if}
 										{#if post.sourceLabel}
 											<span>{post.sourceLabel}</span>
 										{/if}
@@ -1003,13 +1266,13 @@
 					</ol>
 
 					<div class="load-more-row">
-						<button type="button" onclick={handleLoadMore} disabled={!cursor || loadingMore || loading}>
-							{#if loadingMore}
+						<button type="button" onclick={handleLoadMore} disabled={!activeCursor || activeLoadingMore || activeLoading}>
+							{#if activeLoadingMore}
 								Loading more
-							{:else if cursor}
+							{:else if activeCursor}
 								More
 							{:else}
-								End of feed
+								{authorViewActive ? 'End of profile' : 'End of feed'}
 							{/if}
 						</button>
 					</div>
@@ -1034,8 +1297,14 @@
 						Show Treeviewers
 					</button>
 				</aside>
-			{:else if hasTreeviewerSections}
-				<section class="treeviewer-pane" aria-label="Treeviewer pane">
+			{/if}
+			{#if hasTreeviewerSections}
+				<section
+					class="treeviewer-pane"
+					class:collapsed={treeviewerPaneEffectiveCollapsed}
+					aria-label="Treeviewer pane"
+					aria-hidden={treeviewerPaneEffectiveCollapsed}
+				>
 					<section
 						bind:this={treeviewerSectionsElement}
 						class="treeviewer-sections"
@@ -1051,11 +1320,36 @@
 								<div class="treeviewer-toolbar">
 									<div>
 										<p>{section.id === treeviewerSections[0]?.id ? 'Default Treeviewer' : 'Treeviewer'}</p>
+										<span class="treeviewer-author">@{section.author}</span>
 										<h2>{section.title}</h2>
-										<span>@{section.author}</span>
 									</div>
 									<div class="treeviewer-actions">
+										<button
+											type="button"
+											class="mobile-back-button"
+											onclick={() => closeThreadSection(section.id, { returnToFeed: true })}
+										>
+											Back to feed
+										</button>
 										<a href={section.href}>Full page</a>
+										<button
+											type="button"
+											class="panel-toggle"
+											class:active={section.textPanelMode === 'chat'}
+											aria-pressed={section.textPanelMode === 'chat'}
+											onclick={() => setEmbeddedTextPanelMode(section.id, 'chat')}
+										>
+											Chat
+										</button>
+										<button
+											type="button"
+											class="panel-toggle"
+											class:active={section.textPanelMode === 'forum'}
+											aria-pressed={section.textPanelMode === 'forum'}
+											onclick={() => setEmbeddedTextPanelMode(section.id, 'forum')}
+										>
+											Forum
+										</button>
 										<button
 											type="button"
 											class="panel-toggle"
@@ -1086,7 +1380,13 @@
 										<button type="button" class="panel-toggle" onclick={() => toggleAllRepliesInTreeviewer(section.id)}>
 											{section.allReplies ? 'Path only' : 'Show all replies'}
 										</button>
-										<button type="button" class="ghost" onclick={() => closeThreadSection(section.id)}>Close</button>
+										<button
+											type="button"
+											class="ghost"
+											onclick={() => closeThreadSection(section.id, { returnToFeed: isPhoneViewport() })}
+										>
+											Close
+										</button>
 									</div>
 								</div>
 								<iframe
@@ -1188,8 +1488,7 @@
 		font-size: 0.88rem;
 	}
 
-	.session-identity img,
-	.post-meta img {
+	.session-identity img {
 		width: 18px;
 		height: 18px;
 		border-radius: 50%;
@@ -1274,6 +1573,7 @@
 	}
 
 	.frontpage-error,
+	.author-profile-card,
 	.empty-state,
 	.post-list,
 	.load-more-row {
@@ -1324,7 +1624,7 @@
 	}
 
 	.frontpage-workspace.with-viewer.feed-collapsed {
-		grid-template-columns: 38px 10px minmax(340px, 1fr);
+		grid-template-columns: 38px minmax(340px, 1fr);
 	}
 
 	.frontpage-workspace.with-viewer.treeviewer-collapsed {
@@ -1366,6 +1666,10 @@
 		overflow: hidden;
 	}
 
+	.treeviewer-pane.collapsed {
+		display: none;
+	}
+
 	.treeviewer-pane-rail {
 		min-width: 0;
 		min-height: 0;
@@ -1373,9 +1677,73 @@
 	}
 
 	.frontpage-workspace .post-list,
+	.frontpage-workspace .author-profile-card,
 	.frontpage-workspace .load-more-row {
 		width: 100%;
 		max-width: none;
+	}
+
+	.author-profile-card {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		margin-top: 0;
+		margin-bottom: 8px;
+		padding: 9px 4px 10px;
+		border-bottom: 1px solid color-mix(in srgb, var(--text-ink) 14%, transparent);
+		color: var(--text-ink);
+	}
+
+	.author-profile-card .back-to-feed-button {
+		flex: 0 0 auto;
+		min-height: 28px;
+		padding: 3px 8px;
+		font-size: 0.74rem;
+	}
+
+	.author-profile-main {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		min-width: 0;
+	}
+
+	.author-profile-main img {
+		width: 48px;
+		height: 48px;
+		flex: 0 0 auto;
+		border-radius: 50%;
+		object-fit: cover;
+	}
+
+	.author-profile-card h2 {
+		margin: 0;
+		font-size: 1rem;
+		font-weight: 750;
+		line-height: 1.12;
+	}
+
+	.author-handle,
+	.author-description {
+		margin: 2px 0 0;
+		color: var(--muted);
+		font-size: 0.78rem;
+		line-height: 1.25;
+	}
+
+	.author-description {
+		max-width: 720px;
+		white-space: pre-line;
+	}
+
+	.author-stats {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin-top: 6px;
+		color: var(--muted);
+		font-size: 0.72rem;
+		font-weight: 800;
 	}
 
 	.post-list {
@@ -1416,6 +1784,13 @@
 		box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 72%, var(--text-ink));
 	}
 
+	.post-row.return-highlight {
+		background: color-mix(in srgb, var(--accent) 16%, transparent);
+		box-shadow:
+			inset 3px 0 0 color-mix(in srgb, var(--accent) 78%, var(--text-ink)),
+			0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+	}
+
 	.post-main {
 		position: relative;
 		z-index: 2;
@@ -1442,35 +1817,79 @@
 		min-width: 0;
 	}
 
+	.post-author-line {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+		margin-bottom: 2px;
+		color: var(--text-ink);
+		font-size: 0.9rem;
+		font-weight: 800;
+		line-height: 1.15;
+	}
+
+	.author-profile-button {
+		width: fit-content;
+		max-width: 100%;
+		border: 0;
+		background: transparent;
+		padding: 0;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.author-profile-button:hover:not(:disabled) {
+		background: transparent;
+	}
+
+	.author-profile-button:hover span,
+	.author-profile-button:focus-visible span {
+		color: var(--accent);
+	}
+
+	.author-profile-button:focus-visible {
+		outline: 2px solid color-mix(in srgb, var(--accent) 46%, transparent);
+		outline-offset: 2px;
+	}
+
+	.post-author-line img {
+		width: 20px;
+		height: 20px;
+		flex: 0 0 auto;
+		border-radius: 50%;
+		object-fit: cover;
+	}
+
+	.post-author-line span,
+	.post-author-line small {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.post-author-line small {
+		color: var(--muted);
+		font-size: 0.72rem;
+		font-weight: 700;
+	}
+
 	.post-title {
 		color: var(--text-ink);
-		font-size: 0.92rem;
-		font-weight: 850;
-		line-height: 1.18;
+		font-size: 0.86rem;
+		font-weight: 650;
+		line-height: 1.22;
 		text-decoration: none;
 		overflow-wrap: anywhere;
 	}
 
 	.post-title:hover {
-		text-decoration: underline;
+		text-decoration: none;
 	}
 
-	.domain,
 	.post-meta {
 		color: var(--muted);
 		font-size: 0.74rem;
-	}
-
-	.post-snippet {
-		margin: 2px 0 0;
-		color: color-mix(in srgb, var(--text-ink) 76%, var(--muted));
-		font-size: 0.8rem;
-		line-height: 1.22;
-		display: -webkit-box;
-		line-clamp: 2;
-		-webkit-line-clamp: 2;
-		-webkit-box-orient: vertical;
-		overflow: hidden;
 	}
 
 	.post-meta {
@@ -1488,7 +1907,7 @@
 	}
 
 	.post-meta a:hover {
-		text-decoration: underline;
+		text-decoration: none;
 	}
 
 	.load-more-row {
@@ -1611,7 +2030,8 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		color: var(--text-ink);
-		font-size: 0.92rem;
+		font-size: 0.78rem;
+		font-weight: 500;
 		line-height: 1.18;
 	}
 
@@ -1620,6 +2040,13 @@
 		margin-top: 2px;
 		color: var(--muted);
 		font-size: 0.72rem;
+	}
+
+	.treeviewer-toolbar .treeviewer-author {
+		margin-top: 1px;
+		color: var(--text-ink);
+		font-size: 0.82rem;
+		font-weight: 700;
 	}
 
 	.treeviewer-actions {
@@ -1647,6 +2074,10 @@
 
 	.treeviewer-actions button {
 		cursor: pointer;
+	}
+
+	.mobile-back-button {
+		display: none;
 	}
 
 	.treeviewer-actions .panel-toggle.active {
@@ -1791,7 +2222,9 @@
 
 	@media (max-width: 720px) {
 		.frontpage-shell {
-			overflow: auto;
+			height: auto;
+			min-height: 100svh;
+			overflow: visible;
 		}
 
 		.masthead {
@@ -1808,6 +2241,16 @@
 			align-items: flex-start;
 			flex-direction: column;
 			gap: 3px;
+		}
+
+		.frontpage-workspace {
+			flex: 0 0 auto;
+			min-height: 0;
+			overflow: visible;
+		}
+
+		.feed-section {
+			overflow: visible;
 		}
 	}
 
@@ -1833,6 +2276,80 @@
 			flex-basis: clamp(360px, 92vw, 760px);
 			height: min(78vh, 760px);
 			min-height: 460px;
+		}
+	}
+
+	@media (max-width: 720px) {
+		.frontpage-shell.mobile-thread-focused {
+			padding: 0;
+		}
+
+		.frontpage-shell.mobile-thread-focused .frontpage-header,
+		.frontpage-shell.mobile-thread-focused .feed-section,
+		.frontpage-shell.mobile-thread-focused .workspace-splitter,
+		.frontpage-shell.mobile-thread-focused .treeviewer-pane-rail {
+			display: none;
+		}
+
+		.frontpage-shell.mobile-thread-focused .frontpage-workspace.with-viewer {
+			display: block;
+			height: auto;
+			min-height: 100svh;
+			overflow: visible;
+		}
+
+		.frontpage-shell.mobile-thread-focused .treeviewer-pane,
+		.frontpage-shell.mobile-thread-focused .treeviewer-sections {
+			min-height: 100svh;
+			overflow: visible;
+		}
+
+		.frontpage-shell.mobile-thread-focused .treeviewer-sections {
+			display: block;
+		}
+
+		.frontpage-shell.mobile-thread-focused .treeviewer-section {
+			width: 100%;
+			height: 100svh;
+			min-height: 100svh;
+			border: 0;
+			border-radius: 0;
+			box-shadow: none;
+		}
+
+		.frontpage-shell.mobile-thread-focused .treeviewer-toolbar {
+			flex-direction: column;
+			gap: 7px;
+			padding: 8px;
+		}
+
+		.frontpage-shell.mobile-thread-focused .treeviewer-toolbar h2 {
+			font-size: 0.74rem;
+			font-weight: 500;
+			line-height: 1.2;
+			white-space: normal;
+		}
+
+		.frontpage-shell.mobile-thread-focused .treeviewer-actions {
+			width: 100%;
+			display: grid;
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+			gap: 6px;
+			overflow: visible;
+			padding-bottom: 0;
+		}
+
+		.frontpage-shell.mobile-thread-focused .treeviewer-actions a,
+		.frontpage-shell.mobile-thread-focused .treeviewer-actions button {
+			justify-content: center;
+			min-width: 0;
+			padding: 0 6px;
+			text-align: center;
+			white-space: normal;
+		}
+
+		.frontpage-shell.mobile-thread-focused .mobile-back-button {
+			display: inline-flex;
 		}
 	}
 </style>

@@ -1529,6 +1529,7 @@
 		if (!embeddedSection || !browser || event.origin !== window.location.origin) return;
 		const data = event.data as {
 			type?: unknown;
+			textPanelMode?: unknown;
 			treeCollapsed?: unknown;
 			chatCollapsed?: unknown;
 			uiCollapsed?: unknown;
@@ -1549,6 +1550,9 @@
 
 		setTreeCollapsed(nextTreeCollapsed);
 		setChatCollapsed(nextChatCollapsed);
+		if (data.textPanelMode === 'chat' || data.textPanelMode === 'forum') {
+			setTextPanelMode(data.textPanelMode);
+		}
 		if (typeof data.uiCollapsed === 'boolean') {
 			embeddedUiCollapsed = data.uiCollapsed;
 			if (embeddedUiCollapsed) radialControlsOpen = false;
@@ -1685,6 +1689,10 @@
 
 		const params = new URLSearchParams(window.location.search);
 		embeddedSection = params.get('embed') === 'thread-section';
+		const viewParam = params.get('view');
+		if (viewParam === 'chat' || viewParam === 'forum') {
+			textPanelMode = viewParam;
+		}
 		if (embeddedSection) {
 			treeCollapsed = false;
 			chatCollapsed = false;
@@ -2401,12 +2409,14 @@
 													{#if openForumQuoteMenus.has(post.uri) && quoteState}
 														<div class="forum-quote-box">
 															<div class="forum-quote-actions">
-																{#if quoteState.quotedRecord as quotedRecord}
+																{#if quoteState.quotedRecord}
 																	<button
 																		type="button"
 																		class="forum-action-btn"
 																		onclick={(event) => {
 																			event.stopPropagation();
+																			const quotedRecord = quoteState.quotedRecord;
+																			if (!quotedRecord) return;
 																			selectQuoteFromChat(
 																				post.uri,
 																				quotedRecord.uri,
@@ -2726,6 +2736,33 @@
 		background: var(--tv-surface-muted);
 	}
 
+	main.embedded .tree-toolbar {
+		flex-wrap: wrap;
+	}
+
+	main.embedded .tree-toolbar > div {
+		flex: 1 1 180px;
+		min-width: 0;
+	}
+
+	main.embedded .show-replies-btn {
+		flex: 1 1 120px;
+		white-space: normal;
+	}
+
+	main.embedded .chat-font-controls {
+		grid-template-columns: auto auto minmax(64px, 1fr) auto auto;
+	}
+
+	main.embedded .text-mode-toggle {
+		grid-column: 1 / span 2;
+	}
+
+	main.embedded .chat-tree-btn {
+		grid-column: 3 / -1;
+		width: 100%;
+	}
+
 	.splitter {
 		align-self: stretch;
 		width: 12px;
@@ -2790,7 +2827,8 @@
 	}
 
 	h2 {
-		font-size: 0.94rem;
+		font-size: 0.84rem;
+		font-weight: 600;
 		line-height: 1.1;
 		margin: 0 0 2px;
 	}
@@ -3185,30 +3223,27 @@
 		--node-size: 26px;
 		position: absolute;
 		z-index: 2;
-		min-width: 26px;
-		width: 28px;
-		height: 28px;
+		min-width: 0;
+		width: var(--node-size);
+		height: var(--node-size);
 		display: grid;
-		grid-template-columns: var(--node-size);
-		align-items: center;
+		place-items: center;
 		border: 1px solid var(--tv-border);
 		border-radius: 999px;
 		background: var(--control-bg);
 		color: var(--text-ink);
-		padding: 1px;
+		padding: 0;
 		text-align: left;
 		box-shadow: var(--shadow-soft);
 		transition:
 			background 0.16s ease,
 			border-color 0.16s ease,
-			box-shadow 0.16s ease,
-			transform 0.16s ease;
+			box-shadow 0.16s ease;
 	}
 
 	.tree-node:hover {
 		background: var(--control-bg-hover);
 		border-color: var(--tv-border-strong);
-		transform: translateY(-1px);
 	}
 
 	.tree-node.on-path {
@@ -3234,8 +3269,9 @@
 	}
 
 	.node-avatar {
-		width: var(--node-size);
-		height: var(--node-size);
+		display: block;
+		width: calc(var(--node-size) - 2px);
+		height: calc(var(--node-size) - 2px);
 		border-radius: 50%;
 		object-fit: cover;
 		border: 2px solid color-mix(in srgb, var(--card-bg) 88%, transparent);
@@ -3826,6 +3862,33 @@
 			position: static;
 			height: auto;
 			max-height: none;
+		}
+
+		.tree-toolbar {
+			flex-wrap: wrap;
+		}
+
+		.tree-toolbar > div {
+			flex: 1 1 180px;
+			min-width: 0;
+		}
+
+		.show-replies-btn {
+			flex: 1 1 120px;
+			white-space: normal;
+		}
+
+		.chat-font-controls {
+			grid-template-columns: auto auto minmax(64px, 1fr) auto auto;
+		}
+
+		.text-mode-toggle {
+			grid-column: 1 / span 2;
+		}
+
+		.chat-tree-btn {
+			grid-column: 3 / -1;
+			width: 100%;
 		}
 
 		.chat-font-scope {

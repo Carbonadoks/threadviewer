@@ -2,7 +2,7 @@ import type { OAuthClientMetadataInput } from '@atproto/oauth-client-browser';
 
 export const MATRIX_FEED_ROUTE = '/matrix-feed';
 export const BLUESKY_OAUTH_REDIRECT_ROUTES = [MATRIX_FEED_ROUTE, '/frontpage', '/town'] as const;
-export const BLUESKY_OAUTH_CLIENT_METADATA_PATH = '/oauth/bsky-client-metadata-v7.json';
+export const BLUESKY_OAUTH_CLIENT_METADATA_PATH = '/oauth/bsky-client-metadata-v8.json';
 export const BLUESKY_ENTRYWAY_URL = 'https://bsky.social';
 export const BLUESKY_HANDLE_RESOLVER_URL = 'https://bsky.social';
 export const BLUESKY_OAUTH_CLIENT_INFO_PATH = '/oauth/';
@@ -14,6 +14,7 @@ const BLUESKY_OAUTH_SCOPES = [
 	`rpc:app.bsky.actor.getProfile?aud=${BLUESKY_APPVIEW_AUDIENCE}`,
 	`rpc:app.bsky.actor.getPreferences?aud=${BLUESKY_APPVIEW_AUDIENCE}`,
 	`rpc:app.bsky.feed.getFeedGenerators?aud=${BLUESKY_APPVIEW_AUDIENCE}`,
+	`rpc:app.bsky.feed.getAuthorFeed?aud=${BLUESKY_APPVIEW_AUDIENCE}`,
 	`rpc:app.bsky.feed.getTimeline?aud=${BLUESKY_APPVIEW_AUDIENCE}`,
 	`rpc:app.bsky.feed.getFeed?aud=${BLUESKY_APPVIEW_AUDIENCE}`,
 	`rpc:app.bsky.feed.getFeedSkeleton?aud=${BLUESKY_APPVIEW_AUDIENCE}`

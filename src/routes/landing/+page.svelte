@@ -308,6 +308,12 @@
 			{/each}
 		</div>
 	</section>
+
+	<footer class="github-footer" aria-label="Project source">
+		<a class="sketch-button primary github-link" href="https://github.com/Carbonadoks/threadviewer" target="_blank" rel="noreferrer">
+			View on GitHub
+		</a>
+	</footer>
 </main>
 
 <style>
@@ -603,6 +609,17 @@
 
 	.thinking-shelf {
 		background: var(--landing-section-alt);
+	}
+
+	.github-footer {
+		display: flex;
+		justify-content: center;
+		padding: 22px max(18px, calc((100vw - 1120px) / 2)) 58px;
+		background: var(--landing-section-alt);
+	}
+
+	.github-footer .github-link {
+		width: min(100%, 260px);
 	}
 
 	.section-heading {
