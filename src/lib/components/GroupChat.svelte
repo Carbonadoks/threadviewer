@@ -2,6 +2,7 @@
 	import { onMount, tick } from 'svelte';
 	import type { SelfReplyThread } from '$lib/types';
 	import LinkedPostEmbeds from '$lib/components/LinkedPostEmbeds.svelte';
+	import ThreadExportButton from '$lib/components/ThreadExportButton.svelte';
 	import { flattenThreadForChat, type ChatFlatPost } from '$lib/utils/threadFlattener';
 	import { buildBskyPostUrl } from '$lib/utils/viewerLinks';
 	import { openLightbox } from '$lib/stores/lightbox';
@@ -9,6 +10,7 @@
 	interface Props {
 		thread: SelfReplyThread;
 		fullHeight?: boolean;
+		showExport?: boolean;
 		branchOptionsByUri?: Map<string, ChatBranchOption[]>;
 		quoteStateByUri?: Map<string, ChatQuoteState>;
 		scrollToPostRequest?: ChatScrollRequest | null;
@@ -66,6 +68,7 @@
 	const {
 		thread,
 		fullHeight = false,
+		showExport = true,
 		branchOptionsByUri = new Map(),
 		quoteStateByUri = new Map(),
 		scrollToPostRequest = null,
@@ -301,6 +304,12 @@
 </script>
 
 <div bind:this={chatContainer} class="group-chat" class:full-height={fullHeight} onscroll={updateActivePostFromScroll}>
+	{#if showExport}
+		<div class="chat-export-bar">
+			<ThreadExportButton {thread} compact />
+		</div>
+	{/if}
+
 	{#each chatGroups as group, i (group.key)}
 		{@const firstItem = group.items[0]}
 		{@const prevDateKey = i > 0 ? chatGroups[i - 1].dateKey : null}
@@ -508,6 +517,7 @@
 									<div class="quote-options">
 										<div class="quote-actions">
 											{#if quoteState.quotedRecord}
+												{@const quotedRecord = quoteState.quotedRecord}
 												<button
 													type="button"
 													class="quote-action-btn"
@@ -515,8 +525,8 @@
 															event.stopPropagation();
 															onquoteselect?.(
 																item.post.uri,
-															quoteState.quotedRecord.uri,
-															quoteState.quotedRecord.authorHandle
+															quotedRecord.uri,
+															quotedRecord.authorHandle
 															);
 														}}
 												>
@@ -646,6 +656,20 @@
 
 	.group-chat.full-height {
 		max-height: none;
+	}
+
+	.chat-export-bar {
+		position: sticky;
+		top: 0;
+		z-index: 5;
+		display: flex;
+		justify-content: flex-end;
+		padding: 0 0 8px;
+		background: linear-gradient(
+			180deg,
+			color-mix(in srgb, var(--bg-paper) 72%, var(--muted-surface)) 78%,
+			transparent
+		);
 	}
 
 	.date-separator {

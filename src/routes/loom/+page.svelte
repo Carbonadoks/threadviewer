@@ -62,6 +62,8 @@
 	const ECHO_VIEWPORT_HEIGHT = 330;
 	const ECHO_OVERSCAN = 4;
 	const ECHO_POST_LIMIT = 5000;
+	const SUGGESTION_LIMIT = 24;
+	const BSKY_URL_FILTER_STORAGE_KEY = 'loom-remove-bsky-app-urls';
 
 	let fontKey = $state('patrick');
 	let fontFamily = $derived(fontFamilies[fontKey] ?? fontFamilies.patrick);
@@ -93,6 +95,7 @@
 	let markovMaxTokens = $state(14);
 	let markovSeedLimit = $state(15);
 	let markovStrategy: CorpusMarkovStrategy = $state('frequent');
+	let removeBskyAppUrls = $state(true);
 	let selectedSuggestionIndex = $state(0);
 	let echoScrollTop = $state(0);
 	let echoSelectionKey = $state('');
@@ -104,7 +107,10 @@
 
 	const suggestions = $derived(
 		corpusIndex
-			? getCorpusSuggestions(corpusIndex, completionText, { cursor: completionCursorIndex, limit: 8 })
+			? getCorpusSuggestions(corpusIndex, completionText, {
+					cursor: completionCursorIndex,
+					limit: SUGGESTION_LIMIT
+				})
 			: []
 	);
 	const markovContinuations = $derived(
@@ -378,7 +384,8 @@
 		const nextIndex = buildCorpusCompletionIndex(usablePosts, {
 			maxContextTokens: 3,
 			maxExamples: 4,
-			maxEchoPosts: ECHO_POST_LIMIT
+			maxEchoPosts: ECHO_POST_LIMIT,
+			removeBskyAppUrls
 		});
 
 		corpusPosts = usablePosts;
@@ -395,6 +402,25 @@
 		};
 		selectedSuggestionIndex = 0;
 		syncCompletionState();
+	}
+
+	function handleBskyUrlFilterToggle(event: Event) {
+		const nextValue = (event.currentTarget as HTMLInputElement).checked;
+		if (removeBskyAppUrls === nextValue) return;
+
+		removeBskyAppUrls = nextValue;
+		try {
+			localStorage.setItem(BSKY_URL_FILTER_STORAGE_KEY, nextValue ? '1' : '0');
+		} catch {}
+
+		if (corpusPosts.length > 0) {
+			rebuildCorpusFromPosts(corpusPosts, {
+				totalPosts: corpusStats.totalPosts,
+				downloadedBytes: corpusStats.downloadedBytes,
+				source: corpusStats.source,
+				authorCount: corpusStats.authorCount || corpusAuthors.length
+			});
+		}
 	}
 
 	async function downloadCorpus() {
@@ -546,21 +572,27 @@
 	function normalizeImportedAuthors(value: unknown): ProfileInfo[] {
 		if (!Array.isArray(value)) return [];
 		return value
-			.map((author) => {
+			.map((author): ProfileInfo | null => {
 				if (!author || typeof author !== 'object') return null;
 				const candidate = author as Partial<ProfileInfo>;
 				if (typeof candidate.did !== 'string' || typeof candidate.handle !== 'string') return null;
-				return {
+
+				const nextAuthor: ProfileInfo = {
 					did: candidate.did,
 					handle: candidate.handle,
-					displayName: typeof candidate.displayName === 'string' ? candidate.displayName : undefined,
-					avatar: typeof candidate.avatar === 'string' ? candidate.avatar : undefined,
 					postsCount: Number.isFinite(Number(candidate.postsCount))
 						? Math.max(0, Math.round(Number(candidate.postsCount)))
 						: 0
 				};
+				if (typeof candidate.displayName === 'string') {
+					nextAuthor.displayName = candidate.displayName;
+				}
+				if (typeof candidate.avatar === 'string') {
+					nextAuthor.avatar = candidate.avatar;
+				}
+				return nextAuthor;
 			})
-			.filter((author): author is ProfileInfo => Boolean(author));
+			.filter((author): author is ProfileInfo => author !== null);
 	}
 
 	async function importCorpusJson(file: File) {
@@ -847,6 +879,10 @@
 			if (savedFont && savedFont in fontFamilies) {
 				fontKey = savedFont;
 			}
+			const savedBskyUrlFilter = localStorage.getItem(BSKY_URL_FILTER_STORAGE_KEY);
+			if (savedBskyUrlFilter !== null) {
+				removeBskyAppUrls = savedBskyUrlFilter === '1';
+			}
 			draftText = localStorage.getItem('loom-draft') ?? '';
 			cursorIndex = draftText.length;
 			completionText = draftText;
@@ -970,6 +1006,17 @@
 	{#if loading}
 		<LoadingSpinner {progress} />
 	{/if}
+
+	<section class="corpus-options" aria-label="Corpus options">
+		<label class="corpus-toggle wobbly-border-light">
+			<input
+				type="checkbox"
+				checked={removeBskyAppUrls}
+				onchange={handleBskyUrlFilterToggle}
+			/>
+			<span>Remove bsky.app URLs</span>
+		</label>
+	</section>
 
 	<section class="stats-bar" aria-label="Corpus stats">
 		<div class="stat wobbly-border-light">
@@ -1426,6 +1473,32 @@
 		flex-wrap: wrap;
 		gap: 8px;
 		justify-content: flex-end;
+	}
+
+	.corpus-options {
+		display: flex;
+		justify-content: flex-end;
+		max-width: 1160px;
+		margin: 0 auto 12px;
+	}
+
+	.corpus-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 9px;
+		min-height: 38px;
+		padding: 8px 12px;
+		background: rgba(255, 254, 249, 0.82);
+		color: #38444b;
+		font-family: system-ui, -apple-system, sans-serif;
+		font-size: 0.84rem;
+		font-weight: 850;
+	}
+
+	.corpus-toggle input {
+		width: 16px;
+		height: 16px;
+		accent-color: #e07a5f;
 	}
 
 	.file-input {

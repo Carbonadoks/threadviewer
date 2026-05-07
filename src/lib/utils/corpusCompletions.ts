@@ -61,6 +61,13 @@ export interface CorpusCompletionIndex {
 	maxContextTokens: number;
 }
 
+export interface CorpusCompletionIndexOptions {
+	maxContextTokens?: number;
+	maxExamples?: number;
+	maxEchoPosts?: number;
+	removeBskyAppUrls?: boolean;
+}
+
 interface CorpusTokenStats {
 	token: string;
 	count: number;
@@ -96,9 +103,21 @@ const CONTEXT_SEPARATOR = '\u0001';
 const TOKEN_PATTERN = /[\p{L}\p{N}]+(?:['\u2019][\p{L}\p{N}]+)*/gu;
 const WORD_END_PATTERN = /[\p{L}\p{N}'\u2019]$/u;
 const SENTENCE_STOP_TOKEN_PATTERN = /^(?:lol|lmao|haha|ok|okay|yes|no)$/i;
+const BSKY_APP_URL_PATTERN =
+	/(?:https?:\/\/)?(?:www\.)?bsky\.app\/[^\s<>"'`)\]}]+/giu;
+const BSKY_APP_HOST_PATTERN = /\b(?:https?:\/\/)?(?:www\.)?bsky\.app\b/giu;
 
 function normalizeToken(token: string): string {
 	return token.toLocaleLowerCase();
+}
+
+export function removeBskyAppUrlsFromText(text: string): string {
+	return text
+		.replace(BSKY_APP_URL_PATTERN, ' ')
+		.replace(BSKY_APP_HOST_PATTERN, ' ')
+		.replace(/[ \t]{2,}/g, ' ')
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
 }
 
 function contextKey(tokens: string[]): string {
@@ -323,6 +342,23 @@ function getContextStats(
 	return null;
 }
 
+function getContextStatsCandidates(
+	index: CorpusCompletionIndex,
+	tokens: string[]
+): Array<{ key: string; tokens: string[]; stats: Map<string, CorpusTokenStats> }> {
+	const candidates: Array<{ key: string; tokens: string[]; stats: Map<string, CorpusTokenStats> }> = [];
+	const maxLength = Math.min(index.maxContextTokens, tokens.length);
+	for (let length = maxLength; length >= 1; length -= 1) {
+		const contextTokens = tokens.slice(tokens.length - length);
+		const key = contextKey(contextTokens);
+		const stats = index.contexts.get(key);
+		if (stats && stats.size > 0) {
+			candidates.push({ key, tokens: contextTokens, stats });
+		}
+	}
+	return candidates;
+}
+
 function buildLookupPlan(
 	index: CorpusCompletionIndex,
 	text: string,
@@ -369,9 +405,13 @@ function buildLookupPlan(
 	return plans.filter((plan) => plan.contextTokens.length > 0);
 }
 
+function suggestionDedupeKey(suggestion: CorpusSuggestion): string {
+	return `${suggestion.source}:${suggestion.token}:${suggestion.insertText}`;
+}
+
 export function buildCorpusCompletionIndex(
 	posts: CorpusPost[],
-	options: { maxContextTokens?: number; maxExamples?: number; maxEchoPosts?: number } = {}
+	options: CorpusCompletionIndexOptions = {}
 ): CorpusCompletionIndex {
 	const maxContextTokens = Math.max(1, Math.floor(options.maxContextTokens ?? DEFAULT_MAX_CONTEXT_TOKENS));
 	const maxExamples = Math.max(0, Math.floor(options.maxExamples ?? DEFAULT_MAX_EXAMPLES));
@@ -381,12 +421,15 @@ export function buildCorpusCompletionIndex(
 	let tokenCount = 0;
 
 	posts.forEach((post, index) => {
-		const text = post.text.trim();
+		const text = options.removeBskyAppUrls
+			? removeBskyAppUrlsFromText(post.text)
+			: post.text.trim();
 		if (!text) return;
 
 		const tokens = tokenize(text);
 		tokenCount += tokens.length;
 		const postKey = post.uri ?? `${index}:${text.slice(0, 40)}`;
+		const indexedPost = text === post.text ? post : { ...post, text };
 
 		for (const token of tokens) {
 			let stats = words.get(token.lower);
@@ -397,7 +440,7 @@ export function buildCorpusCompletionIndex(
 			recordTokenStats(stats, {
 				rawToken: token.raw,
 				postKey,
-				post,
+				post: indexedPost,
 				text,
 				matchStart: token.start,
 				matchEnd: token.end,
@@ -429,7 +472,7 @@ export function buildCorpusCompletionIndex(
 				recordTokenStats(stats, {
 					rawToken: nextToken.raw,
 					postKey,
-					post,
+					post: indexedPost,
 					text,
 					matchStart: tokens[start]?.start ?? 0,
 					matchEnd: nextToken.end,
@@ -460,40 +503,47 @@ export function getCorpusSuggestions(
 	const beforeCursor = text.slice(0, cursor);
 	const hasTrailingSpace = beforeCursor.length === 0 || /\s$/.test(beforeCursor);
 	const plans = buildLookupPlan(index, text, cursor);
+	const suggestions: CorpusSuggestion[] = [];
+	const seen = new Set<string>();
 
 	for (const plan of plans) {
-		const context = getContextStats(index, plan.contextTokens);
-		if (!context) continue;
+		const contextCandidates = getContextStatsCandidates(index, plan.contextTokens);
+		if (contextCandidates.length === 0) continue;
 
-		const partial = normalizeToken(plan.partialToken);
-		const matches = [...context.stats.values()]
-			.filter((stats) => {
-				if (!partial) return true;
-				return stats.token.startsWith(partial) && stats.token !== partial;
-			})
-			.sort(compareStats)
-			.slice(0, limit);
+		for (const context of contextCandidates) {
+			const partial = normalizeToken(plan.partialToken);
+			const matches = [...context.stats.values()]
+				.filter((stats) => {
+					if (!partial) return true;
+					return stats.token.startsWith(partial) && stats.token !== partial;
+				})
+				.sort(compareStats)
+				.slice(0, limit);
 
-		if (matches.length === 0) continue;
+			for (const stats of matches) {
+				const display = bestVariant(stats);
+				const insertedCompletion = plan.replacePartial
+					? display.slice(plan.partialToken.length)
+					: `${hasTrailingSpace ? '' : ' '}${display}`;
+				const suggestion = buildSuggestionFromStats({
+					stats,
+					insertText: insertedCompletion,
+					contextKey: context.key,
+					contextTokens: context.tokens,
+					source: 'ngram'
+				});
+				const key = suggestionDedupeKey(suggestion);
+				if (seen.has(key)) continue;
+				seen.add(key);
+				suggestions.push(suggestion);
 
-		return matches.map((stats) => {
-			const display = bestVariant(stats);
-			const insertedCompletion = plan.replacePartial
-				? display.slice(plan.partialToken.length)
-				: `${hasTrailingSpace ? '' : ' '}${display}`;
-
-			return buildSuggestionFromStats({
-				stats,
-				insertText: insertedCompletion,
-				contextKey: context.key,
-				contextTokens: context.tokens,
-				source: 'ngram'
-			});
-		});
+				if (suggestions.length >= limit) return suggestions;
+			}
+		}
 	}
 
 	const currentToken = getCursorTokenState(text, cursor).token;
-	if (!currentToken || currentToken.raw.length === 0) return [];
+	if (!currentToken || currentToken.raw.length === 0) return suggestions;
 
 	const partial = currentToken.lower;
 	const matches = [...index.words.values()]
@@ -501,18 +551,24 @@ export function getCorpusSuggestions(
 		.sort(compareStats)
 		.slice(0, limit);
 
-	return matches.map((stats) => {
+	for (const stats of matches) {
 		const display = bestVariant(stats);
 		const insertedCompletion = display.slice(currentToken.raw.length);
-
-		return buildSuggestionFromStats({
+		const suggestion = buildSuggestionFromStats({
 			stats,
 			insertText: insertedCompletion,
 			contextKey: partial,
 			contextTokens: [],
 			source: 'word'
 		});
-	});
+		const key = suggestionDedupeKey(suggestion);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		suggestions.push(suggestion);
+		if (suggestions.length >= limit) break;
+	}
+
+	return suggestions;
 }
 
 export function generateCorpusMarkovContinuations(

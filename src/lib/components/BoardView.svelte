@@ -4,6 +4,7 @@
 		import type { ThreadPost } from '$lib/types';
 		import type { BoardPlatformConfig, BoardThread } from '$lib/types/boardPlatform';
 		import LinkedPostEmbeds from '$lib/components/LinkedPostEmbeds.svelte';
+		import ThreadExportButton from '$lib/components/ThreadExportButton.svelte';
 	import { openLightbox } from '$lib/stores/lightbox';
 	import {
 		buildParentMap,
@@ -46,11 +47,13 @@
 	let {
 		thread,
 		initialActiveUri = null,
-		platform = defaultBoardPlatform
+		platform = defaultBoardPlatform,
+		showExport = true
 	}: {
 		thread: BoardThread;
 		initialActiveUri?: string | null;
 		platform?: BoardPlatformConfig;
+		showExport?: boolean;
 	} = $props();
 
 	type HighlightSegment = {
@@ -1404,6 +1407,9 @@
 		{#if loadedQuoteThreads.length > 0}
 			<span class="post-count">{loadedQuoteThreads.length} spawned tree{loadedQuoteThreads.length === 1 ? '' : 's'}</span>
 		{/if}
+		{#if showExport}
+			<ThreadExportButton {thread} compact />
+		{/if}
 	</div>
 	<div class="board-wrapper">
 		<div
@@ -1552,6 +1558,7 @@
 	.board-info {
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: 12px;
 		justify-content: center;
 		margin-bottom: 16px;

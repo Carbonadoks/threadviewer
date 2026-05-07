@@ -5,6 +5,7 @@
 			getFullThread as getBlueskyFullThread
 		} from '$lib/api/bluesky';
 		import BoardView from '$lib/components/BoardView.svelte';
+		import ThreadExportButton from '$lib/components/ThreadExportButton.svelte';
 		import type { ThreadPost } from '$lib/types';
 		import type { BoardPlatformConfig, BoardThread } from '$lib/types/boardPlatform';
 		import LinkedPostEmbeds from '$lib/components/LinkedPostEmbeds.svelte';
@@ -157,6 +158,7 @@
 			onActivePostChange?: ActivePostChangeHandler;
 			onWinningMove?: WinningMoveHandler;
 			platform?: BoardPlatformConfig;
+			showExport?: boolean;
 		};
 	type CelebrationBurst = {
 		key: number;
@@ -227,7 +229,8 @@
 			winningFocusUri = null,
 			onActivePostChange,
 			onWinningMove,
-			platform = defaultBoardPlatform
+			platform = defaultBoardPlatform,
+			showExport = true
 		}: ParallelBoardViewProps = $props();
 
 		let keyboardShortcuts = $derived(buildKeyboardShortcuts(platform.name));
@@ -3196,6 +3199,9 @@
 		<span class="dimension-meta">click a card to inspect it below</span>
 		{#if readyQuoteLanes.length > 0}
 			<span class="dimension-meta">{readyQuoteLanes.length} parallel lane{readyQuoteLanes.length === 1 ? '' : 's'}</span>
+		{/if}
+		{#if showExport}
+			<ThreadExportButton {thread} compact />
 		{/if}
 		<button
 			type="button"

@@ -7,6 +7,7 @@
 	import GroupChat from '$lib/components/GroupChat.svelte';
 	import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
 	import RouteNav from '$lib/components/RouteNav.svelte';
+	import ThreadExportButton from '$lib/components/ThreadExportButton.svelte';
 	import { openLightbox } from '$lib/stores/lightbox';
 	import type { SelfReplyThread, ThreadPost } from '$lib/types';
 	import { flattenThreadForChat, type ChatFlatPost } from '$lib/utils/threadFlattener';
@@ -1860,6 +1861,7 @@
 				>
 					{chatCollapsed ? 'Show chat' : 'Hide chat'}
 				</button>
+				<ThreadExportButton {thread} compact />
 			</div>
 		{/if}
 
@@ -2236,6 +2238,7 @@
 							<GroupChat
 								thread={chatThread}
 								fullHeight
+								showExport={false}
 								branchOptionsByUri={visibleChatBranchOptionsByUri}
 								quoteStateByUri={visibleChatQuoteStateByUri}
 								scrollToPostRequest={chatScrollRequest}

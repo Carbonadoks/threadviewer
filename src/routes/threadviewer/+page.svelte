@@ -27,6 +27,7 @@
 	import BoardView from '$lib/components/BoardView.svelte';
 	import ParallelBoardView from '$lib/components/ParallelBoardView.svelte';
 	import FontPicker from '$lib/components/FontPicker.svelte';
+	import ThreadExportButton from '$lib/components/ThreadExportButton.svelte';
 	import ThreadJudgePanel from '$lib/components/ThreadJudgePanel.svelte';
 	import {
 		buildAtUri,
@@ -1453,6 +1454,7 @@
 						&#8592; {threadOnlyMode ? threadOnlyBackLabel() : 'Back to threads'}
 					</button>
 					<button class="copy-link-btn wobbly-border" onclick={copyThreadLink}>Copy link</button>
+					<ThreadExportButton thread={expandedThread} compact />
 					<div class="view-toggle">
 						<button class="view-toggle-btn wobbly-border" class:active={expandedViewMode === 'chat'} onclick={() => expandedViewMode = 'chat'}>Chat</button>
 						<button class="view-toggle-btn wobbly-border" class:active={expandedViewMode === 'board'} onclick={() => expandedViewMode = 'board'}>Board</button>
@@ -1467,11 +1469,11 @@
 				{/if}
 				<div class="expanded-thread" class:expanded-thread--wide={expandedViewMode === 'board' || expandedViewMode === 'parallel'}>
 					{#if expandedViewMode === 'chat'}
-						<GroupChat thread={expandedThread} />
+						<GroupChat thread={expandedThread} showExport={false} />
 					{:else if expandedViewMode === 'board'}
-						<BoardView thread={expandedThread} />
+						<BoardView thread={expandedThread} showExport={false} />
 					{:else if expandedViewMode === 'parallel'}
-						<ParallelBoardView thread={expandedThread} />
+						<ParallelBoardView thread={expandedThread} showExport={false} />
 					{:else}
 						{#key expandedThread.rootUri}
 							<ThreadJudgePanel thread={expandedThread} autoloadCache />
@@ -1718,6 +1720,8 @@
 
 	.expanded-actions {
 		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
 		gap: 8px;
 		margin-bottom: 16px;
 	}
