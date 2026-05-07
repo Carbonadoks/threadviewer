@@ -7,7 +7,10 @@ import {
 	BrowserOAuthClient,
 	type OAuthSession
 } from '@atproto/oauth-client-browser';
-import { buildAtprotoLoopbackClientMetadata } from '@atproto/oauth-types';
+import {
+	buildAtprotoLoopbackClientMetadata,
+	type OAuthRedirectUri
+} from '@atproto/oauth-types';
 import type { ProfileInfo } from '$lib/api/bluesky';
 import {
 	BLUESKY_ENTRYWAY_URL,
@@ -293,7 +296,10 @@ export async function connectBlueskyWithPopup(): Promise<AuthenticatedBlueskyCon
 
 export async function connectBlueskyWithRedirect(redirectUri?: string): Promise<never> {
 	const client = await getOAuthClient();
-	await client.signInRedirect(BLUESKY_ENTRYWAY_URL, redirectUri ? { redirect_uri: redirectUri } : undefined);
+	await client.signInRedirect(
+		BLUESKY_ENTRYWAY_URL,
+		redirectUri ? { redirect_uri: redirectUri as OAuthRedirectUri } : undefined
+	);
 	throw new Error('User navigated back from Bluesky sign-in.');
 }
 

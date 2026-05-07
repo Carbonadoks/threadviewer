@@ -35,6 +35,19 @@ export interface ProfileInfo {
 	postsCount: number;
 }
 
+export interface FollowProfileInfo extends ProfileInfo {
+	description?: string;
+	followersCount?: number;
+	followsCount?: number;
+	indexedAt?: string;
+}
+
+export interface FollowsPage {
+	subject: FollowProfileInfo;
+	follows: FollowProfileInfo[];
+	cursor?: string;
+}
+
 export interface RecordEmbedLookupResult {
 	record: RecordEmbed | null;
 	unavailable: boolean;
@@ -157,6 +170,40 @@ export async function getProfiles(dids: string[]): Promise<ProfileInfo[]> {
 		}
 	}
 	return profiles;
+}
+
+function profileViewToFollowInfo(profile: any): FollowProfileInfo {
+	return {
+		did: profile.did,
+		handle: profile.handle,
+		displayName: profile.displayName,
+		description: profile.description,
+		avatar: profile.avatar,
+		postsCount: profile.postsCount ?? 0,
+		followersCount: profile.followersCount,
+		followsCount: profile.followsCount,
+		indexedAt: profile.indexedAt
+	};
+}
+
+export async function getFollowsPage(
+	actor: string,
+	options: { cursor?: string; limit?: number; signal?: AbortSignal } = {}
+): Promise<FollowsPage> {
+	const res = await agent.app.bsky.graph.getFollows(
+		{
+			actor,
+			limit: options.limit ?? 100,
+			cursor: options.cursor
+		},
+		{ signal: options.signal }
+	);
+
+	return {
+		subject: profileViewToFollowInfo(res.data.subject),
+		follows: (res.data.follows ?? []).map(profileViewToFollowInfo),
+		cursor: res.data.cursor
+	};
 }
 
 export async function fetchAuthorFeed(
