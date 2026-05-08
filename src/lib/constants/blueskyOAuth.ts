@@ -5,14 +5,24 @@ export const BLUESKY_OAUTH_REDIRECT_ROUTES = [
 	MATRIX_FEED_ROUTE,
 	'/frontpage',
 	'/town',
-	'/warg'
+	'/warg',
+	'/atproideasio'
 ] as const;
-export const BLUESKY_OAUTH_CLIENT_METADATA_PATH = '/oauth/bsky-client-metadata-v8.json';
+export const BLUESKY_OAUTH_CLIENT_METADATA_PATH = '/oauth/bsky-client-metadata-v14.json';
 export const BLUESKY_ENTRYWAY_URL = 'https://bsky.social';
 export const BLUESKY_HANDLE_RESOLVER_URL = 'https://bsky.social';
 export const BLUESKY_OAUTH_CLIENT_INFO_PATH = '/oauth/';
 export const BLUESKY_OAUTH_LOGO_PATH = '/oauth-client-logo.svg';
-const BLUESKY_APPVIEW_AUDIENCE = 'did:web:api.bsky.app#bsky_appview';
+export const BLUESKY_APPVIEW_DID = 'did:web:api.bsky.app';
+export const BLUESKY_APPVIEW_SERVICE_TYPE = 'bsky_appview';
+const BLUESKY_APPVIEW_AUDIENCE = `${BLUESKY_APPVIEW_DID}#${BLUESKY_APPVIEW_SERVICE_TYPE}`;
+export const BLUESKY_SEARCH_POSTS_APPVIEW_SCOPE = `rpc:app.bsky.feed.searchPosts?aud=${BLUESKY_APPVIEW_AUDIENCE}`;
+export const BLUESKY_SEARCH_POSTS_RESOURCE_SCOPE = `rpc:app.bsky.feed.searchPosts?aud=${BLUESKY_APPVIEW_DID}`;
+export const BLUESKY_SEARCH_POSTS_SCOPE = BLUESKY_SEARCH_POSTS_APPVIEW_SCOPE;
+export const BLUESKY_SEARCH_POSTS_SCOPES = [
+	BLUESKY_SEARCH_POSTS_APPVIEW_SCOPE,
+	BLUESKY_SEARCH_POSTS_RESOURCE_SCOPE
+] as const;
 
 export const BLUESKY_GRAPH_LIST_CREATE_SCOPES = [
 	'repo:app.bsky.graph.list?action=create',
@@ -28,6 +38,7 @@ export const BLUESKY_OAUTH_SCOPES = [
 	`rpc:app.bsky.feed.getTimeline?aud=${BLUESKY_APPVIEW_AUDIENCE}`,
 	`rpc:app.bsky.feed.getFeed?aud=${BLUESKY_APPVIEW_AUDIENCE}`,
 	`rpc:app.bsky.feed.getFeedSkeleton?aud=${BLUESKY_APPVIEW_AUDIENCE}`,
+	...BLUESKY_SEARCH_POSTS_SCOPES,
 	...BLUESKY_GRAPH_LIST_CREATE_SCOPES
 ];
 

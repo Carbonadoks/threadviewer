@@ -24,6 +24,9 @@
 		| 'matrix'
 		| 'matrix-feed'
 		| 'judge'
+		| 'atproideasio'
+		| 'llm'
+		| 'autobattler'
 		| 'analyzer'
 		| 'cluster'
 		| 'toponomy'
@@ -67,6 +70,9 @@
 		{ id: 'matrix', href: '/matrix', label: 'Matrix' },
 		{ id: 'matrix-feed', href: '/matrix-feed', label: 'In Matrix', compactLabel: 'In Matrix' },
 		{ id: 'judge', href: '/judge', label: 'Judge' },
+		{ id: 'atproideasio', href: '/atproideasio', label: 'atproideasio', compactLabel: 'Ideas' },
+		{ id: 'llm', href: '/llm', label: 'LLM' },
+		{ id: 'autobattler', href: '/autobattler', label: 'Autobattler', compactLabel: 'Battle' },
 		{ id: 'analyzer', href: '/analyzer', label: 'Analyze' },
 		{ id: 'toponomy', href: '/toponomy', label: 'Toponomy', compactLabel: 'Topo' },
 		{ id: 'wordcloud', href: '/wordcloud', label: 'Word Cloud', compactLabel: 'Words' }

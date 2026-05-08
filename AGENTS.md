@@ -33,9 +33,11 @@ The app is a hybrid of:
 
 ### Manual Frontend Testing Boundary
 
-- Do not use browser automation or the Browser Use plugin to inspect `/frontpage` unless explicitly requested.
-- The user manually tests `/frontpage`; agents should make code changes and run build/check commands only.
-- If a local server is needed, start it only when requested or approved, then provide the URL for the user to test.
+- The user manually tests frontend changes for now because it is simpler.
+- Do not use browser automation, the Browser Use plugin, Playwright, screenshots, or local browser interaction for frontend verification unless explicitly requested.
+- Do not start local dev or preview servers; the user runs them manually.
+- Agents may still run non-browser build/check commands when useful, unless the user asks not to.
+- If a local server is needed, ask the user to start it and leave browser testing to the user.
 
 ### Platform Bindings
 

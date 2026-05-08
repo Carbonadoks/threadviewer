@@ -76,6 +76,22 @@ export interface FetchPostsProgress {
 	totalBatches: number;
 }
 
+export interface TaggedPostSearchPage {
+	posts: ThreadPost[];
+	cursor?: string;
+	hitsTotal?: number;
+}
+
+export type PostSearchAgent = {
+	app: {
+		bsky: {
+			feed: {
+				searchPosts: (params: Record<string, unknown>, options?: { signal?: AbortSignal }) => Promise<any>;
+			};
+		};
+	};
+};
+
 function toFiniteCount(value: unknown): number {
 	if (!Number.isFinite(Number(value))) return 0;
 	return Math.max(0, Math.round(Number(value)));
@@ -244,6 +260,41 @@ export async function searchActorsTypeahead(query: string): Promise<ActorSuggest
 		displayName: a.displayName,
 		avatar: a.avatar
 	}));
+}
+
+export async function searchPostsByTag(
+	tag: string,
+	options: {
+		cursor?: string;
+		limit?: number;
+		sort?: 'latest' | 'top';
+		signal?: AbortSignal;
+		agent?: PostSearchAgent;
+	} = {}
+): Promise<TaggedPostSearchPage> {
+	const cleanTag = tag.replace(/^#/, '').trim();
+	if (!cleanTag) {
+		return { posts: [] };
+	}
+
+	const limit = Math.max(1, Math.min(options.limit ?? 100, 100));
+	const searchAgent = options.agent ?? agent;
+	const res = await searchAgent.app.bsky.feed.searchPosts(
+		{
+			q: `#${cleanTag}`,
+			tag: [cleanTag],
+			sort: options.sort ?? 'latest',
+			limit,
+			cursor: options.cursor
+		},
+		{ signal: options.signal }
+	);
+
+	return {
+		posts: (res.data.posts ?? []).map((post: any) => parsePostView(post)),
+		cursor: res.data.cursor,
+		hitsTotal: res.data.hitsTotal
+	};
 }
 
 export async function fetchPostThread(uri: string): Promise<any> {

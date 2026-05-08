@@ -7,6 +7,7 @@ import {
 	BrowserOAuthClient,
 	type OAuthSession
 } from '@atproto/oauth-client-browser';
+import type { AuthorizeOptions } from '@atproto/oauth-client';
 import {
 	buildAtprotoLoopbackClientMetadata,
 	type OAuthRedirectUri
@@ -17,6 +18,7 @@ import {
 	BLUESKY_HANDLE_RESOLVER_URL,
 	BLUESKY_OAUTH_REDIRECT_ROUTES,
 	BLUESKY_OAUTH_SCOPE,
+	BLUESKY_SEARCH_POSTS_SCOPES,
 	buildBlueskyOAuthClientMetadata
 } from '$lib/constants/blueskyOAuth';
 
@@ -57,14 +59,42 @@ export type AuthenticatedBlueskyContext = {
 	session: OAuthSession;
 	agent: Agent;
 	profile: ProfileInfo;
+	scope: string;
+	hasSearchPostsScope: boolean;
+};
+
+export type BlueskyPopupSignInOptions = Omit<AuthorizeOptions, 'state'>;
+
+export type BlueskyOAuthGrantInfo = {
+	scope: string;
+	hasSearchPostsScope: boolean;
+};
+
+export type BlueskyOAuthDebugInfo = {
+	clientId: string;
+	clientName?: string;
+	mode: 'loopback' | 'metadata';
+	scope: string;
+	hasSearchPostsScope: boolean;
 };
 
 let oauthClientPromise: Promise<BrowserOAuthClient> | null = null;
+const BLUESKY_OAUTH_BROWSER_SUB_STORAGE_KEY = '@@atproto/oauth-client-browser(sub)';
 
-function isMissingScopeError(error: unknown): boolean {
-	return String((error as { message?: string } | null | undefined)?.message ?? '').includes(
-		'Missing required scope'
-	);
+type BrowserOAuthClientWithPrivateDatabase = BrowserOAuthClient & {
+	database?: {
+		getSessionStore?: () => {
+			del: (sub: string) => Promise<void> | void;
+		};
+	};
+};
+
+function hasScope(scope: string, required: string): boolean {
+	return scope.split(/\s+/).includes(required);
+}
+
+export function hasBlueskySearchPostsScope(scope: string): boolean {
+	return BLUESKY_SEARCH_POSTS_SCOPES.some((required) => hasScope(scope, required));
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -115,6 +145,60 @@ async function getOAuthClient(): Promise<BrowserOAuthClient> {
 	return oauthClientPromise;
 }
 
+export function resetBlueskyOAuthClient(): void {
+	oauthClientPromise = null;
+}
+
+export async function forgetStoredBlueskySessionLocally(sub?: string | null): Promise<boolean> {
+	const storedSub =
+		sub ||
+		(typeof localStorage !== 'undefined'
+			? localStorage.getItem(BLUESKY_OAUTH_BROWSER_SUB_STORAGE_KEY)
+			: null);
+	if (!storedSub) return false;
+
+	const client = (await getOAuthClient()) as BrowserOAuthClientWithPrivateDatabase;
+	await client.database?.getSessionStore?.().del(storedSub);
+
+	if (
+		typeof localStorage !== 'undefined' &&
+		localStorage.getItem(BLUESKY_OAUTH_BROWSER_SUB_STORAGE_KEY) === storedSub
+	) {
+		localStorage.removeItem(BLUESKY_OAUTH_BROWSER_SUB_STORAGE_KEY);
+	}
+
+	return true;
+}
+
+export async function getBlueskyOAuthDebugInfo(): Promise<BlueskyOAuthDebugInfo> {
+	const client = await getOAuthClient();
+	const metadata = client.clientMetadata as {
+		client_id: string;
+		client_name?: string;
+		scope?: string;
+	};
+	const scope = metadata.scope ?? '';
+
+	return {
+		clientId: metadata.client_id,
+		clientName: metadata.client_name,
+		mode: metadata.client_id.startsWith('http://localhost') ? 'loopback' : 'metadata',
+		scope,
+		hasSearchPostsScope: hasBlueskySearchPostsScope(scope)
+	};
+}
+
+export async function getBlueskyOAuthGrantInfo(
+	session: OAuthSession
+): Promise<BlueskyOAuthGrantInfo> {
+	const tokenInfo = await session.getTokenInfo();
+	const scope = tokenInfo.scope ?? '';
+	return {
+		scope,
+		hasSearchPostsScope: hasBlueskySearchPostsScope(scope)
+	};
+}
+
 async function getAuthenticatedProfile(agent: Agent, actor: string): Promise<ProfileInfo> {
 	const res = await agent.app.bsky.actor.getProfile({ actor });
 	return {
@@ -130,13 +214,16 @@ async function buildAuthenticatedContext(
 	client: BrowserOAuthClient,
 	session: OAuthSession
 ): Promise<AuthenticatedBlueskyContext> {
+	const grant = await getBlueskyOAuthGrantInfo(session);
 	const agent = new Agent(session);
 	const profile = await getAuthenticatedProfile(agent, session.did);
 	return {
 		client,
 		session,
 		agent,
-		profile
+		profile,
+		scope: grant.scope,
+		hasSearchPostsScope: grant.hasSearchPostsScope
 	};
 }
 
@@ -268,30 +355,18 @@ export async function initAuthenticatedBlueskyClient(): Promise<{
 		};
 	}
 
-	try {
-		return {
-			client,
-			context: await buildAuthenticatedContext(client, result.session)
-		};
-	} catch (error) {
-		if (isMissingScopeError(error)) {
-			await client.revoke(result.session.sub).catch(() => undefined);
-		}
-		throw error;
-	}
+	return {
+		client,
+		context: await buildAuthenticatedContext(client, result.session)
+	};
 }
 
-export async function connectBlueskyWithPopup(): Promise<AuthenticatedBlueskyContext> {
+export async function connectBlueskyWithPopup(
+	options?: BlueskyPopupSignInOptions
+): Promise<AuthenticatedBlueskyContext> {
 	const client = await getOAuthClient();
-	const session = await client.signInPopup(BLUESKY_ENTRYWAY_URL);
-	try {
-		return await buildAuthenticatedContext(client, session);
-	} catch (error) {
-		if (isMissingScopeError(error)) {
-			await client.revoke(session.sub).catch(() => undefined);
-		}
-		throw error;
-	}
+	const session = await client.signInPopup(BLUESKY_ENTRYWAY_URL, options);
+	return await buildAuthenticatedContext(client, session);
 }
 
 export async function connectBlueskyWithRedirect(redirectUri?: string): Promise<never> {
