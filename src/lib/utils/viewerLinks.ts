@@ -4,6 +4,7 @@ export type ViewerPage =
 	| 'viewer2'
 	| 'chat'
 	| 'board'
+	| 'blog'
 	| 'treeviewer'
 	| 'parallelboard'
 	| 'bisk2bisk'
@@ -140,6 +141,14 @@ export function buildViewerHref(
 	}
 
 	if (page === 'bisk2bisk') {
+		return pathname;
+	}
+
+	if (page === 'viewer2') {
+		const handle = cleanActor(options.handle) || (options.url ? parseBskyPostUrl(options.url)?.handle : '') || '';
+		if (handle) {
+			return `${pathname}?handle=${encodeURIComponent(handle)}`;
+		}
 		return pathname;
 	}
 

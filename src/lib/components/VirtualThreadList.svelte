@@ -18,6 +18,7 @@
 		collapsedByRootUri,
 		oncollapsedchange,
 		onexpand,
+		onblog,
 		onshare,
 		onopenbluesky,
 		scrollToRootUri = null,
@@ -34,6 +35,7 @@
 		collapsedByRootUri: Record<string, boolean>;
 		oncollapsedchange: (rootUri: string, collapsed: boolean) => void;
 		onexpand?: (rootUri: string) => void;
+		onblog?: (rootUri: string) => void;
 		onshare?: (rootUri: string) => void;
 		onopenbluesky?: (rootUri: string) => void;
 		scrollToRootUri?: string | null;
@@ -315,6 +317,7 @@
 						collapsed={collapsed(thread.rootUri)}
 						oncollapsedchange={(nextCollapsed) => oncollapsedchange(thread.rootUri, nextCollapsed)}
 						onexpand={onexpand}
+						onblog={onblog}
 						onshare={onshare}
 						onopenbluesky={onopenbluesky}
 					/>
@@ -324,6 +327,7 @@
 						collapsed={collapsed(thread.rootUri)}
 						oncollapsedchange={(nextCollapsed) => oncollapsedchange(thread.rootUri, nextCollapsed)}
 						onexpand={onexpand}
+						onblog={onblog}
 						onshare={onshare}
 						onopenbluesky={onopenbluesky}
 					/>
@@ -333,6 +337,7 @@
 						collapsed={collapsed(thread.rootUri)}
 						oncollapsedchange={(nextCollapsed) => oncollapsedchange(thread.rootUri, nextCollapsed)}
 						onexpand={onexpand}
+						onblog={onblog}
 						onshare={onshare}
 						onopenbluesky={onopenbluesky}
 					/>
@@ -343,6 +348,7 @@
 						collapsed={collapsed(thread.rootUri)}
 						oncollapsedchange={(nextCollapsed) => oncollapsedchange(thread.rootUri, nextCollapsed)}
 						onexpand={onexpand}
+						onblog={onblog}
 						onshare={onshare}
 						onopenbluesky={onopenbluesky}
 					/>

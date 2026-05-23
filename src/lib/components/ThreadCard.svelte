@@ -9,6 +9,7 @@
 		highlightedPostUri = null,
 		oncollapsedchange,
 		onexpand,
+		onblog,
 		onshare,
 		onopenbluesky
 	}: {
@@ -17,6 +18,7 @@
 		highlightedPostUri?: string | null;
 		oncollapsedchange: (collapsed: boolean) => void;
 		onexpand?: (rootUri: string) => void;
+		onblog?: (rootUri: string) => void;
 		onshare?: (rootUri: string) => void;
 		onopenbluesky?: (rootUri: string) => void;
 	} = $props();
@@ -56,11 +58,23 @@
 		if (text.length <= 120) return text;
 		return text.slice(0, 120) + '...';
 	}
+
+	function handleToggleKeydown(event: KeyboardEvent) {
+		if (event.key !== 'Enter' && event.key !== ' ') return;
+		event.preventDefault();
+		oncollapsedchange(!collapsed);
+	}
 </script>
 
 <div class="thread-card" style="transform: rotate({rotation}deg)">
 	<RoughBorder>
-		<button class="thread-toggle" onclick={() => oncollapsedchange(!collapsed)}>
+		<div
+			class="thread-toggle"
+			role="button"
+			tabindex="0"
+			onclick={() => oncollapsedchange(!collapsed)}
+			onkeydown={handleToggleKeydown}
+		>
 			<div class="thread-header">
 				<span class="depth-badge wobbly-border">{thread.depth} deep</span>
 				<span class="posts-badge">{totalPosts} posts</span>
@@ -73,6 +87,9 @@
 				{#if onexpand}
 					<button class="expand-btn wobbly-border" onclick={(e) => { e.stopPropagation(); onexpand(thread.rootUri); }}>Full thread</button>
 				{/if}
+				{#if onblog}
+					<button class="blog-btn wobbly-border" onclick={(e) => { e.stopPropagation(); onblog(thread.rootUri); }}>Blog</button>
+				{/if}
 				{#if onshare}
 					<button class="share-btn wobbly-border" onclick={(e) => { e.stopPropagation(); onshare(thread.rootUri); }}>Share</button>
 				{/if}
@@ -84,7 +101,7 @@
 			{#if collapsed}
 				<p class="thread-preview">{preview(thread.rootPost.text)}</p>
 			{/if}
-		</button>
+		</div>
 		{#if !collapsed}
 			<PostNode post={thread.rootPost} level={0} {highlightedPostUri} />
 		{/if}
@@ -152,7 +169,7 @@
 		color: var(--muted);
 	}
 
-	.expand-btn, .share-btn, .open-btn {
+	.expand-btn, .blog-btn, .share-btn, .open-btn {
 		padding: 2px 10px;
 		font-size: 0.8rem;
 		background: var(--card-bg);
@@ -162,7 +179,7 @@
 		transition: opacity 0.2s;
 	}
 
-	.expand-btn:hover, .share-btn:hover, .open-btn:hover {
+	.expand-btn:hover, .blog-btn:hover, .share-btn:hover, .open-btn:hover {
 		opacity: 0.7;
 	}
 

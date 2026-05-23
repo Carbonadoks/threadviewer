@@ -415,6 +415,52 @@
 		}
 	}
 
+	async function analyzeSavedRepoCar(_entry: unknown, carBytes: Uint8Array) {
+		const prof = profile;
+		if (!prof) return;
+		const token = ++loadToken;
+		loadController?.abort();
+		const controller = new AbortController();
+		loadController = controller;
+
+		loading = true;
+		error = null;
+		words = [];
+		totalWords = 0;
+		totalPosts = 0;
+		uniqueWords = 0;
+		selectedWord = null;
+		hoveredWord = null;
+		cloudRendered = false;
+		placedWords = [];
+
+		try {
+			updateHandleQuery(prof.handle);
+			progress = { phase: 'Parsing saved CAR posts (WASM)…', current: 0, total: 0 };
+			const parsedPosts = await parseCarPostsWasm(carBytes, (count) => {
+				if (token !== loadToken) return;
+				progress = { phase: 'Parsing saved CAR posts (WASM)…', current: count, total: 0 };
+			});
+			if (token !== loadToken || controller.signal.aborted) return;
+
+			progress = { phase: 'Computing word frequencies…', current: 0, total: 0 };
+			await new Promise((r) => setTimeout(r, 0));
+			const result = computeWordFrequencies(parsedPosts);
+			if (token !== loadToken) return;
+
+			words = result.entries;
+			totalWords = result.totalTokens;
+			totalPosts = result.postCount;
+			uniqueWords = result.uniqueCount;
+		} catch (err: any) {
+			if (err?.name === 'AbortError') return;
+			if (token !== loadToken) return;
+			error = err?.message ?? 'Could not load the saved CAR.';
+		} finally {
+			if (token === loadToken) loading = false;
+		}
+	}
+
 	function updateHandleQuery(handle: string | null) {
 		if (!browser) return;
 		const url = new URL(window.location.href);
@@ -604,6 +650,8 @@
 	}
 
 	.search-area {
+		display: grid;
+		gap: 10px;
 		max-width: 520px;
 		margin: 0 auto 24px;
 	}

@@ -475,6 +475,16 @@
 		return 'Back';
 	}
 
+	function buildRepoViewerHref(): string {
+		const handle =
+			selectedProfile?.handle ||
+			initialHandle ||
+			(activeThreadUrl ? parseBskyPostUrl(activeThreadUrl)?.handle : '') ||
+			'';
+
+		return buildViewerHref('viewer2', { handle });
+	}
+
 	function updateRouteState(
 		options: {
 			handle?: string | null;
@@ -1417,6 +1427,14 @@
 		<FontPicker value={fontKey} onchange={handleFontChange} />
 	</header>
 
+	<div class="deprecation-banner wobbly-border-light" role="note">
+		<div>
+			<strong>/threadviewer is deprecated.</strong>
+			<span>Use the repo viewer for new thread discovery. It downloads the account repository directly instead of relying on cached feed slices.</span>
+		</div>
+		<a href={buildRepoViewerHref()}>Open Repo Viewer</a>
+	</div>
+
 	{#if !threadOnlyMode}
 	<section class="search-section">
 		<SearchBar onsearch={handleSearch} onprofile={handleProfileSelected} disabled={loading} {initialHandle} />
@@ -1637,6 +1655,42 @@
 
 	.search-section {
 		margin-bottom: 32px;
+	}
+
+	.deprecation-banner {
+		max-width: 680px;
+		margin: -16px auto 24px;
+		padding: 14px 16px;
+		background: #fff3cd;
+		color: #5f4700;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 14px;
+		text-align: left;
+	}
+
+	.deprecation-banner div {
+		display: grid;
+		gap: 4px;
+	}
+
+	.deprecation-banner strong {
+		color: #3f2f00;
+	}
+
+	.deprecation-banner span {
+		line-height: 1.35;
+	}
+
+	.deprecation-banner a {
+		flex: 0 0 auto;
+		padding: 8px 12px;
+		border-radius: 999px;
+		background: var(--text-ink);
+		color: #fff;
+		font-weight: 700;
+		text-decoration: none;
 	}
 
 	.options-row {
@@ -1941,5 +1995,16 @@
 	.hint {
 		color: var(--muted);
 		font-size: 0.95rem !important;
+	}
+
+	@media (max-width: 640px) {
+		.deprecation-banner {
+			align-items: stretch;
+			flex-direction: column;
+		}
+
+		.deprecation-banner a {
+			text-align: center;
+		}
 	}
 </style>

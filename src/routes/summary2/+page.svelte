@@ -13,7 +13,8 @@
 	import { buildCachedUserSummary } from '$lib/utils/cachedSummary';
 	import {
 		hydrateFeedItemsEngagement,
-		loadRepoFeedItems
+		loadRepoFeedItems,
+		parseRepoFeedItemsFromCar
 	} from '$lib/utils/repoHydration';
 	import { buildBskyPostUrl } from '$lib/utils/viewerLinks';
 
@@ -214,7 +215,10 @@
 		}
 	}
 
-	async function loadSummaryForProfile(nextProfile: ProfileInfo) {
+	async function loadSummaryForProfile(
+		nextProfile: ProfileInfo,
+		options: { carBytes?: Uint8Array } = {}
+	) {
 		const token = ++loadToken;
 		loadController?.abort();
 		loadController = new AbortController();
@@ -229,58 +233,72 @@
 		updateHandleQuery(nextProfile.handle);
 
 		try {
-			let latestDownloadedBytes = 0;
+			const savedCarBytes = options.carBytes;
+			let latestDownloadedBytes = savedCarBytes?.byteLength ?? 0;
 			progress = { phase: 'Preparing repo summary…', current: 0, total: 0 };
-			const repo = await loadRepoFeedItems(
-				nextProfile.did,
-				{
-					did: nextProfile.did,
-					handle: nextProfile.handle,
-					displayName: nextProfile.displayName,
-					avatar: nextProfile.avatar
-				},
-				{
-					signal: loadController.signal,
-					onDownloadProgress: (downloadProgress) => {
-						if (token !== loadToken) return;
-						latestDownloadedBytes = downloadProgress.receivedBytes;
-						const detailParts = [
-							`${formatBytes(downloadProgress.receivedBytes)}${downloadProgress.totalBytes > 0 ? ` / ${formatBytes(downloadProgress.totalBytes)}` : ''}`
-						];
-						if (downloadProgress.bytesPerSecond > 0) {
-							detailParts.push(formatSpeed(downloadProgress.bytesPerSecond));
+			const authorInfo = {
+				did: nextProfile.did,
+				handle: nextProfile.handle,
+				displayName: nextProfile.displayName,
+				avatar: nextProfile.avatar
+			};
+			const repo = savedCarBytes
+				? await parseRepoFeedItemsFromCar(nextProfile.did, authorInfo, savedCarBytes, {
+						signal: loadController.signal,
+						downloadedBytes: savedCarBytes.byteLength,
+						totalBytes: savedCarBytes.byteLength,
+						source: 'pds',
+						onParseProgress: (count) => {
+							if (token !== loadToken) return;
+							progress = {
+								phase: 'Parsing saved CAR posts…',
+								current: 0,
+								total: 0,
+								detail: `${count.toLocaleString()} posts extracted from ${formatBytes(latestDownloadedBytes)}`
+							};
 						}
-						if (downloadProgress.elapsedMs > 0) {
-							detailParts.push(formatDuration(downloadProgress.elapsedMs));
+					})
+				: await loadRepoFeedItems(nextProfile.did, authorInfo, {
+						signal: loadController.signal,
+						onDownloadProgress: (downloadProgress) => {
+							if (token !== loadToken) return;
+							latestDownloadedBytes = downloadProgress.receivedBytes;
+							const detailParts = [
+								`${formatBytes(downloadProgress.receivedBytes)}${downloadProgress.totalBytes > 0 ? ` / ${formatBytes(downloadProgress.totalBytes)}` : ''}`
+							];
+							if (downloadProgress.bytesPerSecond > 0) {
+								detailParts.push(formatSpeed(downloadProgress.bytesPerSecond));
+							}
+							if (downloadProgress.elapsedMs > 0) {
+								detailParts.push(formatDuration(downloadProgress.elapsedMs));
+							}
+							progress =
+								downloadProgress.totalBytes > 0
+									? {
+											phase: 'Downloading repository…',
+											current: Math.round(
+												(downloadProgress.receivedBytes / downloadProgress.totalBytes) * 100
+											),
+											total: 100,
+											detail: detailParts.join(' · ')
+										}
+									: {
+											phase: 'Downloading repository…',
+											current: 0,
+											total: 0,
+											detail: detailParts.join(' · ')
+										};
+						},
+						onParseProgress: (count) => {
+							if (token !== loadToken) return;
+							progress = {
+								phase: 'Parsing repository posts…',
+								current: 0,
+								total: 0,
+								detail: `${count.toLocaleString()} posts extracted from ${formatBytes(latestDownloadedBytes)}`
+							};
 						}
-						progress =
-							downloadProgress.totalBytes > 0
-								? {
-										phase: 'Downloading repository…',
-										current: Math.round(
-											(downloadProgress.receivedBytes / downloadProgress.totalBytes) * 100
-										),
-										total: 100,
-										detail: detailParts.join(' · ')
-									}
-								: {
-										phase: 'Downloading repository…',
-										current: 0,
-										total: 0,
-										detail: detailParts.join(' · ')
-									};
-					},
-					onParseProgress: (count) => {
-						if (token !== loadToken) return;
-						progress = {
-							phase: 'Parsing repository posts…',
-							current: 0,
-							total: 0,
-							detail: `${count.toLocaleString()} posts extracted from ${formatBytes(latestDownloadedBytes)}`
-						};
-					}
-				}
-			);
+					});
 
 			if (token !== loadToken) return;
 			throwIfAborted(loadController.signal);
@@ -382,6 +400,11 @@
 
 	function handleProfileSelected(nextProfile: ProfileInfo) {
 		void loadSummaryForProfile(nextProfile);
+	}
+
+	async function loadSavedRepoCar(_entry: unknown, carBytes: Uint8Array) {
+		if (!profile) return;
+		await loadSummaryForProfile(profile, { carBytes });
 	}
 
 	onMount(() => {

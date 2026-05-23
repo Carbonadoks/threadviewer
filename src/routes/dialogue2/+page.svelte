@@ -17,7 +17,11 @@
 	import type { AuthorInfo, DiscoverProgress, SelfReplyThread, ThreadPost } from '$lib/types';
 	import type { ProfileInfo } from '$lib/api/bluesky';
 	import { getFullThread, getProfile, hydratePostEmbeds } from '$lib/api/bluesky';
-	import { loadRepoFeedItems, type RepoDownloadProgress } from '$lib/utils/repoHydration';
+	import {
+		loadRepoFeedItems,
+		parseRepoFeedItemsFromCar,
+		type RepoDownloadProgress
+	} from '$lib/utils/repoHydration';
 	import { buildThreadsFromFeed } from '$lib/utils/threadWalker';
 	import { toastError, toastInfo, toastSuccess } from '$lib/utils/toasts';
 	import {
@@ -216,7 +220,11 @@
 		s.profile = profile;
 	}
 
-	async function downloadRepoForSlot(slot: FeedSlot, signal: AbortSignal): Promise<any[]> {
+	async function downloadRepoForSlot(
+		slot: FeedSlot,
+		signal: AbortSignal,
+		options: { carBytes?: Uint8Array } = {}
+	): Promise<any[]> {
 		const s = getSlot(slot);
 		const profile = s.profile;
 		if (!profile) return [];
@@ -230,38 +238,53 @@
 		let latestDownloadedBytes = 0;
 		progress = { phase: `Downloading repository for @${profile.handle}...`, current: 0, total: 0 };
 
-		const repo = await loadRepoFeedItems(profile.did, authorInfo, {
-			signal,
-			onDownloadProgress: (downloadProgress) => {
-				latestDownloadedBytes = downloadProgress.receivedBytes;
-				s.downloadedBytes = downloadProgress.receivedBytes;
-				s.downloadTotalBytes = downloadProgress.totalBytes;
-				progress =
-					downloadProgress.totalBytes > 0
-						? {
-								phase: `Downloading repository for @${profile.handle}...`,
-								current: Math.round(
-									(downloadProgress.receivedBytes / downloadProgress.totalBytes) * 100
-								),
-								total: 100,
-								detail: buildSlotDownloadDetail(slot, profile.handle, downloadProgress)
-							}
-						: {
-								phase: `Downloading repository for @${profile.handle}...`,
-								current: 0,
-								total: 0,
-								detail: buildSlotDownloadDetail(slot, profile.handle, downloadProgress)
-							};
-			},
-			onParseProgress: (count) => {
-				progress = {
-					phase: `Parsing repository for @${profile.handle}...`,
-					current: 0,
-					total: 0,
-					detail: buildSlotParseDetail(slot, profile.handle, count, latestDownloadedBytes)
-				};
-			}
-		});
+		const repo = options.carBytes
+			? await parseRepoFeedItemsFromCar(profile.did, authorInfo, options.carBytes, {
+					signal,
+					downloadedBytes: options.carBytes.byteLength,
+					totalBytes: options.carBytes.byteLength,
+					source: 'pds',
+					onParseProgress: (count) => {
+						progress = {
+							phase: `Parsing saved CAR for @${profile.handle}...`,
+							current: 0,
+							total: 0,
+							detail: buildSlotParseDetail(slot, profile.handle, count, options.carBytes?.byteLength ?? 0)
+						};
+					}
+				})
+			: await loadRepoFeedItems(profile.did, authorInfo, {
+					signal,
+					onDownloadProgress: (downloadProgress) => {
+						latestDownloadedBytes = downloadProgress.receivedBytes;
+						s.downloadedBytes = downloadProgress.receivedBytes;
+						s.downloadTotalBytes = downloadProgress.totalBytes;
+						progress =
+							downloadProgress.totalBytes > 0
+								? {
+										phase: `Downloading repository for @${profile.handle}...`,
+										current: Math.round(
+											(downloadProgress.receivedBytes / downloadProgress.totalBytes) * 100
+										),
+										total: 100,
+										detail: buildSlotDownloadDetail(slot, profile.handle, downloadProgress)
+									}
+								: {
+										phase: `Downloading repository for @${profile.handle}...`,
+										current: 0,
+										total: 0,
+										detail: buildSlotDownloadDetail(slot, profile.handle, downloadProgress)
+									};
+					},
+					onParseProgress: (count) => {
+						progress = {
+							phase: `Parsing repository for @${profile.handle}...`,
+							current: 0,
+							total: 0,
+							detail: buildSlotParseDetail(slot, profile.handle, count, latestDownloadedBytes)
+						};
+					}
+				});
 
 		s.feedPosts = repo.feedItems;
 		s.postCount = repo.totalPosts;
@@ -269,6 +292,19 @@
 		s.downloadTotalBytes = repo.totalBytes;
 
 		return repo.feedItems;
+	}
+
+	async function loadSavedRepoForSlot(slot: FeedSlot, _entry: unknown, carBytes: Uint8Array): Promise<void> {
+		const s = getSlot(slot);
+		if (!s.profile || loading || resolvingSlot) return;
+		const controller = new AbortController();
+		progress = { phase: `Loading saved CAR for @${s.profile.handle}...`, current: 0, total: 0 };
+		try {
+			await downloadRepoForSlot(slot, controller.signal, { carBytes });
+			toastSuccess(`Loaded saved CAR for @${s.profile.handle}.`);
+		} catch (err: any) {
+			error = formatRouteError(err, `Could not load saved CAR for @${s.profile.handle}.`);
+		}
 	}
 
 	function collectParticipantDids(post: ThreadPost, set = new Set<string>()): Set<string> {
@@ -332,9 +368,9 @@
 
 			updateRouteState({ handleA: slotA.profile!.handle, handleB: slotB.profile!.handle });
 
-			// Download both repos sequentially (showing progress for each)
-			await downloadRepoForSlot('a', controller.signal);
-			await downloadRepoForSlot('b', controller.signal);
+			// Download only slots that were not already loaded from saved CAR.
+			if (slotA.feedPosts.length === 0) await downloadRepoForSlot('a', controller.signal);
+			if (slotB.feedPosts.length === 0) await downloadRepoForSlot('b', controller.signal);
 
 			// Combine feeds and build threads
 			const combined = mergeUniquePosts(slotA.feedPosts, slotB.feedPosts, 'append');

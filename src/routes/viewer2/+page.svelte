@@ -12,12 +12,21 @@
 	import type { SelfReplyThread, AuthorInfo, DiscoverProgress, ThreadPost } from '$lib/types';
 	import type { ProfileInfo } from '$lib/api/bluesky';
 	import { getProfile, getFullThread } from '$lib/api/bluesky';
-	import { loadRepoFeedItems, type RepoDownloadProgress } from '$lib/utils/repoHydration';
+	import {
+		loadRepoFeedItems,
+		type RepoDownloadProgress
+	} from '$lib/utils/repoHydration';
 	import { buildThreadsFromFeed } from '$lib/utils/threadWalker';
-	import { toastError, toastWarning, toastSuccess, toastInfo } from '$lib/utils/toasts';
+	import { toastError, toastSuccess, toastInfo } from '$lib/utils/toasts';
+	import {
+		buildFuzzyTextMatcher,
+		fuzzyTextMatches,
+		type FuzzyTextMatcher
+	} from '$lib/utils/fuzzySearch';
 	import GroupChat from '$lib/components/GroupChat.svelte';
 	import BoardView from '$lib/components/BoardView.svelte';
 	import ParallelBoardView from '$lib/components/ParallelBoardView.svelte';
+	import BlogArticle from '$lib/components/BlogArticle.svelte';
 	import FontPicker from '$lib/components/FontPicker.svelte';
 	import ThreadJudgePanel from '$lib/components/ThreadJudgePanel.svelte';
 	import {
@@ -38,6 +47,7 @@
 	};
 
 	type RenderMode = 'default' | 'chat' | 'conspiracy' | 'ransom';
+	type ExpandedViewMode = 'chat' | 'board' | 'parallel' | 'judge';
 	type RepoStats = {
 		totalPosts: number;
 		elapsedMs: number;
@@ -70,6 +80,9 @@
 	// Date filters
 	let dateFrom = $state('');
 	let dateTo = $state('');
+	let visibleCharacterTotal: number | null = $state(null);
+	let visibleCharacterThreadCount = $state(0);
+	let visibleCharacterFilterSignature = $state('');
 
 	// Stats
 	let stats = $state({ postsScanned: 0, chainStarts: 0, threadsWithSelfReplies: 0 });
@@ -123,6 +136,8 @@
 	let expandedLoading = $state(false);
 	let showExpanded = $state(false);
 	let savedScrollY = 0;
+	let blogThread: SelfReplyThread | null = $state(null);
+	let showBlogReader = $state(false);
 
 	// Highlight state
 	let highlightedThread: string | null = $state(null);
@@ -131,13 +146,14 @@
 	let activeThreadUrl: string | null = $state(null);
 
 	// Expanded panel view mode
-	let expandedViewMode: 'chat' | 'board' | 'parallel' | 'judge' = $state('chat');
+	let expandedViewMode: ExpandedViewMode = $state('chat');
 
 	type SearchMatcherMode = 'none' | 'literal' | 'regex';
 
 	type ThreadSearchMatcher = {
 		mode: SearchMatcherMode;
 		literal: string | null;
+		fuzzy: FuzzyTextMatcher | null;
 		regex: RegExp | null;
 		helperText: string | null;
 		helperTone: 'info' | 'warning' | null;
@@ -146,11 +162,18 @@
 	function buildSearchMatcher(query: string): ThreadSearchMatcher {
 		const trimmed = query.trim();
 		if (!trimmed) {
-			return { mode: 'none', literal: null, regex: null, helperText: null, helperTone: null };
+			return { mode: 'none', literal: null, fuzzy: null, regex: null, helperText: null, helperTone: null };
 		}
 
 		if (!trimmed.startsWith('/')) {
-			return { mode: 'literal', literal: trimmed.toLowerCase(), regex: null, helperText: null, helperTone: null };
+			return {
+				mode: 'literal',
+				literal: trimmed.toLowerCase(),
+				fuzzy: buildFuzzyTextMatcher(trimmed),
+				regex: null,
+				helperText: null,
+				helperTone: null
+			};
 		}
 
 		// Try to parse as regex /pattern/flags
@@ -163,7 +186,14 @@
 		}
 
 		if (closingSlash <= 0) {
-			return { mode: 'literal', literal: trimmed.toLowerCase(), regex: null, helperText: null, helperTone: 'info' };
+			return {
+				mode: 'literal',
+				literal: trimmed.toLowerCase(),
+				fuzzy: buildFuzzyTextMatcher(trimmed),
+				regex: null,
+				helperText: null,
+				helperTone: 'info'
+			};
 		}
 
 		try {
@@ -171,9 +201,16 @@
 			const rawFlags = trimmed.slice(closingSlash + 1).toLowerCase();
 			const flags = rawFlags.includes('i') ? rawFlags : `${rawFlags}i`;
 			const regex = new RegExp(pattern, flags);
-			return { mode: 'regex', literal: null, regex, helperText: null, helperTone: null };
+			return { mode: 'regex', literal: null, fuzzy: null, regex, helperText: null, helperTone: null };
 		} catch {
-			return { mode: 'literal', literal: trimmed.toLowerCase(), regex: null, helperText: 'Invalid regex, using literal search.', helperTone: 'warning' };
+			return {
+				mode: 'literal',
+				literal: trimmed.toLowerCase(),
+				fuzzy: buildFuzzyTextMatcher(trimmed),
+				regex: null,
+				helperText: 'Invalid regex, using literal search.',
+				helperTone: 'warning'
+			};
 		}
 	}
 
@@ -181,13 +218,42 @@
 		if (matcher.mode === 'none') return true;
 		const regex = matcher.mode === 'regex' ? matcher.regex : null;
 		const literal = matcher.mode === 'literal' ? matcher.literal : null;
+		const fuzzy = matcher.mode === 'literal' ? matcher.fuzzy : null;
 
 		function check(post: ThreadPost): boolean {
-			if (regex) { regex.lastIndex = 0; if (regex.test(post.text)) return true; }
-			else if (literal && post.text.toLowerCase().includes(literal)) return true;
+			if (regex) {
+				regex.lastIndex = 0;
+				if (regex.test(post.text)) return true;
+			} else if (
+				literal &&
+				(post.text.toLowerCase().includes(literal) || (fuzzy && fuzzyTextMatches(post.text, fuzzy)))
+			) {
+				return true;
+			}
 			return post.children.some(check);
 		}
 		return check(thread.rootPost);
+	}
+
+	function countThreadCharacters(thread: SelfReplyThread): number {
+		const seen = new Set<string>();
+
+		function walk(post: ThreadPost): number {
+			if (seen.has(post.uri)) return 0;
+			seen.add(post.uri);
+			return post.text.length + post.children.reduce((total, child) => total + walk(child), 0);
+		}
+
+		return walk(thread.rootPost);
+	}
+
+	function calculateVisibleCharacterTotal() {
+		visibleCharacterTotal = displayedThreads.reduce(
+			(total, thread) => total + countThreadCharacters(thread),
+			0
+		);
+		visibleCharacterThreadCount = displayedThreads.length;
+		visibleCharacterFilterSignature = displayedThreadsSignature;
 	}
 
 	const searchMatcher = $derived(buildSearchMatcher(searchQuery));
@@ -211,6 +277,10 @@
 		sortedThreads.filter(
 			(t) => t.depth >= threshold && isInDateRange(t.rootPost.createdAt) && matchesSearch(t, searchMatcher)
 		)
+	);
+	const displayedThreadsSignature = $derived(displayedThreads.map((thread) => thread.rootUri).join('\n'));
+	const visibleCharacterTotalIsCurrent = $derived(
+		visibleCharacterTotal !== null && visibleCharacterFilterSignature === displayedThreadsSignature
 	);
 
 	const maxDepth = $derived(
@@ -309,6 +379,8 @@
 		highlightedThread = null;
 		showExpanded = false;
 		expandedThread = null;
+		showBlogReader = false;
+		blogThread = null;
 		expandedLoading = false;
 		expandedViewMode = 'chat';
 		hasSearched = true;
@@ -459,6 +531,8 @@
 		if (options.preserveScroll) savedScrollY = window.scrollY;
 		expandedLoading = true;
 		showExpanded = true;
+		showBlogReader = false;
+		blogThread = null;
 
 		try {
 			expandedThread = await getFullThread(uri);
@@ -483,6 +557,35 @@
 
 	async function handleExpand(rootUri: string) {
 		await openExpandedThread(rootUri, { preserveScroll: true });
+	}
+
+	function openBlogThread(rootUri: string) {
+		const thread = findThreadForUri(rootUri);
+		if (!thread) {
+			toastError('Could not find this thread in the loaded repository data.');
+			return;
+		}
+		savedScrollY = window.scrollY;
+		blogThread = thread;
+		showBlogReader = true;
+		showExpanded = false;
+		expandedThread = null;
+		expandedViewMode = 'chat';
+		const bskyUrl = threadToBlueskyUrl(rootUri);
+		updateRouteState({
+			handle: selectedProfile?.handle || initialHandle,
+			threadUrl: bskyUrl
+		});
+		requestAnimationFrame(() => {
+			window.scrollTo({ top: 0, behavior: 'smooth' });
+		});
+	}
+
+	function handleBlogBack() {
+		showBlogReader = false;
+		blogThread = null;
+		updateRouteState({ handle: selectedProfile?.handle || initialHandle, threadUrl: null });
+		requestAnimationFrame(() => { window.scrollTo(0, savedScrollY); });
 	}
 
 	function handleBack() {
@@ -559,7 +662,15 @@
 	<title>Repo Viewer - Bluesky Thread Viewer</title>
 </svelte:head>
 
-<main style="font-family: {fontFamily}">
+<main style="font-family: {fontFamily}" class:blog-reader-main={showBlogReader}>
+	{#if showBlogReader && blogThread}
+		<section class="blog-reader-shell" aria-label="Blog reader">
+			<button class="blog-back-btn wobbly-border" onclick={handleBlogBack}>
+				&#8592; Back to threads
+			</button>
+			<BlogArticle thread={blogThread} />
+		</section>
+	{:else}
 	<header>
 		<RouteNav
 			current="viewer2"
@@ -677,6 +788,17 @@
 						<p class="results-count">
 							{displayedThreads.length} thread{displayedThreads.length !== 1 ? 's' : ''} with depth {threshold}+
 						</p>
+						<div class="character-total-row">
+							<button class="character-total-button wobbly-border" type="button" onclick={calculateVisibleCharacterTotal}>
+								Show me total characters
+							</button>
+							{#if visibleCharacterTotalIsCurrent}
+								<span class="character-total-result">
+									{visibleCharacterTotal?.toLocaleString()} characters across {visibleCharacterThreadCount.toLocaleString()}
+									shown thread{visibleCharacterThreadCount !== 1 ? 's' : ''}
+								</span>
+							{/if}
+						</div>
 					{/if}
 
 					{#if dateFrom || dateTo}
@@ -703,6 +825,7 @@
 						{collapsedByRootUri}
 						oncollapsedchange={setThreadCollapsed}
 						onexpand={handleExpand}
+						onblog={openBlogThread}
 						onshare={handleShare}
 						onopenbluesky={handleOpenOnBluesky}
 						scrollToRootUri={pendingScrollToRootUri}
@@ -730,6 +853,7 @@
 			</section>
 		{/if}
 	{/if}
+	{/if}
 </main>
 
 <style>
@@ -737,6 +861,35 @@
 		max-width: 800px;
 		margin: 0 auto;
 		padding: 32px 20px;
+	}
+
+	main.blog-reader-main {
+		max-width: none;
+		padding: 24px 20px 80px;
+	}
+
+	.blog-reader-shell {
+		width: min(100%, 980px);
+		min-height: calc(100vh - 104px);
+		margin: 0 auto;
+	}
+
+	.blog-back-btn {
+		position: sticky;
+		top: 16px;
+		z-index: 10;
+		margin-bottom: 28px;
+		padding: 6px 14px;
+		background: color-mix(in srgb, var(--card-bg) 86%, transparent);
+		color: var(--muted);
+		border-color: var(--control-border);
+		backdrop-filter: blur(8px);
+		font-size: 0.86rem;
+	}
+
+	.blog-back-btn:hover {
+		color: var(--accent);
+		border-color: var(--accent);
 	}
 
 	header {
@@ -959,6 +1112,34 @@
 
 	.results-count {
 		margin-top: 8px;
+		color: var(--muted);
+		font-size: 0.95rem;
+	}
+
+	.character-total-row {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-wrap: wrap;
+		gap: 10px;
+		margin-top: 10px;
+	}
+
+	.character-total-button {
+		padding: 6px 16px;
+		background: var(--card-bg);
+		color: var(--text-ink);
+		border-color: var(--muted);
+		cursor: pointer;
+		font-family: inherit;
+		font-size: 0.9rem;
+	}
+
+	.character-total-button:hover {
+		opacity: 0.75;
+	}
+
+	.character-total-result {
 		color: var(--muted);
 		font-size: 0.95rem;
 	}

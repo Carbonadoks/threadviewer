@@ -102,6 +102,10 @@ test('buildViewerHref preserves canonical url state across viewer pages', () => 
 		'/threadviewer?url=https%3A%2F%2Fbsky.app%2Fprofile%2Fexample.bsky.social%2Fpost%2F3lxyz'
 	);
 	assert.equal(
+		buildViewerHref('viewer2', { url: threadUrl }),
+		'/viewer2?handle=example.bsky.social'
+	);
+	assert.equal(
 		buildViewerHref('dialogue', {
 			url: threadUrl,
 			handleA: '@alice.test',
@@ -111,6 +115,7 @@ test('buildViewerHref preserves canonical url state across viewer pages', () => 
 	);
 	assert.equal(buildViewerHref('chat', { url: threadUrl }), '/chat?url=https%3A%2F%2Fbsky.app%2Fprofile%2Fexample.bsky.social%2Fpost%2F3lxyz');
 	assert.equal(buildViewerHref('board', { url: threadUrl }), '/board?url=https%3A%2F%2Fbsky.app%2Fprofile%2Fexample.bsky.social%2Fpost%2F3lxyz');
+	assert.equal(buildViewerHref('blog', { url: threadUrl }), '/blog?url=https%3A%2F%2Fbsky.app%2Fprofile%2Fexample.bsky.social%2Fpost%2F3lxyz');
 	assert.equal(
 		buildViewerHref('parallelboard', { url: threadUrl }),
 		'/parallelboard?url=https%3A%2F%2Fbsky.app%2Fprofile%2Fexample.bsky.social%2Fpost%2F3lxyz'
@@ -124,10 +129,15 @@ test('buildViewerHref falls back to handle-only home links when no thread url ex
 		'/threadviewer?handle=example.bsky.social'
 	);
 	assert.equal(
+		buildViewerHref('viewer2', { handle: '@example.bsky.social' }),
+		'/viewer2?handle=example.bsky.social'
+	);
+	assert.equal(
 		buildViewerHref('dialogue', { handleA: '@alice.test', handleB: '@bob.test' }),
 		'/dialogue?handleA=alice.test&handleB=bob.test'
 	);
 	assert.equal(buildViewerHref('chat', { handle: '@example.bsky.social' }), '/chat');
+	assert.equal(buildViewerHref('blog', { handle: '@example.bsky.social' }), '/blog');
 	assert.equal(buildViewerHref('parallelboard', { handle: '@example.bsky.social' }), '/parallelboard');
 	assert.equal(buildViewerHref('judge', { handle: '@example.bsky.social' }), '/judge');
 });

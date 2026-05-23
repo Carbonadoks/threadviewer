@@ -8,11 +8,16 @@
 	import SearchBar from '$lib/components/SearchBar.svelte';
 	import { getProfile, type ProfileInfo } from '$lib/api/bluesky';
 	import type { AuthorInfo, DiscoverProgress } from '$lib/types';
-	import { loadRepoFeedItems, type RepoDownloadProgress } from '$lib/utils/repoHydration';
+	import {
+		loadRepoFeedItems,
+		parseRepoFeedItemsFromCar,
+		type RepoDownloadProgress
+	} from '$lib/utils/repoHydration';
 	import {
 		DEFAULT_THREAD_JUDGE_MODEL,
 		threadJudgeModelLabel
 	} from '$lib/utils/judgeModels';
+	import { buildBskyPostUrl } from '$lib/utils/viewerLinks';
 
 	type LoadState = 'idle' | 'generating' | 'error';
 	type DuelSide = 'hero' | 'enemy';
@@ -251,6 +256,15 @@
 		const profileInfo = sideProfile(side);
 		const source = profileInfo?.displayName || profileInfo?.handle || (side === 'hero' ? 'A' : 'E');
 		return source.trim().charAt(0).toUpperCase() || (side === 'hero' ? 'A' : 'E');
+	}
+
+	function postBiskUrl(post: BattlePost): string | null {
+		return buildBskyPostUrl(post.uri, post.authorHandle);
+	}
+
+	function duelEventBiskUrl(event: DuelEvent): string | null {
+		const post = findRequestedPost(event.speaker, event.postId);
+		return post ? postBiskUrl(post) : null;
 	}
 
 	function messageContentText(message: ChatMessage): string {
@@ -510,6 +524,62 @@
 			});
 	}
 
+	async function loadPostsForProfileFromCar(
+		currentProfile: ProfileInfo,
+		carBytes: Uint8Array,
+		controller: AbortController,
+		setLoadProgress: (nextProgress: DiscoverProgress) => void
+	): Promise<BattlePost[]> {
+		const author: AuthorInfo = {
+			did: currentProfile.did,
+			handle: currentProfile.handle,
+			displayName: currentProfile.displayName,
+			avatar: currentProfile.avatar
+		};
+		setLoadProgress({
+			phase: `Parsing saved CAR for @${currentProfile.handle}...`,
+			current: 0,
+			total: 0,
+			detail: formatBytes(carBytes.byteLength)
+		});
+		const repo = await parseRepoFeedItemsFromCar(currentProfile.did, author, carBytes, {
+			signal: controller.signal,
+			downloadedBytes: carBytes.byteLength,
+			totalBytes: carBytes.byteLength,
+			source: 'pds',
+			onParseProgress: (count) => {
+				setLoadProgress({
+					phase: `Parsing saved CAR for @${currentProfile.handle}...`,
+					current: count,
+					total: 0,
+					detail: `${count.toLocaleString()} posts extracted from ${formatBytes(carBytes.byteLength)}`
+				});
+			}
+		});
+
+		if (controller.signal.aborted) return [];
+
+		return repo.parsedPosts
+			.map((post): BattlePost | null => {
+				const text = typeof post.record?.text === 'string' ? post.record.text.trim() : '';
+				if (!text) return null;
+				const uri = `at://${currentProfile.did}/app.bsky.feed.post/${post.rkey}`;
+				return {
+					id: uri,
+					uri,
+					text,
+					createdAt: typeof post.record?.createdAt === 'string' ? post.record.createdAt : undefined,
+					authorHandle: currentProfile.handle
+				};
+			})
+			.filter((post): post is BattlePost => post !== null)
+			.sort((a, b) => {
+				const aTime = a.createdAt ? Date.parse(a.createdAt) : 0;
+				const bTime = b.createdAt ? Date.parse(b.createdAt) : 0;
+				return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+			});
+	}
+
 	async function loadRepo() {
 		if (!profile || repoLoading) return;
 
@@ -580,6 +650,77 @@
 		} catch (value) {
 			if ((value as any)?.name !== 'AbortError') {
 				enemyRepoError = describeError(value) || 'Could not load this enemy repo.';
+			}
+		} finally {
+			if (enemyAbortController === controller) {
+				enemyAbortController = null;
+				enemyRepoLoading = false;
+			}
+		}
+	}
+
+	async function loadSavedRepoCar(_entry: unknown, carBytes: Uint8Array) {
+		if (!profile || repoLoading) return;
+		abortController?.abort();
+		const controller = new AbortController();
+		abortController = controller;
+		repoLoading = true;
+		repoError = null;
+		resetDraftState();
+		const currentProfile = profile;
+		try {
+			const nextPosts = await loadPostsForProfileFromCar(currentProfile, carBytes, controller, (nextProgress) => {
+				progress = nextProgress;
+			});
+			if (controller.signal.aborted) return;
+			allPosts = nextPosts;
+			progress = {
+				phase: 'Loaded saved CAR',
+				current: nextPosts.length,
+				total: nextPosts.length,
+				detail: `${nextPosts.filter((post) => post.text.length >= minChars).length.toLocaleString()} posts pass the current filter`
+			};
+		} catch (value) {
+			if ((value as any)?.name !== 'AbortError') {
+				repoError = describeError(value) || 'Could not load this saved CAR.';
+			}
+		} finally {
+			if (abortController === controller) {
+				abortController = null;
+				repoLoading = false;
+			}
+		}
+	}
+
+	async function loadSavedEnemyRepoCar(_entry: unknown, carBytes: Uint8Array) {
+		if (!enemyProfile || enemyRepoLoading) return;
+		enemyAbortController?.abort();
+		const controller = new AbortController();
+		enemyAbortController = controller;
+		enemyRepoLoading = true;
+		enemyRepoError = null;
+		resetEnemyDraftState();
+		const currentProfile = enemyProfile;
+		try {
+			const nextPosts = await loadPostsForProfileFromCar(currentProfile, carBytes, controller, (nextProgress) => {
+				enemyProgress = nextProgress;
+			});
+			if (controller.signal.aborted) return;
+			enemyAllPosts = nextPosts;
+			enemyProgress = {
+				phase: 'Loaded saved CAR',
+				current: nextPosts.length,
+				total: nextPosts.length,
+				detail: `${nextPosts.filter((post) => post.text.length >= minChars).length.toLocaleString()} enemy posts pass the current filter`
+			};
+			enemyDraftPosts = randomPostsFromPool(
+				nextPosts.filter((post) => post.text.length >= minChars),
+				ENEMY_SELECTION_COUNT
+			);
+			resetDuelState();
+		} catch (value) {
+			if ((value as any)?.name !== 'AbortError') {
+				enemyRepoError = describeError(value) || 'Could not load this saved enemy CAR.';
 			}
 		} finally {
 			if (enemyAbortController === controller) {
@@ -1259,7 +1400,6 @@ ${buildDuelRoster('E', enemyDraftPosts)}`;
 		<button type="button" class="primary-button wobbly-border" disabled={!canLoadRepo} onclick={loadRepo}>
 			Load CAR
 		</button>
-
 		<button type="button" class="primary-button wobbly-border" disabled={!canDraft} onclick={draftPostsFromPool}>
 			Draft
 		</button>
@@ -1388,6 +1528,9 @@ ${buildDuelRoster('E', enemyDraftPosts)}`;
 							<header>
 								<b>E{index + 1}</b>
 								<span>{post.text.length.toLocaleString()} chars</span>
+								{#if postBiskUrl(post)}
+									<a class="bisk-link" href={postBiskUrl(post)} target="_blank" rel="noreferrer">Open Bisk</a>
+								{/if}
 							</header>
 							<p>{post.text}</p>
 						</article>
@@ -1529,7 +1672,12 @@ ${buildDuelRoster('E', enemyDraftPosts)}`;
 								<span>-{event.damage} HP to {sideLabel(event.target)} · {event.aspect}</span>
 							</header>
 							<p>{event.text}</p>
-							<footer>{event.reason}</footer>
+							<footer>
+								<span>{event.reason}</span>
+								{#if duelEventBiskUrl(event)}
+									<a class="bisk-link" href={duelEventBiskUrl(event)} target="_blank" rel="noreferrer">Open Bisk</a>
+								{/if}
+							</footer>
 						</div>
 					</article>
 				{/each}
@@ -1885,6 +2033,8 @@ ${buildDuelRoster('E', enemyDraftPosts)}`;
 
 	.mini-post-card header {
 		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
 		justify-content: space-between;
 		gap: 8px;
 		font-family: var(--font-matrix-ui);
@@ -1898,6 +2048,27 @@ ${buildDuelRoster('E', enemyDraftPosts)}`;
 	.mini-post-card p {
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
+	}
+
+	.bisk-link {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-height: 28px;
+		padding: 4px 9px;
+		border: 1px solid var(--control-border);
+		border-radius: 999px;
+		background: var(--control-bg);
+		color: var(--text-ink);
+		font-family: var(--font-matrix-ui);
+		font-size: 0.72rem;
+		font-weight: 900;
+		text-decoration: none;
+		text-transform: uppercase;
+	}
+
+	.bisk-link:hover {
+		background: var(--control-bg-hover);
 	}
 
 	.panel-heading {
@@ -2009,8 +2180,19 @@ ${buildDuelRoster('E', enemyDraftPosts)}`;
 	}
 
 	.fighter-top span,
-	.duel-summary,
+	.duel-summary {
+		color: var(--muted);
+	}
+
 	.speech-bubble footer {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
+	.speech-bubble footer span {
 		color: var(--muted);
 	}
 

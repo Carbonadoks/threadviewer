@@ -50,6 +50,7 @@
 	};
 
 	type TreeLayoutMode = 'vertical' | 'horizontal' | 'radial';
+	type TreeViewMode = 'chains' | 'nodes';
 
 	type TreeRenderModel = {
 		nodes: TreeNodeView[];
@@ -94,6 +95,27 @@
 		quoteConnectors: QuoteLaneConnectorView[];
 		width: number;
 		height: number;
+	};
+
+	type SelfReplyChainNode = {
+		key: string;
+		startUri: string;
+		targetUri: string;
+		postUris: string[];
+		authorName: string;
+		authorHandle: string;
+		count: number;
+		depth: number;
+		createdAt: string;
+		isSelected: boolean;
+		isFocused: boolean;
+		isInSelectedPath: boolean;
+		children: SelfReplyChainNode[];
+	};
+
+	type ChainLaneModel = {
+		lane: ViewerLane;
+		rows: SelfReplyChainNode[];
 	};
 
 	type ChatBranchOption = {
@@ -172,6 +194,7 @@
 	let error: string | null = $state(null);
 	let thread = $state<(SelfReplyThread & { isTruncated?: boolean }) | null>(null);
 	let selectedUri = $state<string | null>(null);
+	let treeViewMode = $state<TreeViewMode>('nodes');
 	let treeLayout = $state<TreeLayoutMode>('vertical');
 	let radialMinRadius = $state(360);
 	let radialMaxRadius = $state(2800);
@@ -216,6 +239,7 @@
 	);
 	let selectedPathSet = $derived(new Set(selectedPath.map((post) => post.uri)));
 	let treeModel = $derived(allLanes.length > 0 ? buildMultiLaneTreeModel(allLanes) : null);
+	let chainLaneModels = $derived(allLanes.map(buildChainLaneModel));
 	let pathThread = $derived(
 		activeLane && selectedPath.length > 0 ? buildPathThread(activeLane.thread, selectedPath) : null
 	);
@@ -749,6 +773,135 @@
 			quoteConnectors,
 			width: Math.max(TREE_PADDING * 2, nextX - TREE_LANE_GAP + TREE_PADDING),
 			height: maxHeight + TREE_PADDING
+		};
+	}
+
+	function buildSelfReplyLengthMap(root: ThreadPost): Map<string, number> {
+		const lengthByUri = new Map<string, number>();
+
+		function measure(post: ThreadPost): number {
+			let bestSelfChildLength = 0;
+			for (const child of post.children) {
+				const childLength = measure(child);
+				if (child.author.did === post.author.did) {
+					bestSelfChildLength = Math.max(bestSelfChildLength, childLength);
+				}
+			}
+
+			const length = 1 + bestSelfChildLength;
+			lengthByUri.set(post.uri, length);
+			return length;
+		}
+
+		measure(root);
+		return lengthByUri;
+	}
+
+	function chooseSelfReplyContinuation(
+		post: ThreadPost,
+		selfReplyLengthByUri: Map<string, number>
+	): ThreadPost | null {
+		const candidates = post.children.filter((child) => child.author.did === post.author.did);
+		if (candidates.length === 0) return null;
+
+		return [...candidates].sort((a, b) => {
+			const lengthDelta = (selfReplyLengthByUri.get(b.uri) ?? 1) - (selfReplyLengthByUri.get(a.uri) ?? 1);
+			if (lengthDelta !== 0) return lengthDelta;
+			return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+		})[0] ?? null;
+	}
+
+	function buildSelfReplyChainNode(
+		start: ThreadPost,
+		depth: number,
+		selectedPathUris: Set<string>,
+		selectedUri: string | null,
+		focusedUri: string | null,
+		selfReplyLengthByUri: Map<string, number>
+	): SelfReplyChainNode {
+		const posts: ThreadPost[] = [];
+		const continuationByParentUri = new Map<string, string>();
+		let cursor: ThreadPost | null = start;
+
+		while (cursor) {
+			posts.push(cursor);
+			const continuation = chooseSelfReplyContinuation(cursor, selfReplyLengthByUri);
+			if (!continuation) break;
+			continuationByParentUri.set(cursor.uri, continuation.uri);
+			cursor = continuation;
+		}
+
+		const childStarts: Array<{ post: ThreadPost; parentIndex: number }> = [];
+		for (let parentIndex = 0; parentIndex < posts.length; parentIndex += 1) {
+			const post = posts[parentIndex];
+			const continuationUri = continuationByParentUri.get(post.uri);
+			for (const child of post.children) {
+				if (child.uri === continuationUri) continue;
+				childStarts.push({ post: child, parentIndex });
+			}
+		}
+
+		childStarts.sort((a, b) => {
+			if (a.parentIndex !== b.parentIndex) return a.parentIndex - b.parentIndex;
+			const lengthDelta =
+				(selfReplyLengthByUri.get(b.post.uri) ?? 1) - (selfReplyLengthByUri.get(a.post.uri) ?? 1);
+			if (lengthDelta !== 0) return lengthDelta;
+			return new Date(a.post.createdAt).getTime() - new Date(b.post.createdAt).getTime();
+		});
+
+		const postUris = posts.map((post) => post.uri);
+		const targetUri = postUris[postUris.length - 1] ?? start.uri;
+		return {
+			key: `${start.uri}->${targetUri}`,
+			startUri: start.uri,
+			targetUri,
+			postUris,
+			authorName: authorLabel(start),
+			authorHandle: start.author.handle,
+			count: posts.length,
+			depth,
+			createdAt: start.createdAt,
+			isSelected: selectedUri ? postUris.includes(selectedUri) : false,
+			isFocused: focusedUri ? postUris.includes(focusedUri) : false,
+			isInSelectedPath: postUris.some((uri) => selectedPathUris.has(uri)),
+			children: childStarts.map((child) =>
+				buildSelfReplyChainNode(
+					child.post,
+					depth + 1,
+					selectedPathUris,
+					selectedUri,
+					focusedUri,
+					selfReplyLengthByUri
+				)
+			)
+		};
+	}
+
+	function flattenSelfReplyChain(node: SelfReplyChainNode, rows: SelfReplyChainNode[] = []): SelfReplyChainNode[] {
+		rows.push(node);
+		for (const child of node.children) {
+			flattenSelfReplyChain(child, rows);
+		}
+		return rows;
+	}
+
+	function buildChainLaneModel(lane: ViewerLane): ChainLaneModel {
+		const selectedLanePath = lane.selectedUri ? findPathToUri(lane.thread.rootPost, lane.selectedUri) : [];
+		const fallbackPath = selectedLanePath.length > 0 ? selectedLanePath : [lane.thread.rootPost];
+		const selectedPathUris = new Set(fallbackPath.map((post) => post.uri));
+		const selfReplyLengthByUri = buildSelfReplyLengthMap(lane.thread.rootPost);
+		const root = buildSelfReplyChainNode(
+			lane.thread.rootPost,
+			0,
+			selectedPathUris,
+			lane.selectedUri,
+			lane.focusedUri,
+			selfReplyLengthByUri
+		);
+
+		return {
+			lane,
+			rows: flattenSelfReplyChain(root)
 		};
 	}
 
@@ -1413,7 +1566,27 @@
 	}
 
 	function centerTreeNode(uri: string, laneId = activeLaneId) {
-		if (!treeCanvasElement || !treeModel) return;
+		if (!treeCanvasElement) return;
+
+		if (treeViewMode === 'chains') {
+			const laneModel = chainLaneModels.find((candidate) => candidate.lane.id === laneId);
+			const row = laneModel?.rows.find((candidate) => candidate.postUris.includes(uri));
+			if (row) {
+				const rowElement = Array.from(
+					treeCanvasElement.querySelectorAll<HTMLElement>('[data-chain-row-key]')
+				).find((candidate) => candidate.dataset.chainRowKey === row.key);
+				if (rowElement) {
+					rowElement.scrollIntoView({
+						behavior: 'smooth',
+						block: 'center',
+						inline: 'nearest'
+					});
+					return;
+				}
+			}
+		}
+
+		if (!treeModel) return;
 		const laneModel = treeModel.lanes.find((candidate) => candidate.lane.id === laneId);
 		const node = laneModel?.model.nodes.find((candidate) => candidate.post.uri === uri);
 		if (!node) return;
@@ -1891,54 +2064,76 @@
 						<div class="layout-toggle" aria-label="Tree layout mode">
 							<button
 								type="button"
-								class:active={treeLayout === 'vertical'}
-								aria-pressed={treeLayout === 'vertical'}
-								onclick={() => (treeLayout = 'vertical')}
+								class:active={treeViewMode === 'nodes' && treeLayout === 'vertical'}
+								aria-pressed={treeViewMode === 'nodes' && treeLayout === 'vertical'}
+								onclick={() => {
+									treeViewMode = 'nodes';
+									treeLayout = 'vertical';
+								}}
 							>
 								Vertical
 							</button>
 							<button
 								type="button"
-								class:active={treeLayout === 'horizontal'}
-								aria-pressed={treeLayout === 'horizontal'}
-								onclick={() => (treeLayout = 'horizontal')}
+								class:active={treeViewMode === 'nodes' && treeLayout === 'horizontal'}
+								aria-pressed={treeViewMode === 'nodes' && treeLayout === 'horizontal'}
+								onclick={() => {
+									treeViewMode = 'nodes';
+									treeLayout = 'horizontal';
+								}}
 							>
 								Horizontal
 							</button>
 							<button
 								type="button"
-								class:active={treeLayout === 'radial'}
-								aria-pressed={treeLayout === 'radial'}
-								onclick={() => (treeLayout = 'radial')}
+								class:active={treeViewMode === 'nodes' && treeLayout === 'radial'}
+								aria-pressed={treeViewMode === 'nodes' && treeLayout === 'radial'}
+								onclick={() => {
+									treeViewMode = 'nodes';
+									treeLayout = 'radial';
+								}}
 							>
 								Radial
 							</button>
+							<button
+								type="button"
+								class:active={treeViewMode === 'chains'}
+								aria-pressed={treeViewMode === 'chains'}
+								onclick={() => {
+									treeViewMode = 'chains';
+									radialControlsOpen = false;
+								}}
+							>
+								Chains
+							</button>
 						</div>
 
-						<div class="zoom-controls" aria-label="Tree zoom controls">
-							<button type="button" class="zoom-btn" onclick={() => setTreeZoom(treeZoom - 0.1)} disabled={treeZoom <= 0.35}>
-								-
-							</button>
-							<input
-								type="range"
-								min="35"
-								max="150"
-								step="5"
-								value={treeZoomPercent}
-								aria-label="Tree zoom"
-								oninput={(event) => setTreeZoom(Number(event.currentTarget.value) / 100)}
-							/>
-							<button type="button" class="zoom-btn" onclick={() => setTreeZoom(treeZoom + 0.1)} disabled={treeZoom >= 1.5}>
-								+
-							</button>
-							<button type="button" class="zoom-reset" onclick={() => setTreeZoom(1)}>
-								{treeZoomPercent}%
-							</button>
-						</div>
+						{#if treeViewMode === 'nodes'}
+							<div class="zoom-controls" aria-label="Tree zoom controls">
+								<button type="button" class="zoom-btn" onclick={() => setTreeZoom(treeZoom - 0.1)} disabled={treeZoom <= 0.35}>
+									-
+								</button>
+								<input
+									type="range"
+									min="35"
+									max="150"
+									step="5"
+									value={treeZoomPercent}
+									aria-label="Tree zoom"
+									oninput={(event) => setTreeZoom(Number(event.currentTarget.value) / 100)}
+								/>
+								<button type="button" class="zoom-btn" onclick={() => setTreeZoom(treeZoom + 0.1)} disabled={treeZoom >= 1.5}>
+									+
+								</button>
+								<button type="button" class="zoom-reset" onclick={() => setTreeZoom(1)}>
+									{treeZoomPercent}%
+								</button>
+							</div>
+						{/if}
 					{/if}
 
 					<div class="tree-canvas-wrap">
-						{#if treeLayout === 'radial' && !embeddedUiCollapsed}
+						{#if treeViewMode === 'nodes' && treeLayout === 'radial' && !embeddedUiCollapsed}
 							<div class="radial-control-dock" class:open={radialControlsOpen}>
 								<button
 									type="button"
@@ -2037,11 +2232,80 @@
 						<div
 							bind:this={treeCanvasElement}
 							class="tree-canvas"
-							class:horizontal={treeLayout === 'horizontal'}
-							class:vertical={treeLayout === 'vertical'}
-							class:radial={treeLayout === 'radial'}
+							class:horizontal={treeViewMode === 'nodes' && treeLayout === 'horizontal'}
+							class:vertical={treeViewMode === 'nodes' && treeLayout === 'vertical'}
+							class:radial={treeViewMode === 'nodes' && treeLayout === 'radial'}
+							class:chains={treeViewMode === 'chains'}
 						>
-							{#if treeModel}
+							{#if treeViewMode === 'chains'}
+								<div class="chain-outline-stage">
+									{#each chainLaneModels as laneModel (laneModel.lane.id)}
+										<section
+											class="chain-lane-outline"
+											class:active-lane={laneModel.lane.id === activeLaneId}
+											aria-label={`${laneModel.lane.label} self-reply chains`}
+										>
+											{#if !embeddedUiCollapsed}
+												<div class="chain-lane-header">
+													<button
+														type="button"
+														class="tree-lane-title"
+														onclick={() => setActiveLane(laneModel.lane.id)}
+													>
+														<span>{laneModel.lane.label}</span>
+														<strong>{laneModel.lane.title}</strong>
+													</button>
+													<button
+														type="button"
+														class="tree-lane-tree-toggle"
+														title={allReplyLaneIds.has(laneModel.lane.id) ? 'Return this lane to the selected path' : 'Show all replies in this lane'}
+														onclick={(event) => {
+															event.stopPropagation();
+															setAllRepliesForLane(laneModel.lane.id, !allReplyLaneIds.has(laneModel.lane.id));
+														}}
+													>
+														{allReplyLaneIds.has(laneModel.lane.id) ? 'Path' : 'All replies'}
+													</button>
+													{#if laneModel.lane.id !== MAIN_LANE_ID}
+														<button
+															type="button"
+															class="tree-lane-close"
+															title="Remove quoted lane"
+															aria-label={`Remove ${laneModel.lane.label} quoted lane`}
+															onclick={(event) => {
+																event.stopPropagation();
+																removeQuoteLane(laneModel.lane.id);
+															}}
+														>
+															x
+														</button>
+													{/if}
+												</div>
+											{/if}
+											<div class="chain-outline-list">
+												{#each laneModel.rows as row (row.key)}
+													<button
+														type="button"
+														class="chain-row"
+														class:active={row.isSelected}
+														class:focused={row.isFocused}
+														class:on-path={row.isInSelectedPath}
+														style={`--chain-depth: ${row.depth};`}
+														data-chain-row-key={row.key}
+														aria-label={`${row.count} post${row.count === 1 ? '' : 's'} by ${row.authorName}`}
+														aria-current={row.isSelected ? 'true' : undefined}
+														title={`${row.count} post${row.count === 1 ? '' : 's'} by @${row.authorHandle}`}
+														onclick={() => selectPost(row.targetUri, laneModel.lane.id)}
+													>
+														<span class="chain-count">{row.count}</span>
+														<span class="chain-author">{row.authorName}</span>
+													</button>
+												{/each}
+											</div>
+										</section>
+									{/each}
+								</div>
+							{:else if treeModel}
 								<div
 									class="tree-stage"
 									style={`width: ${treeModel.width * treeZoom}px; height: ${treeModel.height * treeZoom}px;`}
@@ -2857,7 +3121,7 @@
 
 	.layout-toggle {
 		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
+		grid-template-columns: repeat(4, minmax(0, 1fr));
 		gap: 4px;
 		margin-bottom: 8px;
 		padding: 2px;
@@ -3021,6 +3285,96 @@
 
 	.tree-canvas.radial {
 		background: var(--tv-surface-muted);
+	}
+
+	.tree-canvas.chains {
+		padding: 10px;
+		box-sizing: border-box;
+		background: var(--card-bg);
+	}
+
+	.chain-outline-stage {
+		min-width: max-content;
+		display: flex;
+		align-items: flex-start;
+		gap: 28px;
+	}
+
+	.chain-lane-outline {
+		min-width: 220px;
+		padding: 2px 0 14px;
+		border-radius: 8px;
+	}
+
+	.chain-lane-outline.active-lane {
+		background: color-mix(in srgb, var(--accent) 8%, transparent);
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
+	}
+
+	.chain-lane-header {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		margin-bottom: 8px;
+		padding: 0 2px;
+	}
+
+	.chain-outline-list {
+		display: grid;
+		gap: 0;
+		padding: 0 2px;
+	}
+
+	.chain-row {
+		--chain-depth: 0;
+		width: max-content;
+		min-width: 132px;
+		display: flex;
+		align-items: baseline;
+		gap: 7px;
+		margin-left: calc(var(--chain-depth) * 22px);
+		padding: 1px 8px 1px 0;
+		border: 0;
+		border-radius: 5px;
+		background: transparent;
+		color: var(--muted);
+		font-size: 1.05rem;
+		font-weight: 650;
+		line-height: 1.3;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.chain-row:hover,
+	.chain-row:focus-visible {
+		background: var(--tv-surface-hover);
+		color: var(--text-ink);
+		outline: none;
+	}
+
+	.chain-row.on-path {
+		color: color-mix(in srgb, var(--text-ink) 72%, var(--muted));
+	}
+
+	.chain-row.focused {
+		color: var(--text-ink);
+		box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 58%, var(--tv-border));
+	}
+
+	.chain-row.active {
+		color: var(--text-ink);
+		font-weight: 900;
+	}
+
+	.chain-count {
+		min-width: 2.2ch;
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+		font-weight: 850;
+	}
+
+	.chain-author {
+		white-space: nowrap;
 	}
 
 	.tree-stage {

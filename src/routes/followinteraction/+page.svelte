@@ -554,7 +554,10 @@
 		}
 	}
 
-	async function loadInteractionSummary(nextProfile: ProfileInfo): Promise<void> {
+	async function loadInteractionSummary(
+		nextProfile: ProfileInfo,
+		options: { carBytes?: Uint8Array } = {}
+	): Promise<void> {
 		const token = ++loadToken;
 		loadController?.abort();
 		loadController = new AbortController();
@@ -576,38 +579,47 @@
 		updateHandleQuery(nextProfile.handle);
 
 		try {
-			progress = { phase: 'Downloading repository…', current: 0, total: 0 };
-			const download = await downloadRepoCar(nextProfile.did, {
-				signal,
-				onDownloadProgress: (downloadProgress) => {
-					if (token !== loadToken) return;
-					const detailParts = [
-						`${formatBytes(downloadProgress.receivedBytes)}${downloadProgress.totalBytes > 0 ? ` / ${formatBytes(downloadProgress.totalBytes)}` : ''}`
-					];
-					if (downloadProgress.bytesPerSecond > 0) {
-						detailParts.push(formatSpeed(downloadProgress.bytesPerSecond));
+			const savedCarBytes = options.carBytes;
+			progress = { phase: savedCarBytes ? 'Loading saved CAR…' : 'Downloading repository…', current: 0, total: 0 };
+			const download = savedCarBytes
+				? {
+						carBytes: savedCarBytes,
+						source: 'pds' as const,
+						elapsedMs: 0,
+						downloadedBytes: savedCarBytes.byteLength,
+						totalBytes: savedCarBytes.byteLength
 					}
-					if (downloadProgress.elapsedMs > 0) {
-						detailParts.push(`${formatDuration(downloadProgress.elapsedMs)} elapsed`);
-					}
-					if (downloadProgress.totalBytes > 0) {
-						progress = {
-							phase: 'Downloading repository…',
-							current: Math.round((downloadProgress.receivedBytes / downloadProgress.totalBytes) * 100),
-							total: 100,
-							detail: detailParts.join(' · ')
-						};
-						return;
-					}
+				: await downloadRepoCar(nextProfile.did, {
+						signal,
+						onDownloadProgress: (downloadProgress) => {
+							if (token !== loadToken) return;
+							const detailParts = [
+								`${formatBytes(downloadProgress.receivedBytes)}${downloadProgress.totalBytes > 0 ? ` / ${formatBytes(downloadProgress.totalBytes)}` : ''}`
+							];
+							if (downloadProgress.bytesPerSecond > 0) {
+								detailParts.push(formatSpeed(downloadProgress.bytesPerSecond));
+							}
+							if (downloadProgress.elapsedMs > 0) {
+								detailParts.push(`${formatDuration(downloadProgress.elapsedMs)} elapsed`);
+							}
+							if (downloadProgress.totalBytes > 0) {
+								progress = {
+									phase: 'Downloading repository…',
+									current: Math.round((downloadProgress.receivedBytes / downloadProgress.totalBytes) * 100),
+									total: 100,
+									detail: detailParts.join(' · ')
+								};
+								return;
+							}
 
-					progress = {
-						phase: 'Downloading repository…',
-						current: 0,
-						total: 0,
-						detail: detailParts.join(' · ')
-					};
-				}
-			});
+							progress = {
+								phase: 'Downloading repository…',
+								current: 0,
+								total: 0,
+								detail: detailParts.join(' · ')
+							};
+						}
+					});
 			if (token !== loadToken) return;
 			throwIfAborted(signal);
 
@@ -706,6 +718,11 @@
 
 	function handleProfileSelected(nextProfile: ProfileInfo): void {
 		void loadInteractionSummary(nextProfile);
+	}
+
+	async function loadSavedRepoCar(_entry: unknown, carBytes: Uint8Array): Promise<void> {
+		if (!profile) return;
+		await loadInteractionSummary(profile, { carBytes });
 	}
 
 	onMount(() => {

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
 	buildHydratableThreadFromFlatItems,
 	buildVisibleThreadFromFlatItems,
+	getReplyParentVisibilityFromFlatItems,
 	hasMissingDirectReplies
 } from './bluesky';
 
@@ -241,4 +242,35 @@ test('hasMissingDirectReplies triggers when replyCount exceeds visible direct ch
 		}),
 		false
 	);
+});
+
+test('getReplyParentVisibilityFromFlatItems identifies blocked direct parents', () => {
+	const parentUri = 'at://did:plc:blocked/app.bsky.feed.post/parent';
+	const status = getReplyParentVisibilityFromFlatItems(
+		[
+			blockedGapItem({
+				uri: parentUri,
+				depth: 0,
+				authorDid: 'did:plc:blocked'
+			})
+		],
+		parentUri
+	);
+
+	assert.equal(status.visibility, 'blocked');
+	assert.equal(status.parentAuthorDid, 'did:plc:blocked');
+	assert.equal(status.itemType, 'app.bsky.unspecced.defs#threadItemBlocked');
+});
+
+test('getReplyParentVisibilityFromFlatItems distinguishes visible parents', () => {
+	const parent = flatPostItem({
+		id: 'parent',
+		authorDid: 'did:plc:visible',
+		handle: 'visible.test',
+		depth: 0
+	});
+	const status = getReplyParentVisibilityFromFlatItems([parent], parent.uri);
+
+	assert.equal(status.visibility, 'visible');
+	assert.equal(status.parentAuthorDid, 'did:plc:visible');
 });

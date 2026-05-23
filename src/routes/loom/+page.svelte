@@ -9,7 +9,11 @@
 	import RouteNav from '$lib/components/RouteNav.svelte';
 	import { getProfile, type ProfileInfo } from '$lib/api/bluesky';
 	import type { AuthorInfo, DiscoverProgress } from '$lib/types';
-	import { loadRepoFeedItems, type RepoDownloadProgress } from '$lib/utils/repoHydration';
+	import {
+		loadRepoFeedItems,
+		parseRepoFeedItemsFromCar,
+		type RepoDownloadProgress
+	} from '$lib/utils/repoHydration';
 	import { parseCarPostsWasm } from '$lib/utils/carParserWasm';
 	import {
 		buildCorpusCompletionIndex,
@@ -529,6 +533,88 @@
 		} catch (err: any) {
 			if (err?.name !== 'AbortError') {
 				error = err?.message || 'Could not download the selected corpus.';
+			}
+		} finally {
+			if (abortController === controller) {
+				abortController = null;
+				loading = false;
+			}
+		}
+	}
+
+	async function loadSavedAuthorCar(authorProfile: ProfileInfo, _entry: unknown, carBytes: Uint8Array) {
+		if (loading) return;
+		abortController?.abort();
+		const controller = new AbortController();
+		abortController = controller;
+		loading = true;
+		error = null;
+
+		try {
+			const author: AuthorInfo = {
+				did: authorProfile.did,
+				handle: authorProfile.handle,
+				displayName: authorProfile.displayName,
+				avatar: authorProfile.avatar
+			};
+			progress = {
+				phase: `Parsing saved CAR for @${authorProfile.handle}...`,
+				current: 0,
+				total: 0,
+				detail: formatBytes(carBytes.byteLength)
+			};
+			const repo = await parseRepoFeedItemsFromCar(authorProfile.did, author, carBytes, {
+				signal: controller.signal,
+				downloadedBytes: carBytes.byteLength,
+				totalBytes: carBytes.byteLength,
+				source: 'pds',
+				onParseProgress: (count) => {
+					progress = {
+						phase: `Parsing saved CAR for @${authorProfile.handle}...`,
+						current: count,
+						total: 0,
+						detail: `${count.toLocaleString()} posts extracted from ${formatBytes(carBytes.byteLength)}`
+					};
+				}
+			});
+			if (controller.signal.aborted) return;
+
+			const nextPosts = repo.parsedPosts
+				.map((post) => {
+					const text = typeof post.record?.text === 'string' ? post.record.text.trim() : '';
+					return {
+						text,
+						uri: `at://${authorProfile.did}/app.bsky.feed.post/${post.rkey}`,
+						createdAt: typeof post.record?.createdAt === 'string' ? post.record.createdAt : undefined,
+						authorDid: authorProfile.did,
+						authorHandle: authorProfile.handle,
+						authorDisplayName: authorProfile.displayName,
+						authorAvatar: authorProfile.avatar
+					};
+				})
+				.filter((post) => post.text.length > 0);
+
+			progress = {
+				phase: 'Building saved corpus...',
+				current: nextPosts.length,
+				total: repo.totalPosts,
+				detail: `${nextPosts.length.toLocaleString()} text posts from @${authorProfile.handle}`
+			};
+			rebuildCorpusFromPosts(
+				[
+					...corpusPosts.filter((post) => post.authorDid !== authorProfile.did),
+					...nextPosts
+				],
+				{
+					totalPosts: Math.max(corpusStats.totalPosts, repo.totalPosts),
+					downloadedBytes: repo.downloadedBytes,
+					source: repo.source,
+					authorCount: corpusAuthors.length
+				}
+			);
+		} catch (err: any) {
+			if (err?.name !== 'AbortError') {
+				error = err?.message || `Could not load saved CAR for @${authorProfile.handle}.`;
 			}
 		} finally {
 			if (abortController === controller) {
@@ -1403,10 +1489,10 @@
 
 	.author-chip {
 		display: grid;
-		grid-template-columns: auto minmax(0, 1fr) auto;
+		grid-template-columns: auto minmax(0, 1fr) auto auto;
 		gap: 8px;
 		align-items: center;
-		max-width: 260px;
+		max-width: 420px;
 		padding: 6px 7px;
 		border: 1px solid rgba(61, 64, 91, 0.16);
 		border-radius: 7px;

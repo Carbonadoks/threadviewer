@@ -10,12 +10,14 @@
 		| 'semantic'
 		| 'summary'
 		| 'summary2'
+		| 'blocked'
 		| 'followinteraction'
 		| 'warg'
 		| 'dialogue'
 		| 'dialogue2'
 		| 'chat'
 		| 'board'
+		| 'blog'
 		| 'treeviewer'
 		| 'town'
 		| 'parallelboard'
@@ -26,7 +28,10 @@
 		| 'judge'
 		| 'atproideasio'
 		| 'llm'
+		| 'card'
 		| 'autobattler'
+		| 'superautobisks'
+		| 'localstorage'
 		| 'analyzer'
 		| 'cluster'
 		| 'toponomy'
@@ -51,19 +56,17 @@
 	const items: RouteNavItem[] = [
 		{ id: 'landing', href: '/', label: 'Landing', compactLabel: 'Start' },
 		{ id: 'frontpage', href: '/frontpage', label: 'Frontpage', compactLabel: 'Front' },
-		{ id: 'threadviewer', href: '/threadviewer', label: 'Thread Viewer', compactLabel: 'Viewer' },
 		{ id: 'viewer2', href: '/viewer2', label: 'Repo Viewer', compactLabel: 'Repo' },
 		{ id: 'semantic', href: '/semantic', label: 'Semantic', compactLabel: 'Semantic' },
-		{ id: 'summary', href: '/summary', label: 'Summary' },
 		{ id: 'summary2', href: '/summary2', label: 'Repo Summary', compactLabel: 'Repo Sum' },
+		{ id: 'blocked', href: '/blocked', label: 'Blocked', compactLabel: 'Blocked' },
 		{ id: 'followinteraction', href: '/followinteraction', label: 'Follow Interaction', compactLabel: 'Follow Int' },
 		{ id: 'warg', href: '/warg', label: 'Warg' },
-		{ id: 'dialogue', href: '/dialogue', label: 'Cache Dialogue' },
 		{ id: 'dialogue2', href: '/dialogue2', label: 'Dialogue', compactLabel: 'Repo Dlg' },
 		{ id: 'chat', href: '/chat', label: 'Chat' },
 		{ id: 'board', href: '/board', label: 'Board' },
+		{ id: 'blog', href: '/blog', label: 'Blog' },
 		{ id: 'treeviewer', href: '/treeviewer', label: 'Treeviewer', compactLabel: 'Tree' },
-		{ id: 'town', href: '/town', label: 'Town' },
 		{ id: 'parallelboard', href: '/parallelboard', label: 'Parallel Board', compactLabel: 'Parallel' },
 		{ id: 'loom', href: '/loom', label: 'Loom' },
 		{ id: 'bisk2bisk', href: '/bisk2bisk', label: 'Bisk2Bisk', compactLabel: 'Bisk2Bisk' },
@@ -72,7 +75,10 @@
 		{ id: 'judge', href: '/judge', label: 'Judge' },
 		{ id: 'atproideasio', href: '/atproideasio', label: 'atproideasio', compactLabel: 'Ideas' },
 		{ id: 'llm', href: '/llm', label: 'LLM' },
+		{ id: 'card', href: '/card', label: 'Cards', compactLabel: 'Cards' },
 		{ id: 'autobattler', href: '/autobattler', label: 'Autobattler', compactLabel: 'Battle' },
+		{ id: 'superautobisks', href: '/superautobisks', label: 'Super Auto Bisks', compactLabel: 'Auto Bisks' },
+		{ id: 'localstorage', href: '/localstorage', label: 'localStorage', compactLabel: 'Storage' },
 		{ id: 'analyzer', href: '/analyzer', label: 'Analyze' },
 		{ id: 'toponomy', href: '/toponomy', label: 'Toponomy', compactLabel: 'Topo' },
 		{ id: 'wordcloud', href: '/wordcloud', label: 'Word Cloud', compactLabel: 'Words' }
@@ -85,6 +91,7 @@
 			item.id === 'viewer2' ||
 			item.id === 'chat' ||
 			item.id === 'board' ||
+			item.id === 'blog' ||
 			item.id === 'treeviewer' ||
 			item.id === 'parallelboard' ||
 			item.id === 'bisk2bisk' ||
@@ -114,10 +121,12 @@
 			(item.id === 'analyzer' ||
 				item.id === 'summary' ||
 				item.id === 'summary2' ||
+				item.id === 'blocked' ||
 				item.id === 'followinteraction' ||
 				item.id === 'warg' ||
 				item.id === 'wordcloud' ||
-				item.id === 'loom') &&
+				item.id === 'loom' ||
+				item.id === 'superautobisks') &&
 			nextHandle
 		) {
 			return `${item.href}?handle=${encodeURIComponent(nextHandle)}`;
@@ -152,6 +161,7 @@
 		flex-wrap: wrap;
 		gap: 10px;
 		width: 100%;
+		padding-right: 136px;
 		margin-bottom: 14px;
 	}
 
@@ -206,6 +216,7 @@
 	@media (max-width: 640px) {
 		.route-nav {
 			gap: 8px;
+			padding-right: 64px;
 		}
 
 		.route-nav-link {

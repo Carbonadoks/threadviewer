@@ -15,11 +15,11 @@
 
 	const readerTools: Feature[] = [
 		{
-			title: 'Thread Viewer',
-			href: '/threadviewer',
+			title: 'Repo Viewer',
+			href: '/viewer2',
 			label: 'find the long ones',
-			description: 'Search an account, shake out the self-reply chains, and pick whichever trail looks suspiciously interesting.',
-			details: ['cached feed slices', 'depth filters', 'four list disguises'],
+			description: 'Download an account repo, shake out the self-reply chains, and pick whichever trail looks suspiciously interesting.',
+			details: ['full repo download', 'depth filters', 'four list disguises'],
 			color: 'var(--landing-feature-thread)',
 			tilt: '-1.4deg'
 		},
@@ -90,10 +90,10 @@
 			tilt: '1.4deg'
 		},
 		{
-			title: 'Summary',
-			href: '/summary',
+			title: 'Repo Summary',
+			href: '/summary2',
 			label: 'what keeps showing up',
-			description: 'Fold an account cache into repeated posts, mentions, liked things, reposts, and busy thread corners.',
+			description: 'Fold an account repo into repeated posts, mentions, liked things, reposts, and busy thread corners.',
 			details: ['mentions', 'repeated posts', 'thread highlights'],
 			color: 'var(--landing-feature-summary)',
 			tilt: '-0.8deg'
@@ -154,15 +154,6 @@
 			details: ['overview', 'compact points', 'inspector'],
 			color: 'var(--landing-feature-toponomy)',
 			tilt: '-1.5deg'
-		},
-		{
-			title: 'Town',
-			href: '/town',
-			label: 'walk around',
-			description: 'A spatial experiment where cached social data becomes a place to wander through.',
-			details: ['tile map', 'profile markers', 'experiments'],
-			color: 'var(--landing-feature-town)',
-			tilt: '0.6deg'
 		}
 	];
 
@@ -229,7 +220,7 @@
 					and see what shape the conversation was hiding.
 				</p>
 				<div class="hero-actions" aria-label="Primary actions">
-					<a class="sketch-button primary" href="/threadviewer">open the usual viewer</a>
+					<a class="sketch-button primary" href="/viewer2">open the repo viewer</a>
 					<a class="sketch-button" href="/treeviewer">open the tree toy</a>
 					<a class="sketch-button" href="/parallelboard">open lanes</a>
 				</div>

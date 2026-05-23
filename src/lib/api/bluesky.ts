@@ -23,6 +23,7 @@ const CONSTELLATION_REPLY_PARENT_SOURCE = 'app.bsky.feed.post:reply.parent.uri';
 const CONSTELLATION_PAGE_LIMIT = 100;
 const MAX_CONSTELLATION_PAGES = 10;
 const FULL_THREAD_FLAT_DEPTH = 1000;
+const THREAD_ITEM_BLOCKED_TYPE = 'app.bsky.unspecced.defs#threadItemBlocked';
 let activeRecordEmbedFetches = 0;
 const pendingRecordEmbedFetches: Array<() => void> = [];
 let hydratedPostViewFlushScheduled = false;
@@ -74,6 +75,15 @@ export interface FetchPostsProgress {
 	total: number;
 	batchesCompleted: number;
 	totalBatches: number;
+}
+
+export interface ReplyParentVisibility {
+	parentUri: string;
+	visibility: 'visible' | 'blocked' | 'unavailable' | 'unknown';
+	parentAuthorDid: string | null;
+	itemType: string;
+	parentText: string | null;
+	parentCreatedAt: string | null;
 }
 
 export interface TaggedPostSearchPage {
@@ -304,6 +314,127 @@ export async function fetchPostThread(uri: string): Promise<any> {
 		parentHeight: 0
 	});
 	return res.data.thread;
+}
+
+function didFromAtUri(uri: string): string | null {
+	const match = uri.match(/^at:\/\/([^/]+)\//);
+	return match?.[1] ?? null;
+}
+
+function flatThreadItemType(item: any): string {
+	return typeof item?.value?.$type === 'string' ? item.value.$type : '';
+}
+
+function isBlockedFlatThreadItem(itemType: string): boolean {
+	return itemType === THREAD_ITEM_BLOCKED_TYPE || /blocked/i.test(itemType);
+}
+
+export function getReplyParentVisibilityFromFlatItems(
+	items: any[],
+	parentUri: string
+): ReplyParentVisibility {
+	const normalizedParentUri = parentUri.trim();
+	const fallbackAuthorDid = didFromAtUri(normalizedParentUri);
+	if (!Array.isArray(items) || !normalizedParentUri) {
+		return {
+			parentUri: normalizedParentUri,
+			visibility: 'unknown',
+			parentAuthorDid: fallbackAuthorDid,
+			itemType: '',
+			parentText: null,
+			parentCreatedAt: null
+		};
+	}
+
+	const item = items.find((entry) => {
+		if (entry?.uri === normalizedParentUri) return true;
+		return entry?.value?.post?.uri === normalizedParentUri;
+	});
+	if (!item) {
+		return {
+			parentUri: normalizedParentUri,
+			visibility: 'unknown',
+			parentAuthorDid: fallbackAuthorDid,
+			itemType: '',
+			parentText: null,
+			parentCreatedAt: null
+		};
+	}
+
+	const rawPost = item?.value?.post;
+	const itemType = flatThreadItemType(item);
+	const parentAuthorDid =
+		(typeof rawPost?.author?.did === 'string' && rawPost.author.did) ||
+		(typeof item?.value?.author?.did === 'string' && item.value.author.did) ||
+		fallbackAuthorDid;
+
+	if (rawPost && typeof rawPost.uri === 'string') {
+		return {
+			parentUri: normalizedParentUri,
+			visibility: 'visible',
+			parentAuthorDid,
+			itemType,
+			parentText: typeof rawPost?.record?.text === 'string' ? rawPost.record.text : '',
+			parentCreatedAt:
+				(typeof rawPost?.record?.createdAt === 'string' && rawPost.record.createdAt) ||
+				(typeof rawPost?.indexedAt === 'string' && rawPost.indexedAt) ||
+				null
+		};
+	}
+
+	return {
+		parentUri: normalizedParentUri,
+		visibility: isBlockedFlatThreadItem(itemType) ? 'blocked' : 'unavailable',
+		parentAuthorDid,
+		itemType,
+		parentText: null,
+		parentCreatedAt: null
+	};
+}
+
+export async function fetchReplyParentVisibility(
+	replyUri: string,
+	parentUri: string,
+	options: { signal?: AbortSignal } = {}
+): Promise<ReplyParentVisibility> {
+	const normalizedParentUri = parentUri.trim();
+	const fallback: ReplyParentVisibility = {
+		parentUri: normalizedParentUri,
+		visibility: 'unknown',
+		parentAuthorDid: didFromAtUri(normalizedParentUri),
+		itemType: '',
+		parentText: null,
+		parentCreatedAt: null
+	};
+	if (!replyUri.trim() || !normalizedParentUri) {
+		return fallback;
+	}
+
+	throwIfAborted(options.signal);
+	const getPostThreadV2 = (agent as any).app?.bsky?.unspecced?.getPostThreadV2;
+	if (typeof getPostThreadV2 !== 'function') {
+		return fallback;
+	}
+
+	try {
+		const res = await getPostThreadV2(
+			{
+				anchor: replyUri,
+				above: true,
+				below: 0,
+				branchingFactor: 0,
+				sort: 'oldest'
+			},
+			options.signal ? { signal: options.signal } : undefined
+		);
+		throwIfAborted(options.signal);
+		return getReplyParentVisibilityFromFlatItems(res.data.thread ?? [], normalizedParentUri);
+	} catch (err: any) {
+		if (err?.name === 'AbortError') {
+			throw err;
+		}
+		return fallback;
+	}
 }
 
 async function runQueuedRecordEmbedFetch<T>(task: () => Promise<T>): Promise<T> {

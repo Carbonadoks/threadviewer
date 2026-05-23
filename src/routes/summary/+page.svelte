@@ -77,6 +77,11 @@
 	let loadController: AbortController | null = null;
 	let visibleCounts = $state<VisibleSummaryCounts>(createInitialVisibleCounts());
 
+	function buildRepoSummaryHref(): string {
+		const handle = (profile?.handle ?? initialHandle ?? '').replace(/^@/, '').trim();
+		return handle ? `/summary2?handle=${encodeURIComponent(handle)}` : '/summary2';
+	}
+
 	function throwIfAborted(signal: AbortSignal) {
 		if (signal.aborted) {
 			throw new DOMException('Aborted', 'AbortError');
@@ -442,6 +447,14 @@
 		</p>
 		<FontPicker value={fontKey} onchange={handleFontChange} />
 	</header>
+
+	<div class="deprecation-banner wobbly-border-light" role="note">
+		<div>
+			<strong>/summary is deprecated.</strong>
+			<span>Use repo summary for new account summaries. It reads the full account repository directly instead of depending on the cached feed.</span>
+		</div>
+		<a href={buildRepoSummaryHref()}>Open Repo Summary</a>
+	</div>
 
 	<section class="lookup-panel wobbly-border-light">
 		<SearchBar
@@ -815,6 +828,42 @@
 		line-height: 1.5;
 	}
 
+	.deprecation-banner {
+		max-width: 820px;
+		margin: -6px auto 22px;
+		padding: 14px 16px;
+		background: #fff3cd;
+		color: #5f4700;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 14px;
+		text-align: left;
+	}
+
+	.deprecation-banner div {
+		display: grid;
+		gap: 4px;
+	}
+
+	.deprecation-banner strong {
+		color: #3f2f00;
+	}
+
+	.deprecation-banner span {
+		line-height: 1.35;
+	}
+
+	.deprecation-banner a {
+		flex: 0 0 auto;
+		padding: 8px 12px;
+		border-radius: 999px;
+		background: var(--text-ink);
+		color: #fff;
+		font-weight: 700;
+		text-decoration: none;
+	}
+
 	.lookup-panel {
 		padding: 18px;
 		margin-bottom: 22px;
@@ -1125,6 +1174,15 @@
 	@media (max-width: 640px) {
 		main {
 			padding: 24px 14px 42px;
+		}
+
+		.deprecation-banner {
+			align-items: stretch;
+			flex-direction: column;
+		}
+
+		.deprecation-banner a {
+			text-align: center;
 		}
 
 		.lookup-panel,
