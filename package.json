@@ -14,7 +14,8 @@
     "elephant:build": "node --import tsx scripts/build-elephant-plot.ts",
     "embeddb:build": "node --import tsx scripts/build-post-embedding-db.ts",
     "thread-embeddb:build": "node --import tsx scripts/build-thread-embedding-db.ts",
-    "window-embeddb:build": "node --import tsx scripts/build-window-embedding-db.ts"
+    "window-embeddb:build": "node --import tsx scripts/build-window-embedding-db.ts",
+    "atproideasio:ingest": "node --import tsx scripts/ingest-atproideasio.ts"
   },
   "keywords": [],
   "author": "",

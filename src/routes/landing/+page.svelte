@@ -2,174 +2,13 @@
 	import '../../app.css';
 	import RoughBorder from '$lib/components/RoughBorder.svelte';
 	import RouteNav from '$lib/components/RouteNav.svelte';
-
-	type Feature = {
-		title: string;
-		href: string;
-		label: string;
-		description: string;
-		details: string[];
-		color: string;
-		tilt: string;
-	};
-
-	const readerTools: Feature[] = [
-		{
-			title: 'Repo Viewer',
-			href: '/viewer2',
-			label: 'find the long ones',
-			description: 'Download an account repo, shake out the self-reply chains, and pick whichever trail looks suspiciously interesting.',
-			details: ['full repo download', 'depth filters', 'four list disguises'],
-			color: 'var(--landing-feature-thread)',
-			tilt: '-1.4deg'
-		},
-		{
-			title: 'Chat',
-			href: '/chat',
-			label: 'read it like a room',
-			description: 'Paste one post URL and get the whole thread as a compact transcript with branches and embeds still attached.',
-			details: ['avatars', 'date breaks', 'branch picker'],
-			color: 'var(--landing-feature-chat)',
-			tilt: '1deg'
-		},
-		{
-			title: 'Board',
-			href: '/board',
-			label: 'pin the thread up',
-			description: 'Spread replies across a board so forks, loops, and strange little side paths are easier to see.',
-			details: ['pan', 'zoom', 'minimap'],
-			color: 'var(--landing-feature-board)',
-			tilt: '-0.7deg'
-		},
-		{
-			title: 'Treeviewer',
-			href: '/treeviewer',
-			label: 'pick a path',
-			description: 'Start on the longest chain, expand the tree, open quotes as lanes, then read it as chat or tiny forum notes.',
-			details: ['quote lanes', 'forum mode', 'collapsible branches'],
-			color: 'var(--landing-feature-tree)',
-			tilt: '1.6deg'
-		},
-		{
-			title: 'Parallel Board',
-			href: '/parallelboard',
-			label: 'lanes beside lanes',
-			description: 'Line related threads next to each other when the conversation starts behaving like a folded paper map.',
-			details: ['aligned quotes', 'lane reading', 'tree shortcut'],
-			color: 'var(--landing-feature-parallel)',
-			tilt: '-1deg'
-		}
-	];
-
-	const thinkingTools: Feature[] = [
-		{
-			title: 'Analyzer',
-			href: '/analyzer',
-			label: 'sort the thoughts',
-			description: 'Turn cached self-reply threads into clusters, novelty trails, and odd little distances between ideas.',
-			details: ['embedding map', 'novelty', 'compare accounts'],
-			color: 'var(--landing-feature-analyzer)',
-			tilt: '0.8deg'
-		},
-		{
-			title: 'Cluster',
-			href: '/cluster',
-			label: 'big pile map',
-			description: 'Browse the larger cached atlas, filter by author or cluster, and open representative threads from the scatter.',
-			details: ['global snapshot', 'cluster filters', 'thread inspector'],
-			color: 'var(--landing-feature-cluster)',
-			tilt: '-1.3deg'
-		},
-		{
-			title: 'Semantic',
-			href: '/semantic',
-			label: 'search by vibe',
-			description: 'Look for posts by meaning instead of exact words, then jump back into the cached context.',
-			details: ['semantic ranking', 'cache search', 'source links'],
-			color: 'var(--landing-feature-semantic)',
-			tilt: '1.4deg'
-		},
-		{
-			title: 'Repo Summary',
-			href: '/summary2',
-			label: 'what keeps showing up',
-			description: 'Fold an account repo into repeated posts, mentions, liked things, reposts, and busy thread corners.',
-			details: ['mentions', 'repeated posts', 'thread highlights'],
-			color: 'var(--landing-feature-summary)',
-			tilt: '-0.8deg'
-		},
-		{
-			title: 'Word Cloud',
-			href: '/wordcloud',
-			label: 'word confetti',
-			description: 'A quick language sketch for seeing which terms keep returning to the table.',
-			details: ['frequency', 'account focus', 'visual scan'],
-			color: 'var(--landing-feature-wordcloud)',
-			tilt: '0.9deg'
-		}
-	];
-
-	const sideRooms: Feature[] = [
-		{
-			title: 'Follow Interaction',
-			href: '/followinteraction',
-			label: 'who nudged what',
-			description: 'Check how a profile touches follows through likes, replies, quotes, and reposts.',
-			details: ['kind filters', 'counts', 'post references'],
-			color: 'var(--landing-feature-follow)',
-			tilt: '-1deg'
-		},
-		{
-			title: 'Dialogue',
-			href: '/dialogue2',
-			label: 'two voices',
-			description: 'Read cached traces between accounts as a back-and-forth instead of a pile of separate posts.',
-			details: ['two-account view', 'cache dialogue', 'thread context'],
-			color: 'var(--landing-feature-dialogue)',
-			tilt: '1.2deg'
-		},
-		{
-			title: 'Judge',
-			href: '/judge',
-			label: 'clipboard mode',
-			description: 'Open a thread in the judging workflow for structured review experiments.',
-			details: ['scoring', 'cached judgments', 'model knobs'],
-			color: 'var(--landing-feature-judge)',
-			tilt: '-0.5deg'
-		},
-		{
-			title: 'Matrix Feed',
-			href: '/matrix-feed',
-			label: 'terminal stream',
-			description: 'Let a feed run through a terminal-style surface when normal scrolling feels too tidy.',
-			details: ['terminal UI', 'feed playback', 'preview overlay'],
-			color: 'var(--landing-feature-matrix)',
-			tilt: '1deg'
-		},
-		{
-			title: 'Toponomy',
-			href: '/toponomy',
-			label: 'map scraps',
-			description: 'Explore compact point artifacts and top-level maps made from cached thread data.',
-			details: ['overview', 'compact points', 'inspector'],
-			color: 'var(--landing-feature-toponomy)',
-			tilt: '-1.5deg'
-		}
-	];
-
-	const doodleSteps = [
-		'paste one bsky.app URL',
-		'watch the thread become a tree',
-		'open the quote side-paths',
-		'read, fold, compare, wander'
-	];
 </script>
 
 <svelte:head>
-	<title>Thread Viewer - a messy thread playground</title>
+	<title>Thread Viewer</title>
 	<meta
 		name="description"
-		content="A playful landing page for Thread Viewer: chat, boards, tree views, quote lanes, semantic maps, summaries, and odd little cached-thread experiments."
+		content="Thread Viewer turns Bluesky threads into chat, boards, trees, lanes, and cached analysis views."
 	/>
 </svelte:head>
 
@@ -228,80 +67,13 @@
 		</div>
 	</section>
 
-	<section class="doodle-strip" aria-labelledby="doodle-title">
-		<div class="section-heading">
-			<p>How it tends to go</p>
-			<h2 id="doodle-title">One post goes in. A little conversation contraption comes out.</h2>
-		</div>
-		<div class="step-string">
-			{#each doodleSteps as step, index}
-				<div class="step-scrap" style={`--step-tilt: ${index % 2 === 0 ? '-1deg' : '1.2deg'}`}>
-					<span>{index + 1}</span>
-					<p>{step}</p>
-				</div>
-			{/each}
-		</div>
-	</section>
-
-	<section class="tool-shelf" aria-labelledby="reader-title">
-		<div class="section-heading">
-			<p>Thread readers</p>
-			<h2 id="reader-title">Different little windows for the same tangled thing.</h2>
-		</div>
-		<div class="feature-grid reader-grid">
-			{#each readerTools as feature}
-				<a class="tool-link" href={feature.href} style={`--feature-color: ${feature.color}; --tilt: ${feature.tilt}`}>
-					<RoughBorder>
-						<article class="tool-card">
-							<h3>{feature.title}</h3>
-							<p>{feature.description}</p>
-						</article>
-					</RoughBorder>
-				</a>
-			{/each}
-		</div>
-	</section>
-
-	<section class="tool-shelf thinking-shelf" aria-labelledby="thinking-title">
-		<div class="section-heading">
-			<p>Thinking tables</p>
-			<h2 id="thinking-title">When the cache gets big enough to start making shapes.</h2>
-		</div>
-		<div class="feature-grid">
-			{#each thinkingTools as feature}
-				<a class="tool-link" href={feature.href} style={`--feature-color: ${feature.color}; --tilt: ${feature.tilt}`}>
-					<RoughBorder>
-						<article class="tool-card">
-							<h3>{feature.title}</h3>
-							<p>{feature.description}</p>
-						</article>
-					</RoughBorder>
-				</a>
-			{/each}
-		</div>
-	</section>
-
-	<section class="tool-shelf" aria-labelledby="rooms-title">
-		<div class="section-heading">
-			<p>Side drawers</p>
-			<h2 id="rooms-title">Other odd surfaces for poking the same data.</h2>
-		</div>
-		<div class="feature-grid side-grid">
-			{#each sideRooms as feature}
-				<a class="tool-link small" href={feature.href} style={`--feature-color: ${feature.color}; --tilt: ${feature.tilt}`}>
-					<RoughBorder>
-						<article class="tool-card">
-							<h3>{feature.title}</h3>
-							<p>{feature.description}</p>
-						</article>
-					</RoughBorder>
-				</a>
-			{/each}
-		</div>
-	</section>
-
 	<footer class="github-footer" aria-label="Project source">
-		<a class="sketch-button primary github-link" href="https://github.com/Carbonadoks/threadviewer" target="_blank" rel="noreferrer">
+		<a
+			class="sketch-button primary github-link"
+			href="https://github.com/Carbonadoks/threadviewer"
+			target="_blank"
+			rel="noreferrer"
+		>
 			View on GitHub
 		</a>
 	</footer>
@@ -320,6 +92,8 @@
 
 	.landing-page {
 		min-height: 100vh;
+		display: flex;
+		flex-direction: column;
 		color: var(--landing-ink);
 		background:
 			linear-gradient(var(--landing-grid) 1px, transparent 1px),
@@ -337,11 +111,12 @@
 
 	.hero-stage {
 		position: relative;
-		min-height: 76vh;
+		flex: 1;
+		min-height: 72vh;
 		overflow: hidden;
 		display: flex;
 		align-items: center;
-		padding: 64px max(18px, calc((100vw - 1120px) / 2)) 78px;
+		padding: 64px max(18px, calc((100vw - 1120px) / 2)) 62px;
 		isolation: isolate;
 	}
 
@@ -411,10 +186,21 @@
 		filter: drop-shadow(0 2px 0 color-mix(in srgb, var(--landing-paper) 78%, transparent));
 	}
 
-	.ink { stroke: color-mix(in srgb, var(--landing-ink) 72%, transparent); }
-	.teal-line { stroke: var(--landing-line-teal); }
-	.purple-line { stroke: var(--landing-line-purple); }
-	.accent-line { stroke: var(--landing-line-accent); }
+	.ink {
+		stroke: color-mix(in srgb, var(--landing-ink) 72%, transparent);
+	}
+
+	.teal-line {
+		stroke: var(--landing-line-teal);
+	}
+
+	.purple-line {
+		stroke: var(--landing-line-purple);
+	}
+
+	.accent-line {
+		stroke: var(--landing-line-accent);
+	}
 
 	.doodle-node,
 	.sticky-note {
@@ -434,12 +220,47 @@
 		text-align: center;
 	}
 
-	.root { left: 32px; top: 58px; transform: rotate(-5deg); background: var(--landing-node-root); }
-	.reply-one { left: 160px; top: 168px; transform: rotate(3deg); background: var(--landing-node-reply-one); }
-	.reply-two { left: 304px; top: 282px; transform: rotate(-2deg); background: var(--landing-node-reply-two); }
-	.leaf { left: 478px; top: 402px; transform: rotate(4deg); background: var(--landing-node-leaf); }
-	.branch { left: 430px; top: 94px; transform: rotate(-4deg); background: var(--landing-node-branch); }
-	.quote { left: 648px; top: 270px; transform: rotate(3deg); background: var(--landing-node-quote); }
+	.root {
+		left: 32px;
+		top: 58px;
+		transform: rotate(-5deg);
+		background: var(--landing-node-root);
+	}
+
+	.reply-one {
+		left: 160px;
+		top: 168px;
+		transform: rotate(3deg);
+		background: var(--landing-node-reply-one);
+	}
+
+	.reply-two {
+		left: 304px;
+		top: 282px;
+		transform: rotate(-2deg);
+		background: var(--landing-node-reply-two);
+	}
+
+	.leaf {
+		left: 478px;
+		top: 402px;
+		transform: rotate(4deg);
+		background: var(--landing-node-leaf);
+	}
+
+	.branch {
+		left: 430px;
+		top: 94px;
+		transform: rotate(-4deg);
+		background: var(--landing-node-branch);
+	}
+
+	.quote {
+		left: 648px;
+		top: 270px;
+		transform: rotate(3deg);
+		background: var(--landing-node-quote);
+	}
 
 	.sticky-note {
 		width: 184px;
@@ -494,10 +315,28 @@
 		box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 16%, transparent);
 	}
 
-	.map-note i:nth-of-type(1) { left: 34px; bottom: 36px; }
-	.map-note i:nth-of-type(2) { left: 74px; bottom: 72px; background: var(--landing-map-dot-two); }
-	.map-note i:nth-of-type(3) { left: 124px; bottom: 44px; background: var(--landing-map-dot-three); }
-	.map-note i:nth-of-type(4) { left: 138px; bottom: 90px; background: var(--landing-map-dot-four); }
+	.map-note i:nth-of-type(1) {
+		left: 34px;
+		bottom: 36px;
+	}
+
+	.map-note i:nth-of-type(2) {
+		left: 74px;
+		bottom: 72px;
+		background: var(--landing-map-dot-two);
+	}
+
+	.map-note i:nth-of-type(3) {
+		left: 124px;
+		bottom: 44px;
+		background: var(--landing-map-dot-three);
+	}
+
+	.map-note i:nth-of-type(4) {
+		left: 138px;
+		bottom: 90px;
+		background: var(--landing-map-dot-four);
+	}
 
 	.hero-copy-card {
 		width: min(560px, 100%);
@@ -513,17 +352,7 @@
 		padding: 26px;
 	}
 
-	.section-heading p {
-		margin: 0 0 10px;
-		color: var(--warm-text);
-		font-size: 0.9rem;
-		font-weight: 900;
-		line-height: 1.1;
-	}
-
 	h1,
-	h2,
-	h3,
 	p {
 		letter-spacing: 0;
 	}
@@ -549,9 +378,6 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 10px;
-	}
-
-	.hero-actions {
 		margin-top: 26px;
 	}
 
@@ -579,157 +405,23 @@
 		color: var(--landing-button-primary-text);
 	}
 
-	.sketch-button:hover,
-	.tool-link:hover {
-		text-decoration: none;
-		transform: translateY(-2px) rotate(var(--tilt, -0.5deg));
-	}
-
 	.sketch-button:hover {
+		text-decoration: none;
+		transform: translateY(-2px) rotate(-0.5deg);
 		box-shadow: var(--landing-card-shadow);
-	}
-
-	.doodle-strip,
-	.tool-shelf {
-		padding: 56px max(18px, calc((100vw - 1120px) / 2));
-	}
-
-	.doodle-strip {
-		background: var(--landing-section);
-	}
-
-	.thinking-shelf {
-		background: var(--landing-section-alt);
 	}
 
 	.github-footer {
 		display: flex;
 		justify-content: center;
-		padding: 22px max(18px, calc((100vw - 1120px) / 2)) 58px;
-		background: var(--landing-section-alt);
+		padding: 12px max(18px, calc((100vw - 1120px) / 2)) 34px;
 	}
 
 	.github-footer .github-link {
 		width: min(100%, 260px);
 	}
 
-	.section-heading {
-		max-width: 760px;
-		margin-bottom: 28px;
-	}
-
-	.section-heading h2 {
-		margin: 0;
-		color: var(--landing-ink);
-		font-size: clamp(1.8rem, 4vw, 3rem);
-		line-height: 1;
-		font-weight: 900;
-		text-wrap: balance;
-	}
-
-	.step-string {
-		display: grid;
-		grid-template-columns: repeat(4, minmax(0, 1fr));
-		gap: 14px;
-	}
-
-	.step-scrap {
-		min-height: 112px;
-		border: 2px solid var(--landing-ink);
-		border-radius: 18px 255px 20px 230px / 230px 20px 255px 18px;
-		background: var(--landing-card);
-		padding: 16px;
-		box-shadow: var(--landing-card-shadow);
-		transform: rotate(var(--step-tilt));
-	}
-
-	.step-scrap span {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 28px;
-		height: 28px;
-		border: 2px solid var(--landing-ink);
-		border-radius: 50%;
-		background: var(--landing-step-chip);
-		font-weight: 900;
-	}
-
-	.step-scrap p {
-		margin: 13px 0 0;
-		color: var(--landing-muted-ink);
-		font-size: 1.02rem;
-		line-height: 1.25;
-		font-weight: 800;
-	}
-
-	.feature-grid {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 18px;
-		align-items: stretch;
-	}
-
-	.reader-grid {
-		grid-template-columns: repeat(5, minmax(0, 1fr));
-	}
-
-	.side-grid {
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-	}
-
-	.tool-link {
-		display: block;
-		min-height: 100%;
-		color: var(--landing-ink);
-		text-decoration: none;
-		transform: rotate(var(--tilt));
-		transition: transform 0.14s ease;
-	}
-
-	.tool-link :global(.rough-border-wrapper) {
-		height: 100%;
-		background: color-mix(in srgb, var(--feature-color) 10%, var(--landing-card));
-		box-shadow: var(--landing-card-shadow);
-	}
-
-	.tool-link :global(.rough-content) {
-		height: 100%;
-		padding: 18px;
-	}
-
-	.tool-card {
-		display: flex;
-		min-height: 248px;
-		height: 100%;
-		flex-direction: column;
-	}
-
-	.tool-link.small .tool-card {
-		min-height: 228px;
-	}
-
-	.tool-card h3 {
-		margin: 0;
-		font-size: 1.34rem;
-		line-height: 1;
-		font-weight: 900;
-	}
-
-	.tool-card p {
-		margin: 13px 0 0;
-		color: var(--landing-muted-ink);
-		font-size: 0.98rem;
-		line-height: 1.28;
-	}
-
 	@media (max-width: 1180px) {
-		.reader-grid,
-		.feature-grid,
-		.side-grid {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-		}
-
 		.scribble-board {
 			left: 30%;
 			opacity: 0.74;
@@ -743,8 +435,8 @@
 		}
 
 		.hero-stage {
-			min-height: 78vh;
-			padding: 46px 18px 86px;
+			min-height: 74vh;
+			padding: 46px 18px 58px;
 		}
 
 		.hero-paper {
@@ -766,33 +458,10 @@
 		.hero-copy {
 			font-size: 1.1rem;
 		}
-
-		.doodle-strip,
-		.tool-shelf {
-			padding: 44px 18px;
-		}
-
-		.step-string,
-		.reader-grid,
-		.feature-grid,
-		.side-grid {
-			grid-template-columns: 1fr;
-		}
-
-		.tool-link,
-		.step-scrap {
-			transform: rotate(0deg);
-		}
-
-		.tool-card,
-		.tool-link.small .tool-card {
-			min-height: 0;
-		}
 	}
 
 	@media (max-width: 520px) {
 		.hero-stage {
-			min-height: 80vh;
 			padding-top: 36px;
 		}
 

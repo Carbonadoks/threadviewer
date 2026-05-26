@@ -64,6 +64,10 @@ export interface FormatThreadExportOptions extends BuildThreadExportOptions {
 	format: ThreadExportFormat;
 }
 
+export interface FormatThreadPostsMarkdownOptions extends BuildThreadExportOptions {
+	title?: string;
+}
+
 type QuoteAuthor = NonNullable<NonNullable<ThreadPost['embed']>['record']>['author'];
 type AnyAuthor = ThreadPost['author'] | QuoteAuthor;
 
@@ -151,6 +155,62 @@ function assignPostIds(root: ThreadPost): Map<string, string> {
 	return ids;
 }
 
+function uniquePosts(posts: ThreadPost[]): ThreadPost[] {
+	const seen = new Set<string>();
+	const unique: ThreadPost[] = [];
+
+	for (const post of posts) {
+		if (!post.uri || seen.has(post.uri)) continue;
+		seen.add(post.uri);
+		unique.push(post);
+	}
+
+	return unique;
+}
+
+function assignFlatPostIds(posts: ThreadPost[]): Map<string, string> {
+	const ids = new Map<string, string>();
+	let nextId = 1;
+
+	for (const post of posts) {
+		if (!post.uri || ids.has(post.uri)) continue;
+		ids.set(post.uri, `post_${nextId++}`);
+	}
+
+	return ids;
+}
+
+function inferFlatPostDepths(posts: ThreadPost[]): Map<string, number> {
+	const postsByUri = new Map(posts.map((post) => [post.uri, post]));
+	const depths = new Map<string, number>();
+
+	function depthFor(post: ThreadPost, visiting = new Set<string>()): number {
+		const existing = depths.get(post.uri);
+		if (existing !== undefined) return existing;
+		const parentUri = post.parentUri;
+		if (!parentUri || visiting.has(post.uri)) {
+			depths.set(post.uri, 0);
+			return 0;
+		}
+		const parent = postsByUri.get(parentUri);
+		if (!parent) {
+			depths.set(post.uri, 0);
+			return 0;
+		}
+		visiting.add(post.uri);
+		const depth = depthFor(parent, visiting) + 1;
+		visiting.delete(post.uri);
+		depths.set(post.uri, depth);
+		return depth;
+	}
+
+	for (const post of posts) {
+		depthFor(post);
+	}
+
+	return depths;
+}
+
 function collectLinks(post: ThreadPost): ThreadExportLink[] | undefined {
 	const links: ThreadExportLink[] = [];
 	const seen = new Set<string>();
@@ -222,6 +282,32 @@ function buildExportPost(
 	});
 }
 
+function buildFlatExportPost(
+	post: ThreadPost,
+	postIds: Map<string, string>,
+	depths: Map<string, number>,
+	identity: ExportIdentityMapper,
+	identityMode: ThreadExportIdentityMode
+): ThreadExportPost {
+	const id = postIds.get(post.uri) ?? `post_unknown_${postIds.size + 1}`;
+	const url = identityMode === 'author' ? buildBskyPostUrl(post.uri, post.author.handle) : null;
+	const parentId = post.parentUri ? postIds.get(post.parentUri) ?? null : null;
+
+	return cleanRecord({
+		id,
+		uri: identityMode === 'author' ? post.uri : undefined,
+		url: url || undefined,
+		parentId,
+		depth: depths.get(post.uri) ?? 0,
+		author: identity.authorFor(post.author),
+		createdAt: post.createdAt,
+		text: post.text ?? '',
+		quote: buildQuote(post, identity, identityMode),
+		links: collectLinks(post),
+		replies: []
+	});
+}
+
 export function buildThreadExportData(
 	thread: SelfReplyThread,
 	options: BuildThreadExportOptions = {}
@@ -254,6 +340,45 @@ export function formatThreadExport(thread: SelfReplyThread, options: FormatThrea
 		return `${toYaml(data)}\n`;
 	}
 	return formatMarkdown(data);
+}
+
+export function formatThreadPostMarkdown(
+	post: ThreadPost,
+	options: FormatThreadPostsMarkdownOptions = {}
+): string {
+	return formatThreadPostsMarkdown([post], {
+		...options,
+		title: options.title ?? 'Selected post export'
+	});
+}
+
+export function formatThreadPostsMarkdown(
+	posts: ThreadPost[],
+	options: FormatThreadPostsMarkdownOptions = {}
+): string {
+	const identityMode = options.identityMode ?? 'author';
+	const exportedAt = options.exportedAt ?? new Date().toISOString();
+	const unique = uniquePosts(posts);
+	const postIds = assignFlatPostIds(unique);
+	const depths = inferFlatPostDepths(unique);
+	const identity = new ExportIdentityMapper(identityMode);
+	const exportPosts = unique.map((post) =>
+		buildFlatExportPost(post, postIds, depths, identity, identityMode)
+	);
+	const lines = [
+		`# ${options.title ?? 'Posts export'}`,
+		'',
+		`Exported: ${exportedAt}`,
+		`Identity: ${identityMode}`,
+		`Posts: ${exportPosts.length}`,
+		''
+	];
+
+	for (const post of exportPosts) {
+		appendPostMarkdown(lines, post, 0);
+	}
+
+	return `${lines.join('\n').replace(/\n{3,}/g, '\n\n')}\n`;
 }
 
 function formatMarkdown(data: ThreadExportData): string {

@@ -1,5 +1,5 @@
 	<script lang="ts">
-		import { onMount, tick } from 'svelte';
+		import { onMount, tick, untrack } from 'svelte';
 		import {
 			fetchQuotesForPost as fetchBlueskyQuotesForPost,
 			getFullThread as getBlueskyFullThread
@@ -147,6 +147,21 @@
 		summaryPosts?: ThreadPost[];
 	};
 	type WinningMoveHandler = (details: WinningMoveDetails) => void;
+	type FetchModeTaskKind = 'scan-post' | 'open-lane';
+	type FetchModeTaskStatus = 'pending' | 'running' | 'done' | 'skipped' | 'error';
+	type FetchModeQueueItem = {
+		id: string;
+		kind: FetchModeTaskKind;
+		status: FetchModeTaskStatus;
+		sourceUri: string;
+		sourceLaneId: string;
+		targetUri?: string;
+		targetHandle?: string;
+		direction?: QuoteLaneDirection;
+		label: string;
+		detail: string;
+		error?: string;
+	};
 		type ParallelBoardViewProps = {
 			thread: BoardThread;
 			mainLaneAnchorUri?: string | null;
@@ -179,14 +194,17 @@
 	const LANE_MARKER_GAP = 24;
 	const PADDING_X = 52;
 	const PADDING_Y = 44;
-	const CARD_SCROLL_STEP = 144;
-		const ZOOM_MIN = 0.1;
-		const ZOOM_MAX = 1.5;
-		const ZOOM_STEP = 0.1;
-		function buildBlueskyPostUrl(uri: string, handle: string): string {
-			const rkey = uri.split('/').pop();
-			return `https://bsky.app/profile/${handle}/post/${rkey}`;
-		}
+		const CARD_SCROLL_STEP = 144;
+			const ZOOM_MIN = 0.1;
+			const ZOOM_MAX = 1.5;
+			const ZOOM_STEP = 0.1;
+		const FETCH_MODE_DELAY_MS = 700;
+		const FETCH_MODE_MAX_TASKS = 250;
+		const FETCH_MODE_VISIBLE_ITEMS = 9;
+			function buildBlueskyPostUrl(uri: string, handle: string): string {
+				const rkey = uri.split('/').pop();
+				return `https://bsky.app/profile/${handle}/post/${rkey}`;
+			}
 
 		const defaultBoardPlatform: BoardPlatformConfig = {
 			name: 'Bluesky',
@@ -242,11 +260,29 @@
 	let treeBoardDialogEl: HTMLDialogElement | undefined = $state();
 	let treeAuthorSearchInputEl: HTMLInputElement | undefined = $state();
 	let treeTextSearchInputEl: HTMLInputElement | undefined = $state();
-	let quoteLanes = $state<Record<string, QuoteLaneEntry>>({});
-	let postQuotes = $state<Record<string, QuotePostFeedState>>({});
-	let bulkQuoteLaneLoads = $state<Record<string, boolean>>({});
-	let openQuotePickerCardKey = $state<string | null>(null);
-	let laneActiveChainIds = $state<Record<string, string>>({});
+		let quoteLanes = $state<Record<string, QuoteLaneEntry>>({});
+		let postQuotes = $state<Record<string, QuotePostFeedState>>({});
+		let bulkQuoteLaneLoads = $state<Record<string, boolean>>({});
+		let openQuotePickerCardKey = $state<string | null>(null);
+		let fetchModeQueue = $state<FetchModeQueueItem[]>([]);
+		let fetchModeRunning = $state(false);
+		let fetchModePaused = $state(false);
+		let showFetchModePanel = $state(true);
+		let fetchModeRunId = $state(0);
+		let nextFetchModeRunId = 1;
+		let fetchModeStatusMessage = $state('');
+		let fetchModeProcessedCount = $state(0);
+		let fetchModeWorker: Worker | null = null;
+		let nextFetchModeHydrationRequestId = 1;
+		const fetchModeHydrationRequests = new Map<
+			number,
+			{ resolve: (thread: BoardThread) => void; reject: (error: Error) => void }
+		>();
+		let fetchModeQueuedTaskIds = new Set<string>();
+		let fetchModeQueuedScanUris = new Set<string>();
+		let fetchModeQueuedLaneTargets = new Set<string>();
+		let fetchModeReachedTaskLimit = false;
+		let laneActiveChainIds = $state<Record<string, string>>({});
 	let expandedLaneId = $state<string | null>(null);
 	let activeLaneId = $state(MAIN_LANE_ID);
 	let activeCardKey = $state('');
@@ -436,13 +472,18 @@
 		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 	}
 
-		function formatCount(n: number): string {
-			if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`;
-			return n.toString();
-		}
+			function formatCount(n: number): string {
+				if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+				return n.toString();
+			}
 
-		function clamp(value: number, min: number, max: number): number {
-			return Math.min(Math.max(value, min), max);
+			function clamp(value: number, min: number, max: number): number {
+				return Math.min(Math.max(value, min), max);
+			}
+
+		function previewText(text: string | undefined, maxLength = 92): string {
+			const normalized = text?.trim().replace(/\s+/g, ' ') || 'No text';
+			return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 3)}...` : normalized;
 		}
 
 	function resolveLaneAnchorUri(laneThread: BoardThread, preferredUri: string | null | undefined): string {
@@ -1141,6 +1182,42 @@
 			allQuoteEntries.filter(isReadyQuoteLaneEntry)
 		);
 
+		let fetchModePendingCount = $derived.by(() =>
+			fetchModeQueue.filter((item) => item.status === 'pending').length
+		);
+		let fetchModeActiveCount = $derived.by(() =>
+			fetchModeQueue.filter((item) => item.status === 'running').length
+		);
+		let fetchModeErrorCount = $derived.by(() =>
+			fetchModeQueue.filter((item) => item.status === 'error').length
+		);
+		let visibleFetchModeQueue = $derived.by(() => {
+			const activeItems = fetchModeQueue.filter((item) => item.status === 'running');
+			const isProcessed = (item: FetchModeQueueItem) =>
+				item.status === 'done' || item.status === 'skipped' || item.status === 'error';
+			const processedLaneItems = fetchModeQueue
+				.filter((item) => item.kind === 'open-lane' && isProcessed(item))
+				.slice(-FETCH_MODE_VISIBLE_ITEMS)
+				.reverse();
+			const processedScanItems = fetchModeQueue
+				.filter((item) => item.kind === 'scan-post' && isProcessed(item))
+				.slice(-FETCH_MODE_VISIBLE_ITEMS)
+				.reverse();
+			const remainingProcessedSlots = Math.max(
+				0,
+				FETCH_MODE_VISIBLE_ITEMS - activeItems.length - processedLaneItems.length
+			);
+			const processedItems = [
+				...processedLaneItems,
+				...processedScanItems.slice(0, remainingProcessedSlots)
+			];
+			const remainingSlots = Math.max(0, FETCH_MODE_VISIBLE_ITEMS - activeItems.length - processedItems.length);
+			const nextItems = fetchModeQueue
+				.filter((item) => item.status === 'pending')
+				.slice(0, remainingSlots);
+			return [...activeItems, ...processedItems, ...nextItems].slice(0, FETCH_MODE_VISIBLE_ITEMS);
+		});
+
 		let boardModel = $derived.by(() =>
 			buildBoardModel(
 				thread,
@@ -1161,6 +1238,7 @@
 			null
 	);
 	let activeLane = $derived.by(() => (activeCard ? boardModel.laneById.get(activeCard.laneId) ?? null : null));
+	let exportAllPosts = $derived.by(() => collectUniqueLanePosts(boardModel.lanes));
 	let expandedSearchLane = $derived.by(() =>
 		expandedLaneId ? boardModel.laneById.get(expandedLaneId) ?? null : null
 	);
@@ -2067,6 +2145,27 @@
 		return count;
 	}
 
+	function collectUniqueLanePosts(lanes: LaneRenderModel[]): ThreadPost[] {
+		const posts: ThreadPost[] = [];
+		const seen = new Set<string>();
+
+		function visit(post: ThreadPost) {
+			if (!seen.has(post.uri)) {
+				seen.add(post.uri);
+				posts.push(post);
+			}
+			for (const child of post.children) {
+				visit(child);
+			}
+		}
+
+		for (const lane of lanes) {
+			visit(lane.thread.rootPost);
+		}
+
+		return posts;
+	}
+
 	function getLaneBranchAlternatives(card: LaneCard): string[] {
 		if (laneIsExpanded(card.laneId)) return [];
 		if (card.visibility !== 'active') return [];
@@ -2409,11 +2508,12 @@
 	async function openQuoteLane(options: {
 		quotedUri: string;
 			quotedHandle: string;
-			sourceUri: string;
-			sourceLaneId: string;
-			direction: QuoteLaneDirection;
-			suppressFocus?: boolean;
-		}) {
+				sourceUri: string;
+				sourceLaneId: string;
+				direction: QuoteLaneDirection;
+				suppressFocus?: boolean;
+				loadThread?: (uri: string) => Promise<BoardThread>;
+			}) {
 			const existing = quoteLanes[options.quotedUri];
 			if (existing?.status === 'loading') {
 				return;
@@ -2485,7 +2585,7 @@
 			};
 
 		try {
-			const loadThread = platform.loadThread;
+				const loadThread = options.loadThread ?? platform.loadThread;
 			if (!loadThread) {
 				throw new Error(`Quoted thread loading is unavailable for ${platform.name}.`);
 			}
@@ -2641,10 +2741,10 @@
 			});
 		}
 
-		async function loadAllQuotePostLanes(sourceCard: LaneCard) {
-			if (bulkQuoteLaneLoads[sourceCard.post.uri]) return;
+			async function loadAllQuotePostLanes(sourceCard: LaneCard) {
+				if (bulkQuoteLaneLoads[sourceCard.post.uri]) return;
 
-			bulkQuoteLaneLoads = {
+				bulkQuoteLaneLoads = {
 				...bulkQuoteLaneLoads,
 				[sourceCard.post.uri]: true
 			};
@@ -2674,7 +2774,462 @@
 				bulkQuoteLaneLoads = {
 					...bulkQuoteLaneLoads,
 					[sourceCard.post.uri]: false
+					};
+				}
+			}
+
+			function yieldToBrowser(): Promise<void> {
+				if (typeof window === 'undefined') return Promise.resolve();
+				return new Promise((resolve) => {
+					window.requestAnimationFrame(() => resolve());
+				});
+		}
+
+		function isFetchModeRunActive(runId: number): boolean {
+			return fetchModeRunning && fetchModeRunId === runId;
+		}
+
+			function advanceFetchModeRunId(): number {
+				const runId = nextFetchModeRunId;
+				nextFetchModeRunId += 1;
+				fetchModeRunId = runId;
+				return runId;
+			}
+
+			function initializeFetchModeTracking() {
+				fetchModeQueuedTaskIds = new Set<string>();
+				fetchModeQueuedScanUris = new Set<string>();
+				fetchModeQueuedLaneTargets = new Set<string>(
+					Object.entries(quoteLanes)
+						.filter(([, entry]) => entry.status !== 'error')
+						.map(([quotedUri]) => quotedUri)
+				);
+				fetchModeReachedTaskLimit = false;
+			}
+
+			function ensureFetchModeWorker(): Worker | null {
+				if (typeof Worker === 'undefined') return null;
+				if (fetchModeWorker) return fetchModeWorker;
+				const worker = new Worker(new URL('../workers/parallelBoardFetchMode.worker.ts', import.meta.url), {
+					type: 'module'
+				});
+				worker.onmessage = handleFetchModeWorkerMessage;
+				worker.onerror = () => {
+					fetchModeStatusMessage = 'Fetch mode worker failed.';
+					fetchModeRunning = false;
+					fetchModePaused = false;
 				};
+				fetchModeWorker = worker;
+				return worker;
+			}
+
+			function teardownFetchModeWorker() {
+				fetchModeWorker?.terminate();
+				fetchModeWorker = null;
+				for (const request of fetchModeHydrationRequests.values()) {
+					request.reject(new Error('Fetch mode worker stopped.'));
+				}
+				fetchModeHydrationRequests.clear();
+			}
+
+			function postFetchModeWorkerMessage(message: Record<string, unknown>) {
+				fetchModeWorker?.postMessage(message);
+			}
+
+			function canHydrateThreadsInFetchModeWorker(): boolean {
+				return platform.name === defaultBoardPlatform.name && platform.loadThread === getBlueskyFullThread;
+			}
+
+			function hydrateThreadInFetchModeWorker(uri: string): Promise<BoardThread> {
+				const worker = ensureFetchModeWorker();
+				if (!worker) {
+					return Promise.reject(new Error('Fetch mode worker is unavailable.'));
+				}
+				const requestId = nextFetchModeHydrationRequestId;
+				nextFetchModeHydrationRequestId += 1;
+				return new Promise((resolve, reject) => {
+					fetchModeHydrationRequests.set(requestId, { resolve, reject });
+					worker.postMessage({ type: 'hydrate-thread', requestId, uri });
+				});
+			}
+
+			async function loadThreadForFetchMode(uri: string): Promise<BoardThread> {
+				if (canHydrateThreadsInFetchModeWorker()) {
+					try {
+						return await hydrateThreadInFetchModeWorker(uri);
+					} catch {
+						// Fall through to the platform loader if the worker cannot hydrate this thread.
+					}
+				}
+
+				const loadThread = platform.loadThread;
+				if (!loadThread) {
+					throw new Error(`Quoted thread loading is unavailable for ${platform.name}.`);
+				}
+				return loadThread(uri);
+			}
+
+			function handleFetchModeWorkerMessage(event: MessageEvent) {
+				const message = event.data as {
+					type?: string;
+					runId?: number;
+					taskId?: string;
+					requestId?: number;
+					thread?: BoardThread;
+					error?: string;
+				};
+				if (message.type === 'thread-hydrated' && message.requestId && message.thread) {
+					fetchModeHydrationRequests.get(message.requestId)?.resolve(message.thread);
+					fetchModeHydrationRequests.delete(message.requestId);
+					return;
+				}
+				if (message.type === 'thread-error' && message.requestId) {
+					fetchModeHydrationRequests
+						.get(message.requestId)
+						?.reject(new Error(message.error || 'Could not hydrate thread.'));
+					fetchModeHydrationRequests.delete(message.requestId);
+					return;
+				}
+				if (message.runId !== fetchModeRunId) return;
+
+				if (message.type === 'run-task' && message.taskId) {
+					void processFetchModeTask(message.taskId, message.runId);
+					return;
+				}
+
+				if (message.type === 'idle') {
+					fetchModeRunning = false;
+					fetchModePaused = false;
+					fetchModeStatusMessage = fetchModeReachedTaskLimit
+						? `Fetch mode stopped at ${FETCH_MODE_MAX_TASKS} queue items.`
+						: fetchModeQueue.some((item) => item.status === 'error')
+							? 'Fetch mode finished with errors.'
+							: 'Fetch mode complete.';
+					return;
+				}
+
+				if (message.type === 'paused') {
+					fetchModeStatusMessage = 'Fetch mode paused.';
+					return;
+				}
+
+				if (message.type === 'resumed') {
+					fetchModeStatusMessage = 'Fetch mode resumed.';
+				}
+			}
+
+			function updateFetchModeQueueItem(id: string, patch: Partial<FetchModeQueueItem>) {
+				fetchModeQueue = fetchModeQueue.map((item) => (item.id === id ? { ...item, ...patch } : item));
+			}
+
+			function stopFetchMode() {
+				if (!fetchModeRunning) return;
+				const runId = fetchModeRunId;
+				postFetchModeWorkerMessage({ type: 'stop', runId });
+				advanceFetchModeRunId();
+				teardownFetchModeWorker();
+				fetchModeRunning = false;
+				fetchModePaused = false;
+				fetchModeStatusMessage = 'Fetch mode stopped.';
+			fetchModeQueue = fetchModeQueue.map((item) =>
+				item.status === 'pending' || item.status === 'running'
+					? { ...item, status: 'skipped', detail: 'Stopped before this item ran.' }
+					: item
+			);
+		}
+
+		function resetFetchModeState() {
+			postFetchModeWorkerMessage({ type: 'stop', runId: fetchModeRunId });
+			advanceFetchModeRunId();
+			fetchModeRunning = false;
+			fetchModePaused = false;
+			showFetchModePanel = true;
+			fetchModeQueue = [];
+			fetchModeStatusMessage = '';
+			fetchModeProcessedCount = 0;
+			initializeFetchModeTracking();
+		}
+
+		function pauseFetchMode() {
+			if (!fetchModeRunning || fetchModePaused) return;
+			fetchModePaused = true;
+			fetchModeStatusMessage = 'Fetch mode paused.';
+			postFetchModeWorkerMessage({ type: 'pause', runId: fetchModeRunId });
+		}
+
+		function resumeFetchMode() {
+			if (!fetchModeRunning || !fetchModePaused) return;
+			fetchModePaused = false;
+			fetchModeStatusMessage = 'Fetch mode resumed.';
+			postFetchModeWorkerMessage({ type: 'resume', runId: fetchModeRunId });
+		}
+
+		function closeFetchModePanel() {
+			showFetchModePanel = false;
+		}
+
+		function reopenFetchModePanel() {
+			showFetchModePanel = true;
+		}
+
+		function getFetchModeTaskStatusLabel(status: FetchModeTaskStatus): string {
+			if (status === 'running') return 'Now';
+			if (status === 'done') return 'Done';
+			if (status === 'skipped') return 'Skip';
+			if (status === 'error') return 'Error';
+			return 'Next';
+		}
+
+		function enqueueFetchModeWorkerTasks(taskIds: string[], placement: 'front' | 'back' = 'back') {
+			if (!taskIds.length) return;
+			postFetchModeWorkerMessage({ type: 'enqueue', runId: fetchModeRunId, taskIds, placement });
+		}
+
+		function enqueueFetchModeTask(
+			task: FetchModeQueueItem,
+			notifyWorker = true,
+			placement: 'front' | 'back' = 'back'
+		): boolean {
+			if (fetchModeQueuedTaskIds.has(task.id)) return false;
+			if (fetchModeQueuedTaskIds.size >= FETCH_MODE_MAX_TASKS) {
+				if (!fetchModeReachedTaskLimit) {
+					fetchModeReachedTaskLimit = true;
+					fetchModeStatusMessage = `Fetch mode paused at ${FETCH_MODE_MAX_TASKS} queue items.`;
+				}
+				return false;
+			}
+			fetchModeQueuedTaskIds.add(task.id);
+			fetchModeQueue = [...fetchModeQueue, task];
+			if (notifyWorker) {
+				enqueueFetchModeWorkerTasks([task.id], placement);
+			}
+			return true;
+		}
+
+		function enqueueScanCard(
+			card: LaneCard,
+			reason: string,
+			notifyWorker = true,
+			placement: 'front' | 'back' = 'back'
+		): boolean {
+			if (fetchModeQueuedScanUris.has(card.post.uri)) return false;
+			fetchModeQueuedScanUris.add(card.post.uri);
+			return enqueueFetchModeTask(
+				{
+					id: `scan:${card.post.uri}`,
+					kind: 'scan-post',
+					status: 'pending',
+					sourceUri: card.post.uri,
+					sourceLaneId: card.laneId,
+					label: `Scan @${card.post.author.handle}`,
+					detail: `${reason}: ${previewText(card.post.text)}`
+				},
+				notifyWorker,
+				placement
+			);
+		}
+
+		function enqueueLaneTask(
+			options: {
+				sourceCard: LaneCard;
+				quotedUri: string;
+				quotedHandle: string;
+				direction: QuoteLaneDirection;
+				label: string;
+				detail: string;
+			},
+			notifyWorker = true,
+			placement: 'front' | 'back' = 'front'
+		): boolean {
+			if (!options.quotedUri || options.quotedUri === options.sourceCard.post.uri) return false;
+			if (fetchModeQueuedLaneTargets.has(options.quotedUri)) return false;
+			fetchModeQueuedLaneTargets.add(options.quotedUri);
+			return enqueueFetchModeTask(
+				{
+					id: `open:${options.quotedUri}`,
+					kind: 'open-lane',
+					status: 'pending',
+					sourceUri: options.sourceCard.post.uri,
+					sourceLaneId: options.sourceCard.laneId,
+					targetUri: options.quotedUri,
+					targetHandle: options.quotedHandle,
+					direction: options.direction,
+					label: options.label,
+					detail: options.detail
+				},
+				notifyWorker,
+				placement
+			);
+		}
+
+		function getFetchModeStartCards(): LaneCard[] {
+			const seenUris = new Set<string>();
+			const cards: LaneCard[] = [];
+			for (const lane of boardModel.lanes) {
+				for (const card of lane.cards) {
+					if (seenUris.has(card.post.uri)) continue;
+					seenUris.add(card.post.uri);
+					cards.push(card);
+				}
+			}
+
+			if (!activeCard) return cards;
+			return cards.sort((a, b) => {
+				if (a.key === activeCard.key) return -1;
+				if (b.key === activeCard.key) return 1;
+				return 0;
+			});
+		}
+
+		function startFetchModeForBoard() {
+			const startCards = getFetchModeStartCards();
+			if (startCards.length === 0) {
+				showFetchModePanel = true;
+				fetchModeStatusMessage = 'No board posts available.';
+				return;
+			}
+			if (fetchModeRunning) {
+				stopFetchMode();
+				return;
+			}
+
+			const worker = ensureFetchModeWorker();
+			if (!worker) {
+				showFetchModePanel = true;
+				fetchModeStatusMessage = 'Fetch mode worker is unavailable in this browser.';
+				return;
+			}
+
+			const runId = advanceFetchModeRunId();
+			fetchModeRunning = true;
+			fetchModePaused = false;
+			showFetchModePanel = true;
+			fetchModeQueue = [];
+			fetchModeProcessedCount = 0;
+			initializeFetchModeTracking();
+			fetchModeStatusMessage = `Fetch mode started across ${startCards.length} board post${startCards.length === 1 ? '' : 's'}.`;
+
+			for (const card of startCards) {
+				enqueueScanCard(card, card.key === activeCard?.key ? 'Selected post' : 'Board post', false);
+			}
+			worker.postMessage({
+				type: 'start',
+				runId,
+				delayMs: FETCH_MODE_DELAY_MS,
+				taskIds: fetchModeQueue.map((item) => item.id)
+			});
+		}
+
+		async function processFetchModeTask(taskId: string, runId: number) {
+			const task = fetchModeQueue.find((item) => item.id === taskId);
+			if (!task) {
+				postFetchModeWorkerMessage({ type: 'complete', runId, taskId });
+				return;
+			}
+
+			updateFetchModeQueueItem(task.id, { status: 'running' });
+			fetchModeStatusMessage = task.label;
+
+			try {
+				if (task.kind === 'scan-post') {
+					const sourceCard =
+						boardModel.cardsByKey.get(`${task.sourceLaneId}:${task.sourceUri}`) ??
+						boardModel.cardsByPostUri.get(task.sourceUri);
+					if (!sourceCard) {
+						updateFetchModeQueueItem(task.id, {
+							status: 'skipped',
+							detail: 'This post is no longer visible on the board.'
+						});
+					} else {
+						let queuedCount = 0;
+						const record = sourceCard.post.embed?.record;
+						if (record?.uri) {
+							queuedCount += enqueueLaneTask({
+									sourceCard,
+									quotedUri: record.uri,
+									quotedHandle: record.author.handle || '',
+									direction: 'outbound',
+									label: `Open quoted @${record.author.handle || 'unknown'}`,
+									detail: previewText(record.text)
+								})
+									? 1
+									: 0;
+						}
+
+						const quoteState = getQuoteFeedState(sourceCard.post);
+						if (sourceCard.post.quoteCount > 0 || quoteState.posts.length > 0) {
+							const quotePosts =
+								quoteState.loadedAll && quoteState.posts.length > 0
+									? quoteState.posts
+									: await loadQuotesForPost(sourceCard.post, { fetchAll: true });
+							if (!isFetchModeRunActive(runId)) return;
+							if (!quotePosts && sourceCard.post.quoteCount > 0) {
+								throw new Error(getQuoteFeedState(sourceCard.post).error || 'Could not load quote posts.');
+							}
+							for (const quotePost of quotePosts ?? []) {
+								queuedCount += enqueueLaneTask({
+										sourceCard,
+										quotedUri: quotePost.uri,
+										quotedHandle: quotePost.author.handle || '',
+										direction: 'inbound',
+										label: `Open quote post @${quotePost.author.handle || 'unknown'}`,
+										detail: previewText(quotePost.text)
+									})
+										? 1
+										: 0;
+							}
+						}
+
+						updateFetchModeQueueItem(task.id, {
+							status: 'done',
+							detail:
+								queuedCount > 0
+									? `${queuedCount} quote lane${queuedCount === 1 ? '' : 's'} queued.`
+									: 'No new quote lanes found.'
+						});
+					}
+				} else if (task.targetUri) {
+					await openQuoteLane({
+						quotedUri: task.targetUri,
+						quotedHandle: task.targetHandle ?? '',
+						sourceUri: task.sourceUri,
+						sourceLaneId: task.sourceLaneId,
+						direction: task.direction ?? 'outbound',
+						suppressFocus: true,
+						loadThread: loadThreadForFetchMode
+					});
+					if (!isFetchModeRunActive(runId)) return;
+					await tick();
+					const entry = quoteLanes[task.targetUri];
+					if (entry?.status === 'error') {
+						throw new Error(entry.error || 'Could not load this quote.');
+					}
+					const resolvedTargetCard = isResolvedQuoteLaneEntry(entry)
+						? getResolvedQuoteTargetCard(entry)
+						: undefined;
+					const targetCard = resolvedTargetCard ?? boardModel.cardsByPostUri.get(task.targetUri);
+					if (targetCard) {
+						enqueueScanCard(targetCard, 'Opened lane', true, 'front');
+					}
+					updateFetchModeQueueItem(task.id, {
+						status: 'done',
+						detail: targetCard ? 'Lane opened and queued for scan.' : 'Lane request finished.'
+					});
+				}
+			} catch (error) {
+				if (isFetchModeRunActive(runId)) {
+					updateFetchModeQueueItem(task.id, {
+						status: 'error',
+						error: error instanceof Error ? error.message : 'Fetch mode task failed.'
+					});
+				}
+			} finally {
+				if (isFetchModeRunActive(runId)) {
+					fetchModeProcessedCount += 1;
+					await tick();
+					await yieldToBrowser();
+					postFetchModeWorkerMessage({ type: 'complete', runId, taskId });
+				}
 			}
 		}
 
@@ -2984,6 +3539,7 @@
 			quoteLanes = initialQuoteLanes;
 			postQuotes = {};
 			openQuotePickerCardKey = null;
+			untrack(resetFetchModeState);
 			laneActiveChainIds = buildSeedLaneActiveChainIds(seedQuoteLanes);
 			expandedLaneId = null;
 			activeLaneId = MAIN_LANE_ID;
@@ -3176,9 +3732,13 @@
 			}
 			handleFullscreenChange();
 			scheduleMinimapRefresh();
-		return () => {
-			document.removeEventListener('pointerdown', handleDocumentPointerDown);
-			document.removeEventListener('fullscreenchange', handleFullscreenChange);
+			return () => {
+				advanceFetchModeRunId();
+				fetchModeRunning = false;
+				fetchModePaused = false;
+				teardownFetchModeWorker();
+				document.removeEventListener('pointerdown', handleDocumentPointerDown);
+				document.removeEventListener('fullscreenchange', handleFullscreenChange);
 			window.removeEventListener('keydown', handleBoardShortcutKeydown);
 			window.removeEventListener('mouseup', handleWindowMouseUp);
 			window.removeEventListener('mousemove', handleWindowMouseMove);
@@ -3201,7 +3761,12 @@
 			<span class="dimension-meta">{readyQuoteLanes.length} parallel lane{readyQuoteLanes.length === 1 ? '' : 's'}</span>
 		{/if}
 		{#if showExport}
-			<ThreadExportButton {thread} compact />
+			<ThreadExportButton
+				{thread}
+				selectedPost={activeCard?.post ?? null}
+				allPosts={exportAllPosts}
+				compact
+			/>
 		{/if}
 		<button
 			type="button"
@@ -3210,10 +3775,19 @@
 			onclick={() => {
 				isBigMode = !isBigMode;
 			}}
-		>
-			{isBigMode ? 'Square mode (`m`)' : 'Big mode (`m`)'}
-		</button>
-	</div>
+			>
+				{isBigMode ? 'Square mode (`m`)' : 'Big mode (`m`)'}
+			</button>
+			<button
+					type="button"
+					class="board-mode-btn"
+					class:board-mode-btn-active={fetchModeRunning}
+					title="Queue quote lanes from every board post"
+					onclick={startFetchModeForBoard}
+				>
+				{fetchModeRunning ? 'Stop fetch mode' : 'Fetch mode'}
+			</button>
+		</div>
 
 	{#if celebrationBurst}
 		<div class="celebration-layer" aria-hidden="true">
@@ -3260,11 +3834,80 @@
 				title={isParallelBoardFullscreen ? 'Exit fullscreen' : 'Open fullscreen'}
 			>
 				{isParallelBoardFullscreen ? 'Exit' : 'Full'}
-			</button>
-		</div>
+				</button>
+			</div>
 
-		{#if searchLane}
-			<div class="tree-search-wrap">
+			<div class="board-overlay-panels">
+				{#if fetchModeQueue.length > 0 || fetchModeStatusMessage}
+					{#if showFetchModePanel}
+						<section class="fetch-mode-panel wobbly-border-light" aria-live="polite">
+							<div class="fetch-mode-panel-head">
+								<div>
+									<strong class="fetch-mode-panel-title">Fetch mode</strong>
+									<p class="fetch-mode-panel-status">{fetchModeStatusMessage || 'Idle'}</p>
+								</div>
+								<div class="fetch-mode-panel-actions">
+									{#if fetchModeRunning}
+										<button
+											type="button"
+											class="fetch-mode-pause-btn"
+											onclick={fetchModePaused ? resumeFetchMode : pauseFetchMode}
+										>
+											{fetchModePaused ? 'Resume' : 'Pause'}
+										</button>
+										<button type="button" class="fetch-mode-stop-btn" onclick={stopFetchMode}>Stop</button>
+									{/if}
+									<button
+										type="button"
+										class="fetch-mode-close-btn"
+										aria-label="Hide fetch mode"
+										onclick={closeFetchModePanel}
+									>
+										×
+									</button>
+								</div>
+							</div>
+							<div class="fetch-mode-counts">
+								<span>{fetchModeActiveCount} active</span>
+								<span>{fetchModePendingCount} queued</span>
+								<span>{fetchModeProcessedCount} processed</span>
+								{#if fetchModeErrorCount > 0}
+									<span class="fetch-mode-error-count">{fetchModeErrorCount} errors</span>
+								{/if}
+							</div>
+							{#if visibleFetchModeQueue.length > 0}
+								<ol class="fetch-mode-queue">
+									{#each visibleFetchModeQueue as item, itemIndex (item.id + ':' + itemIndex)}
+										<li
+											class="fetch-mode-task"
+											class:fetch-mode-task-running={item.status === 'running'}
+											class:fetch-mode-task-done={item.status === 'done'}
+											class:fetch-mode-task-skipped={item.status === 'skipped'}
+											class:fetch-mode-task-error={item.status === 'error'}
+										>
+											<span class="fetch-mode-task-state">{getFetchModeTaskStatusLabel(item.status)}</span>
+											<span class="fetch-mode-task-copy">
+												<strong>{item.label}</strong>
+												<span>{item.error || item.detail}</span>
+											</span>
+										</li>
+									{/each}
+								</ol>
+							{/if}
+						</section>
+					{:else}
+						<button
+							type="button"
+							class="fetch-mode-reopen-btn wobbly-border-light"
+							onclick={reopenFetchModePanel}
+						>
+							Fetch mode
+						</button>
+					{/if}
+				{/if}
+
+				{#if searchLane}
+					<div class="tree-search-wrap">
 				{#if !showTreeSearchPanel}
 					<div class="tree-search-mini-stack">
 						<button
@@ -3341,8 +3984,9 @@
 						{/if}
 					</section>
 				{/if}
-			</div>
-		{/if}
+				</div>
+			{/if}
+		</div>
 
 		<div class="parallel-board-stage">
 				<div
@@ -3376,7 +4020,7 @@
 									</marker>
 								</defs>
 
-								{#each boardModel.lanes as lane (lane.id)}
+								{#each boardModel.lanes as lane, laneIndex (lane.id + ':' + laneIndex)}
 									{#if lane.activeCards.length > 0 && !laneIsExpanded(lane.id)}
 										<path
 											d={buildLaneRailPath(lane.activeCards)}
@@ -3387,7 +4031,7 @@
 									{/if}
 								{/each}
 
-								{#each boardModel.connectors as connector (connector.key)}
+								{#each boardModel.connectors as connector, connectorIndex (connector.key + ':' + connectorIndex)}
 									<path
 										d={buildConnectorPath(connector)}
 										class="lane-connector"
@@ -3400,7 +4044,7 @@
 								{/each}
 							</svg>
 
-							{#each boardModel.lanes as lane (lane.id)}
+							{#each boardModel.lanes as lane, laneIndex (lane.id + ':' + laneIndex)}
 								<div
 									class="lane-marker"
 									class:lane-marker-main={lane.kind === 'main'}
@@ -3426,7 +4070,7 @@
 									</button>
 								</div>
 
-								{#each lane.cards as card (card.key)}
+								{#each lane.cards as card, cardIndex (card.key + ':' + cardIndex)}
 									<article
 										use:measureCardHeight={card.key}
 										class="dimension-card"
@@ -3773,7 +4417,7 @@
 																	</p>
 																{:else if getQuoteFeedState(card.post).posts.length > 0}
 																	<div class="card-quote-picker-posts">
-																		{#each getQuoteFeedState(card.post).posts as quotePost, quoteIndex (quotePost.uri)}
+																		{#each getQuoteFeedState(card.post).posts as quotePost, quoteIndex (quotePost.uri + ':' + quoteIndex)}
 																			<button
 																				type="button"
 																				class="card-quote-picker-post"
@@ -3866,7 +4510,7 @@
 															onkeydown={(event) => event.stopPropagation()}
 														>
 															<span class="tree-mode-children-label">Branches:</span>
-															{#each getExpandedTreeChildPosts(card) as child, childIndex (child.uri)}
+															{#each getExpandedTreeChildPosts(card) as child, childIndex (child.uri + ':' + childIndex)}
 																<button
 																	type="button"
 																	class="tree-mode-nav-btn tree-mode-child-btn"
@@ -4339,16 +4983,207 @@
 		border-radius: 0 0 8px 8px;
 	}
 
-	.board-control-btn:hover {
-		background: #8260a9;
-		color: white;
-	}
+		.board-control-btn:hover {
+			background: #8260a9;
+			color: white;
+		}
 
-	.tree-search-wrap {
+	.board-overlay-panels {
 		position: absolute;
 		top: 14px;
 		right: 14px;
-		z-index: 20;
+		z-index: 22;
+		display: flex;
+		align-items: flex-start;
+		justify-content: flex-end;
+		gap: 10px;
+		pointer-events: none;
+	}
+
+		.fetch-mode-panel {
+			position: static;
+			width: 340px;
+			max-width: min(340px, calc(100vw - 500px));
+			min-width: 300px;
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			padding: 10px;
+			background: rgba(255, 252, 245, 0.96);
+			border: 1px solid rgba(61, 64, 91, 0.14);
+			box-shadow: 0 18px 42px rgba(26, 35, 44, 0.12);
+			pointer-events: auto;
+		}
+
+		.fetch-mode-reopen-btn {
+			flex-shrink: 0;
+			padding: 8px 11px;
+			border: 1px solid rgba(61, 64, 91, 0.14);
+			background: rgba(255, 252, 245, 0.96);
+			box-shadow: 0 18px 42px rgba(26, 35, 44, 0.12);
+			font-family: 'Courier New', monospace;
+			font-size: 0.72rem;
+			font-weight: 700;
+			color: #554b67;
+			cursor: pointer;
+			pointer-events: auto;
+		}
+
+		.fetch-mode-panel-head {
+			display: flex;
+			align-items: flex-start;
+			justify-content: space-between;
+			gap: 10px;
+		}
+
+		.fetch-mode-panel-title {
+			font-size: 0.72rem;
+			letter-spacing: 0.08em;
+			text-transform: uppercase;
+			color: #655678;
+		}
+
+		.fetch-mode-panel-status {
+			margin: 3px 0 0;
+			font-family: 'Courier New', monospace;
+			font-size: 0.74rem;
+			line-height: 1.35;
+			color: #433b4e;
+		}
+
+		.fetch-mode-panel-actions {
+			display: flex;
+			flex-shrink: 0;
+			gap: 6px;
+		}
+
+		.fetch-mode-pause-btn,
+		.fetch-mode-stop-btn,
+		.fetch-mode-close-btn {
+			flex-shrink: 0;
+			padding: 6px 10px;
+			border-radius: 999px;
+			font-family: 'Courier New', monospace;
+			font-size: 0.68rem;
+			font-weight: 700;
+			cursor: pointer;
+		}
+
+		.fetch-mode-pause-btn {
+			border: 1px solid rgba(70, 92, 180, 0.24);
+			background: rgba(244, 247, 255, 0.96);
+			color: #4651a8;
+		}
+
+		.fetch-mode-stop-btn {
+			border: 1px solid rgba(180, 35, 24, 0.22);
+			background: rgba(255, 248, 242, 0.96);
+			color: #a33226;
+		}
+
+		.fetch-mode-close-btn {
+			width: 28px;
+			padding: 6px 0;
+			border: 1px solid rgba(68, 53, 79, 0.16);
+			background: rgba(255, 255, 255, 0.86);
+			color: #554b67;
+		}
+
+		.fetch-mode-counts {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 6px;
+			font-family: 'Courier New', monospace;
+			font-size: 0.66rem;
+			color: #6d647a;
+		}
+
+		.fetch-mode-counts span {
+			padding: 3px 7px;
+			border-radius: 999px;
+			background: rgba(68, 53, 79, 0.08);
+		}
+
+		.fetch-mode-counts .fetch-mode-error-count {
+			background: rgba(180, 35, 24, 0.1);
+			color: #a33226;
+		}
+
+		.fetch-mode-queue {
+			display: grid;
+			gap: 6px;
+			max-height: 260px;
+			margin: 0;
+			padding: 0;
+			list-style: none;
+			overflow: auto;
+		}
+
+		.fetch-mode-task {
+			display: grid;
+			grid-template-columns: 44px minmax(0, 1fr);
+			gap: 8px;
+			align-items: start;
+			padding: 8px;
+			border-radius: 8px;
+			background: rgba(247, 242, 231, 0.92);
+			border: 1px solid rgba(77, 66, 96, 0.1);
+		}
+
+		.fetch-mode-task-running {
+			background: rgba(235, 245, 255, 0.96);
+			border-color: rgba(58, 117, 196, 0.2);
+		}
+
+		.fetch-mode-task-done {
+			background: rgba(240, 255, 246, 0.9);
+		}
+
+		.fetch-mode-task-skipped {
+			opacity: 0.72;
+		}
+
+		.fetch-mode-task-error {
+			background: rgba(255, 248, 242, 0.96);
+			border-color: rgba(180, 35, 24, 0.18);
+		}
+
+		.fetch-mode-task-state {
+			display: inline-flex;
+			justify-content: center;
+			padding: 3px 5px;
+			border-radius: 999px;
+			background: rgba(61, 64, 91, 0.1);
+			font-family: 'Courier New', monospace;
+			font-size: 0.58rem;
+			font-weight: 700;
+			text-transform: uppercase;
+			color: #554b67;
+		}
+
+		.fetch-mode-task-copy {
+			min-width: 0;
+			display: grid;
+			gap: 2px;
+		}
+
+		.fetch-mode-task-copy strong {
+			font-family: 'Courier New', monospace;
+			font-size: 0.68rem;
+			color: #342d3d;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.fetch-mode-task-copy span {
+			font-size: 0.68rem;
+			line-height: 1.32;
+			color: #6d647a;
+			word-break: break-word;
+		}
+
+		.tree-search-wrap {
 		width: min(360px, calc(100vw - 110px));
 		display: flex;
 		flex-direction: column;
@@ -6012,12 +6847,30 @@
 			min-height: 460px;
 		}
 
-		.board-controls {
-			top: 10px;
-			left: 10px;
-		}
+			.board-controls {
+				top: 10px;
+				left: 10px;
+			}
 
-		.board-shortcuts-tooltip {
+			.board-overlay-panels {
+				top: 10px;
+				right: 10px;
+				left: 58px;
+				flex-direction: column-reverse;
+				align-items: flex-end;
+			}
+
+			.fetch-mode-panel {
+				width: min(360px, 100%);
+				max-width: 100%;
+				min-width: 0;
+			}
+
+			.tree-search-wrap {
+				width: min(360px, 100%);
+			}
+
+			.board-shortcuts-tooltip {
 			left: auto;
 			right: 0;
 			top: calc(100% + 8px);

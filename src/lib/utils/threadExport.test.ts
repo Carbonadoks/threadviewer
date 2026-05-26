@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { SelfReplyThread, ThreadPost } from '$lib/types';
-import { buildThreadExportData, formatThreadExport } from './threadExport';
+import {
+	buildThreadExportData,
+	formatThreadExport,
+	formatThreadPostMarkdown,
+	formatThreadPostsMarkdown
+} from './threadExport';
 
 function makePost(overrides: Partial<ThreadPost> & { uri: string }): ThreadPost {
 	return {
@@ -145,4 +150,33 @@ test('thread export formats markdown, yaml, and json for clipboard use', () => {
 	assert.ok(/\[Story link\]\(https:\/\/example\.com\/story\)/.test(md));
 	assert.ok(/identityMode: "anon"/.test(yaml));
 	assert.equal(json.root.quote.text, 'Quoted text from Bob');
+});
+
+test('thread export formats one selected post as markdown', () => {
+	const thread = makeThread();
+	const selected = thread.rootPost.children[0];
+	const md = formatThreadPostMarkdown(selected, {
+		identityMode: 'author',
+		exportedAt: '2026-03-08T00:00:00.000Z'
+	});
+
+	assert.ok(md.includes('# Selected post export'));
+	assert.ok(md.includes('Posts: 1'));
+	assert.ok(md.includes('> A reply from Bob'));
+	assert.equal(md.includes('> Root text'), false);
+});
+
+test('thread export formats a deduped flat post list as markdown', () => {
+	const thread = makeThread();
+	const selected = thread.rootPost.children[0];
+	const md = formatThreadPostsMarkdown([thread.rootPost, selected, selected], {
+		identityMode: 'author',
+		exportedAt: '2026-03-08T00:00:00.000Z',
+		title: 'All loaded board posts'
+	});
+
+	assert.ok(md.includes('# All loaded board posts'));
+	assert.ok(md.includes('Posts: 2'));
+	assert.ok(md.includes('Reply to: post_1'));
+	assert.equal((md.match(/A reply from Bob/g) ?? []).length, 1);
 });

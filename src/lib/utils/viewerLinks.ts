@@ -7,6 +7,7 @@ export type ViewerPage =
 	| 'blog'
 	| 'treeviewer'
 	| 'parallelboard'
+	| 'band'
 	| 'bisk2bisk'
 	| 'judge'
 	| 'dialogue'

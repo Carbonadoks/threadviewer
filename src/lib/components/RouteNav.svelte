@@ -21,6 +21,7 @@
 		| 'treeviewer'
 		| 'town'
 		| 'parallelboard'
+		| 'band'
 		| 'loom'
 		| 'bisk2bisk'
 		| 'matrix'
@@ -68,6 +69,7 @@
 		{ id: 'blog', href: '/blog', label: 'Blog' },
 		{ id: 'treeviewer', href: '/treeviewer', label: 'Treeviewer', compactLabel: 'Tree' },
 		{ id: 'parallelboard', href: '/parallelboard', label: 'Parallel Board', compactLabel: 'Parallel' },
+		{ id: 'band', href: '/band', label: 'Band' },
 		{ id: 'loom', href: '/loom', label: 'Loom' },
 		{ id: 'bisk2bisk', href: '/bisk2bisk', label: 'Bisk2Bisk', compactLabel: 'Bisk2Bisk' },
 		{ id: 'matrix', href: '/matrix', label: 'Matrix' },
@@ -94,6 +96,7 @@
 			item.id === 'blog' ||
 			item.id === 'treeviewer' ||
 			item.id === 'parallelboard' ||
+			item.id === 'band' ||
 			item.id === 'bisk2bisk' ||
 			item.id === 'judge'
 		) {

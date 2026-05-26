@@ -2,40 +2,30 @@
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
 	import '../../app.css';
-	import {
-		getFullThread,
-		type PostSearchAgent,
-		type ProfileInfo
-	} from '$lib/api/bluesky';
-	import {
-		connectBlueskyWithPopup,
-		getBlueskyOAuthDebugInfo,
-		forgetStoredBlueskySessionLocally,
-		hasBlueskySearchPostsScope,
-		initAuthenticatedBlueskyClient,
-		resetBlueskyOAuthClient,
-		type BlueskyOAuthDebugInfo,
-		type AuthenticatedBlueskyContext
-	} from '$lib/api/blueskyAuth';
-	import {
-		BLUESKY_OAUTH_SCOPE,
-		BLUESKY_SEARCH_POSTS_SCOPE,
-		BLUESKY_SEARCH_POSTS_SCOPES
-	} from '$lib/constants/blueskyOAuth';
 	import FontPicker from '$lib/components/FontPicker.svelte';
 	import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
 	import PostEmbedPreview from '$lib/components/PostEmbedPreview.svelte';
 	import RouteNav from '$lib/components/RouteNav.svelte';
-	import type { SelfReplyThread, ThreadPost } from '$lib/types';
+	import { ATPROIDEASIO_TAG } from '$lib/constants/atproideasio';
+	import type { ThreadPost } from '$lib/types';
+	import type {
+		AtproideasioBoardResponse,
+		AtproideasioCandidate,
+		AtproideasioIssueDraft,
+		AtproideasioPriority,
+		AtproideasioSavedIdea,
+		AtproideasioSavedStories,
+		AtproideasioSourcePost,
+		AtproideasioStatus
+	} from '$lib/types/atproideasio';
+	import {
+		buildFuzzyTextMatcher,
+		fuzzyTextMatches,
+		type FuzzyTextMatcher
+	} from '$lib/utils/fuzzySearch';
 	import { flattenThread } from '$lib/utils/threadFlattener';
-	import { buildBskyPostUrl } from '$lib/utils/viewerLinks';
 
-	const IDEA_TAG = 'atproideasio';
-	const SEARCH_AUTH_OPTIONS = {
-		scope: BLUESKY_OAUTH_SCOPE,
-		prompt: 'consent' as const
-	};
-	const SAVED_IDEAS_STORAGE_KEY = 'atproideasio.savedIdeas.v1';
+	const IDEA_TAG = ATPROIDEASIO_TAG;
 	const DISMISSED_STORAGE_KEY = 'atproideasio.dismissedRootUris.v1';
 
 	const fontFamilies: Record<string, string> = {
@@ -47,8 +37,8 @@
 		system: "system-ui, -apple-system, sans-serif"
 	};
 
-	type IdeaStatus = 'todo' | 'in_progress' | 'done';
-	type IdeaPriority = 'low' | 'medium' | 'high';
+	type IdeaStatus = AtproideasioStatus;
+	type IdeaPriority = AtproideasioPriority;
 	type SavedIdeasView = 'kanban' | 'list';
 	type IssueField =
 		| 'title'
@@ -59,62 +49,11 @@
 		| 'status'
 		| 'priority';
 
-	interface DraftIssue {
-		title: string;
-		userStory: string;
-		description: string;
-		acceptanceCriteria: string;
-		notes: string;
-		status: IdeaStatus;
-		priority: IdeaPriority;
-	}
-
-	interface IdeaThread extends SelfReplyThread {
-		isTruncated?: boolean;
-	}
-
-	interface IdeaCandidate {
-		id: string;
-		taggedPostUri: string;
-		sourceUrl: string | null;
-		thread: IdeaThread;
-		includedUris: string[];
-		issue: DraftIssue;
-		fetchedAt: string;
-	}
-
-	interface SavedSourcePost {
-		uri: string;
-		authorHandle: string;
-		authorDisplayName?: string;
-		text: string;
-		createdAt: string;
-	}
-
-	interface SavedIdea extends DraftIssue {
-		id: string;
-		rootUri: string;
-		taggedPostUri: string;
-		sourceUrl: string | null;
-		keptPostUris: string[];
-		sourcePosts: SavedSourcePost[];
-		postCount: number;
-		authorHandle: string;
-		authorDisplayName?: string;
-		createdAt: string;
-		updatedAt: string;
-	}
-
-	interface TaggedPostSearchPage {
-		posts: ThreadPost[];
-		cursor?: string;
-		hitsTotal?: number;
-		searchMode?: string;
-		warnings?: Array<{ label: string; status?: number; detail: string }>;
-		message?: string;
-		detail?: string;
-		failures?: Array<{ label: string; status?: number; detail: string }>;
-	}
+	type DraftIssue = AtproideasioIssueDraft;
+	type IdeaCandidate = AtproideasioCandidate;
+	type SavedSourcePost = AtproideasioSourcePost;
+	type SavedIdea = AtproideasioSavedIdea;
+	type CandidateStateFilter = 'all' | 'unsaved' | 'saved' | 'improved';
 
 	const IDEA_STATUS_COLUMNS: Array<{ id: IdeaStatus; label: string }> = [
 		{ id: 'todo', label: 'Todo' },
@@ -128,46 +67,79 @@
 	let savedIdeas: SavedIdea[] = $state([]);
 	let dismissedRootUris: string[] = $state([]);
 	let activeCandidateId: string | null = $state(null);
+	let intakeCollapsed = $state(false);
 	let loading = $state(false);
-	let connecting = $state(false);
-	let restoringSession = $state(true);
 	let fetchPhase = $state('');
 	let fetchCurrent = $state(0);
 	let fetchTotal = $state(0);
 	let fetchError: string | null = $state(null);
 	let fetchWarnings: string[] = $state([]);
 	let hitsTotal: number | null = $state(null);
-	let authError: string | null = $state(null);
-	let profile: ProfileInfo | null = $state(null);
-	let sessionSub: string | null = $state(null);
-	let grantedScope: string | null = $state(null);
-	let oauthDebug: BlueskyOAuthDebugInfo | null = $state(null);
-	let authAgent: PostSearchAgent | null = $state(null);
+	let cacheUpdatedAt: string | null = $state(null);
+	let cacheMissing = $state(true);
+	let cacheStats: AtproideasioBoardResponse['stats'] = $state(null);
 	let savedIdeasView: SavedIdeasView = $state('kanban');
+	let intakeSearchQuery = $state('');
+	let intakeStatusFilter: 'all' | IdeaStatus = $state('all');
+	let intakePriorityFilter: 'all' | IdeaPriority = $state('all');
+	let intakeStateFilter: CandidateStateFilter = $state('all');
+	let savedSearchQuery = $state('');
+	let savedStatusFilter: 'all' | IdeaStatus = $state('all');
+	let savedPriorityFilter: 'all' | IdeaPriority = $state('all');
+	let claimDrafts: Record<string, string> = $state({});
+	let savedStoriesSaving = $state(false);
+	let savedStoriesError: string | null = $state(null);
 	let activeFetchController: AbortController | null = null;
 
 	const dismissedRootSet = $derived(new Set(dismissedRootUris));
-	const sessionLabel = $derived.by(() => {
-		if (profile) return `Connected as @${profile.handle}`;
-		if (connecting) return 'Connecting to Bluesky...';
-		if (restoringSession) return 'Restoring Bluesky session...';
-		return 'Bluesky search requires sign-in';
-	});
+	const savedRootSet = $derived(new Set(savedIdeas.map((idea) => idea.rootUri)));
+	const intakeSearchMatcher = $derived(buildFuzzyTextMatcher(intakeSearchQuery));
+	const savedSearchMatcher = $derived(buildFuzzyTextMatcher(savedSearchQuery));
+	const hasIntakeFilters = $derived(
+		Boolean(intakeSearchQuery.trim()) ||
+			intakeStatusFilter !== 'all' ||
+			intakePriorityFilter !== 'all' ||
+			intakeStateFilter !== 'all'
+	);
+	const hasSavedFilters = $derived(
+		Boolean(savedSearchQuery.trim()) ||
+			savedStatusFilter !== 'all' ||
+			savedPriorityFilter !== 'all'
+	);
+	const filteredCandidates = $derived(
+		candidates.filter((candidate) => candidateMatchesIntakeFilters(candidate, intakeSearchMatcher))
+	);
+	const filteredSavedIdeas = $derived(
+		savedIdeas.filter((idea) => savedIdeaMatchesFilters(idea, savedSearchMatcher))
+	);
+	const intakeCountLabel = $derived(
+		filteredCandidates.length === candidates.length
+			? String(candidates.length)
+			: `${filteredCandidates.length}/${candidates.length}`
+	);
+	const savedCountLabel = $derived(
+		filteredSavedIdeas.length === savedIdeas.length
+			? String(savedIdeas.length)
+			: `${filteredSavedIdeas.length}/${savedIdeas.length}`
+	);
 	const activeCandidate = $derived(
-		candidates.find((candidate) => candidate.id === activeCandidateId) ?? candidates[0] ?? null
+		filteredCandidates.find((candidate) => candidate.id === activeCandidateId) ??
+			filteredCandidates[0] ??
+			null
 	);
 	const activeFlatPosts = $derived(
 		activeCandidate ? flattenThread(activeCandidate.thread.rootPost) : []
 	);
 	const activeKeptPostCount = $derived(activeCandidate?.includedUris.length ?? 0);
 	const hasSavedIdeas = $derived(savedIdeas.length > 0);
-	const hasGrantedSearchPostsScope = $derived(
-		grantedScope ? hasBlueskySearchPostsScope(grantedScope) : false
+	const hasVisibleSavedIdeas = $derived(filteredSavedIdeas.length > 0);
+	const claimedSavedCount = $derived(
+		savedIdeas.filter((idea) => Boolean(idea.claim?.claimedBy)).length
 	);
 	const kanbanColumns = $derived(
 		IDEA_STATUS_COLUMNS.map((column) => ({
 			...column,
-			ideas: savedIdeas.filter((idea) => idea.status === column.id)
+			ideas: filteredSavedIdeas.filter((idea) => idea.status === column.id)
 		}))
 	);
 
@@ -189,13 +161,6 @@
 		}
 	}
 
-	function persistSavedIdeas() {
-		if (!browser) return;
-		try {
-			localStorage.setItem(SAVED_IDEAS_STORAGE_KEY, JSON.stringify(savedIdeas));
-		} catch {}
-	}
-
 	function persistDismissedRootUris() {
 		if (!browser) return;
 		try {
@@ -214,11 +179,24 @@
 		return 'medium';
 	}
 
+	function normalizeIdeaClaim(value: unknown): SavedIdea['claim'] {
+		if (!value || typeof value !== 'object') return undefined;
+		const claim = value as Partial<NonNullable<SavedIdea['claim']>>;
+		const claimedBy = typeof claim.claimedBy === 'string' ? claim.claimedBy.trim() : '';
+		if (!claimedBy) return undefined;
+		return {
+			claimedBy,
+			claimedAt:
+				typeof claim.claimedAt === 'string' && claim.claimedAt ? claim.claimedAt : new Date().toISOString()
+		};
+	}
+
 	function normalizeSavedIdea(idea: SavedIdea): SavedIdea {
 		return {
 			...idea,
 			status: normalizeIdeaStatus(idea.status),
-			priority: normalizeIdeaPriority(idea.priority)
+			priority: normalizeIdeaPriority(idea.priority),
+			claim: normalizeIdeaClaim(idea.claim)
 		};
 	}
 
@@ -233,10 +211,6 @@
 			.replace(new RegExp(`#${IDEA_TAG}\\b`, 'gi'), '')
 			.replace(/\s+/g, ' ')
 			.trim();
-	}
-
-	function postUrl(post: ThreadPost): string | null {
-		return buildBskyPostUrl(post.uri, post.author.handle);
 	}
 
 	function dateLabel(value: string): string {
@@ -270,21 +244,98 @@
 		return cleanIdeaText(idea.sourcePosts.map((post) => post.text).join('\n\n')) || '[No text]';
 	}
 
-	function buildIssueDraft(
-		thread: IdeaThread,
-		taggedPostUri: string,
-		includedUris?: string[]
-	): DraftIssue {
-		const posts = flattenThread(thread.rootPost).map((item) => item.post);
-		const included = includedUris
-			? posts.filter((post) => includedUris.includes(post.uri))
-			: posts;
-		const source = included.find((post) => post.uri === taggedPostUri) ?? included[0] ?? thread.rootPost;
+	function matchesTextSearch(text: string, matcher: FuzzyTextMatcher): boolean {
+		return matcher.terms.length === 0 || fuzzyTextMatches(text, matcher);
+	}
+
+	function candidateSearchText(candidate: IdeaCandidate): string {
+		const posts = flattenThread(candidate.thread.rootPost).map((item) => item.post);
+		return [
+			candidate.ai?.title,
+			candidate.ai?.summary,
+			candidate.issue.title,
+			candidate.issue.userStory,
+			candidate.issue.description,
+			candidate.issue.acceptanceCriteria,
+			candidate.issue.notes,
+			candidate.issue.status,
+			candidate.issue.priority,
+			candidate.thread.rootPost.author.handle,
+			candidate.thread.rootPost.author.displayName,
+			candidate.sourceUrl ?? '',
+			posts
+				.map((post) =>
+					[post.author.handle, post.author.displayName, post.text, post.createdAt].filter(Boolean).join(' ')
+				)
+				.join('\n')
+		]
+			.filter(Boolean)
+			.join('\n');
+	}
+
+	function savedIdeaSearchText(idea: SavedIdea): string {
+		return [
+			idea.ai?.title,
+			idea.ai?.summary,
+			idea.title,
+			savedIdeaPostText(idea),
+			idea.description,
+			idea.acceptanceCriteria,
+			idea.notes,
+			idea.status,
+			idea.priority,
+			idea.claim?.claimedBy,
+			idea.authorHandle,
+			idea.authorDisplayName,
+			idea.sourceUrl ?? '',
+			idea.sourcePosts
+				.map((post) =>
+					[post.authorHandle, post.authorDisplayName, post.text, post.createdAt].filter(Boolean).join(' ')
+				)
+				.join('\n')
+		]
+			.filter(Boolean)
+			.join('\n');
+	}
+
+	function candidateMatchesIntakeFilters(
+		candidate: IdeaCandidate,
+		matcher: FuzzyTextMatcher
+	): boolean {
+		if (intakeStatusFilter !== 'all' && candidate.issue.status !== intakeStatusFilter) return false;
+		if (intakePriorityFilter !== 'all' && candidate.issue.priority !== intakePriorityFilter) return false;
+		if (intakeStateFilter === 'saved' && !candidateIsSaved(candidate)) return false;
+		if (intakeStateFilter === 'unsaved' && candidateIsSaved(candidate)) return false;
+		if (intakeStateFilter === 'improved' && !candidate.state?.improved && !candidate.ai) return false;
+		return matchesTextSearch(candidateSearchText(candidate), matcher);
+	}
+
+	function savedIdeaMatchesFilters(idea: SavedIdea, matcher: FuzzyTextMatcher): boolean {
+		if (savedStatusFilter !== 'all' && idea.status !== savedStatusFilter) return false;
+		if (savedPriorityFilter !== 'all' && idea.priority !== savedPriorityFilter) return false;
+		return matchesTextSearch(savedIdeaSearchText(idea), matcher);
+	}
+
+	function clearIntakeFilters() {
+		intakeSearchQuery = '';
+		intakeStatusFilter = 'all';
+		intakePriorityFilter = 'all';
+		intakeStateFilter = 'all';
+	}
+
+	function clearSavedFilters() {
+		savedSearchQuery = '';
+		savedStatusFilter = 'all';
+		savedPriorityFilter = 'all';
+	}
+
+	function fallbackIssueDraft(candidate: IdeaCandidate, posts: ThreadPost[]): DraftIssue {
+		const source =
+			posts.find((post) => post.uri === candidate.taggedPostUri) ?? posts[0] ?? candidate.thread.rootPost;
 		const sourceText = cleanIdeaText(source.text);
-		const fallbackText = cleanIdeaText(included.map((post) => post.text).join(' '));
+		const fallbackText = cleanIdeaText(posts.map((post) => post.text).join(' '));
 		const summary = truncate(sourceText || fallbackText || 'Untitled idea', 110);
 		const title = truncate(summary.split(/[.!?\n]/)[0] || summary, 78);
-
 		return {
 			title,
 			userStory: sourceText || fallbackText || '[No text]',
@@ -296,18 +347,42 @@
 		};
 	}
 
-	function makeCandidate(thread: IdeaThread, taggedPost: ThreadPost): IdeaCandidate {
-		const posts = flattenThread(thread.rootPost).map((item) => item.post);
-		const includedUris = posts.map((post) => post.uri);
+	function candidateIsSaved(candidate: IdeaCandidate): boolean {
+		return Boolean(candidate.state?.saved) || savedRootSet.has(candidate.thread.rootUri);
+	}
+
+	function normalizeCandidate(candidate: IdeaCandidate): IdeaCandidate {
+		const posts = flattenThread(candidate.thread.rootPost).map((item) => item.post);
+		const fallbackIssue = fallbackIssueDraft(candidate, posts);
+		const postUris = new Set(posts.map((post) => post.uri));
+		const includedUris = Array.isArray(candidate.includedUris)
+			? candidate.includedUris.filter((uri) => postUris.has(uri))
+			: posts.map((post) => post.uri);
+		const issue = candidate.issue ?? fallbackIssue;
+
 		return {
-			id: thread.rootUri,
-			taggedPostUri: taggedPost.uri,
-			sourceUrl: postUrl(taggedPost),
-			thread,
-			includedUris,
-			issue: buildIssueDraft(thread, taggedPost.uri, includedUris),
-			fetchedAt: new Date().toISOString()
+			...candidate,
+			id: candidate.id || candidate.thread.rootUri,
+			includedUris: includedUris.length > 0 ? includedUris : posts.map((post) => post.uri),
+			issue: {
+				...fallbackIssue,
+				...issue,
+				status: normalizeIdeaStatus(issue.status),
+				priority: normalizeIdeaPriority(issue.priority)
+			},
+			fetchedAt: candidate.fetchedAt || new Date().toISOString(),
+			state: {
+				saved: Boolean(candidate.state?.saved) || savedRootSet.has(candidate.thread.rootUri),
+				improved: Boolean(candidate.ai ?? candidate.state?.improved)
+			}
 		};
+	}
+
+	function filterCachedCandidates(nextCandidates: IdeaCandidate[]): IdeaCandidate[] {
+		const hiddenRootUris = new Set(dismissedRootUris);
+		return nextCandidates
+			.map(normalizeCandidate)
+			.filter((candidate) => !hiddenRootUris.has(candidate.thread.rootUri));
 	}
 
 	function sourcePostSnapshot(post: ThreadPost): SavedSourcePost {
@@ -324,183 +399,6 @@
 		return (
 			error instanceof DOMException && error.name === 'AbortError'
 		) || String((error as { name?: string })?.name ?? '') === 'AbortError';
-	}
-
-	function isMissingSearchScopeError(error: unknown): boolean {
-		const message = String((error as { message?: string } | null | undefined)?.message ?? '');
-		return message.includes('Missing required scope') && message.includes('app.bsky.feed.searchPosts');
-	}
-
-	function errorDebugFields(error: unknown): Record<string, unknown> {
-		const item = error as {
-			name?: string;
-			message?: string;
-			status?: unknown;
-			statusCode?: unknown;
-			error?: unknown;
-			headers?: unknown;
-			cause?: unknown;
-			data?: unknown;
-		} | null;
-		return {
-			name: item?.name,
-			message: item?.message,
-			status: item?.status,
-			statusCode: item?.statusCode,
-			error: item?.error,
-			headers: item?.headers,
-			cause: item?.cause,
-			data: item?.data
-		};
-	}
-
-	function logSearchPostsError(error: unknown, page: number, cursor?: string) {
-		const grantHasScope = grantedScope ? hasBlueskySearchPostsScope(grantedScope) : false;
-		console.error('[atproideasio] app.bsky.feed.searchPosts failed', {
-			page,
-			cursor,
-			requestedScope: BLUESKY_SEARCH_POSTS_SCOPE,
-			requestedSearchScopes: BLUESKY_SEARCH_POSTS_SCOPES,
-			metadataScope: oauthDebug?.scope ?? null,
-			grantedScope,
-			grantHasRequiredScope: grantHasScope,
-			clientId: oauthDebug?.clientId ?? null,
-			error: errorDebugFields(error),
-			rawError: error
-		});
-	}
-
-	function missingSearchScopeMessage(): string {
-		return `Your Bluesky grant is missing post search permission (${BLUESKY_SEARCH_POSTS_SCOPES.join(' or ')}). Click Connect Bluesky once and approve the new permission before fetching again.`;
-	}
-
-	function rejectedSearchScopeMessage(): string {
-		return `Bluesky rejected post search for ${BLUESKY_SEARCH_POSTS_SCOPE}, even though this session reports that scope. Check the browser console for the raw XRPC error.`;
-	}
-
-	function formatAuthError(error: unknown, fallback: string): string {
-		const message = String((error as { message?: string } | null | undefined)?.message ?? '');
-		if (message.includes('Missing required scope')) {
-			return missingSearchScopeMessage();
-		}
-		if (message.includes('popup')) {
-			return 'Bluesky sign-in popup was blocked or closed before the search could start.';
-		}
-		return message || fallback;
-	}
-
-	function resetAuthState() {
-		profile = null;
-		sessionSub = null;
-		grantedScope = null;
-		authAgent = null;
-	}
-
-	async function refreshOAuthDebug() {
-		if (!browser) return;
-		try {
-			oauthDebug = await getBlueskyOAuthDebugInfo();
-		} catch {
-			oauthDebug = null;
-		}
-	}
-
-	async function applyAuthenticatedContext(context: AuthenticatedBlueskyContext) {
-		profile = context.profile;
-		sessionSub = context.session.sub;
-		grantedScope = context.scope;
-		authAgent = context.agent as unknown as PostSearchAgent;
-		authError = null;
-	}
-
-	async function restoreSession() {
-		restoringSession = true;
-		authError = null;
-
-		try {
-			const { context } = await initAuthenticatedBlueskyClient();
-			if (context) {
-				await applyAuthenticatedContext(context);
-			} else {
-				resetAuthState();
-			}
-		} catch (error: any) {
-			const message = String(error?.message || '');
-			if (message.includes('Redirecting to loopback IP')) return;
-			authError = formatAuthError(error, 'Could not restore your Bluesky session.');
-			resetAuthState();
-		} finally {
-			restoringSession = false;
-		}
-	}
-
-	async function handleConnect() {
-		connecting = true;
-		authError = null;
-		resetBlueskyOAuthClient();
-		await refreshOAuthDebug();
-		await forgetStoredBlueskySessionLocally(sessionSub);
-		resetAuthState();
-
-		try {
-			const context = await connectBlueskyWithPopup(SEARCH_AUTH_OPTIONS);
-			await applyAuthenticatedContext(context);
-		} catch (error) {
-			authError = formatAuthError(error, 'Could not connect your Bluesky account.');
-		} finally {
-			connecting = false;
-		}
-	}
-
-	async function handleDisconnect() {
-		const sub = sessionSub;
-		if (!sub) return;
-
-		try {
-			await forgetStoredBlueskySessionLocally(sub);
-			resetAuthState();
-		} catch (error: any) {
-			authError = error?.message || 'Could not disconnect your Bluesky session.';
-		}
-	}
-
-	async function getSearchAgent(): Promise<PostSearchAgent> {
-		if (authAgent) return authAgent;
-		throw new Error('Connect Bluesky first, then fetch tagged posts.');
-	}
-
-	async function searchTaggedPostsPage(options: {
-		agent: PostSearchAgent;
-		cursor?: string;
-		limit?: number;
-		signal?: AbortSignal;
-	}): Promise<TaggedPostSearchPage> {
-		const params = new URLSearchParams({
-			tag: IDEA_TAG,
-			sort: 'latest',
-			limit: String(options.limit ?? 100)
-		});
-		if (options.cursor) params.set('cursor', options.cursor);
-
-		const response = await fetch(`/api/atproideasio/search?${params}`, {
-			headers: { Accept: 'application/json' },
-			signal: options.signal
-		});
-		const data = await response.json().catch(() => ({}));
-
-		if (!response.ok) {
-			const error = new Error(data?.message || `Tagged post search failed with ${response.status}`) as Error & {
-				status?: number;
-				error?: unknown;
-				data?: unknown;
-			};
-			error.status = response.status;
-			error.error = data?.error;
-			error.data = data;
-			throw error;
-		}
-
-		return data as TaggedPostSearchPage;
 	}
 
 	function inputValue(event: Event): string {
@@ -526,8 +424,8 @@
 		);
 	}
 
-	function setSavedIdeaField(id: string, field: IssueField, value: string) {
-		savedIdeas = savedIdeas.map((idea) =>
+	function updateSavedIdeaField(id: string, field: IssueField, value: string): SavedIdea[] {
+		return savedIdeas.map((idea) =>
 			idea.id === id
 				? {
 						...idea,
@@ -541,11 +439,130 @@
 					}
 				: idea
 		);
-		persistSavedIdeas();
+	}
+
+	function setSavedIdeaField(id: string, field: IssueField, value: string) {
+		savedIdeas = updateSavedIdeaField(id, field, value);
+	}
+
+	function claimDraftValue(idea: SavedIdea): string {
+		return claimDrafts[idea.id] ?? idea.claim?.claimedBy ?? '';
+	}
+
+	function setClaimDraft(id: string, value: string) {
+		claimDrafts = {
+			...claimDrafts,
+			[id]: value
+		};
+	}
+
+	function clearClaimDraft(id: string) {
+		const { [id]: _removed, ...nextDrafts } = claimDrafts;
+		claimDrafts = nextDrafts;
+	}
+
+	function canSubmitClaim(idea: SavedIdea): boolean {
+		const nextClaimant = claimDraftValue(idea).trim();
+		const currentClaimant = idea.claim?.claimedBy.trim() ?? '';
+		return Boolean(nextClaimant) && nextClaimant !== currentClaimant;
+	}
+
+	function applySavedStories(stories: SavedIdea[]) {
+		savedIdeas = stories.map(normalizeSavedIdea);
+		candidates = candidates.map((candidate) => ({
+			...candidate,
+			state: {
+				saved: savedIdeas.some((idea) => idea.rootUri === candidate.thread.rootUri),
+				improved: Boolean(candidate.ai ?? candidate.state?.improved)
+			}
+		}));
+	}
+
+	async function persistSavedStories(nextStories: SavedIdea[] = savedIdeas) {
+		savedStoriesSaving = true;
+		savedStoriesError = null;
+		const payload: AtproideasioSavedStories = {
+			version: 1,
+			updatedAt: new Date().toISOString(),
+			stories: nextStories
+		};
+
+		try {
+			const response = await fetch('/api/atproideasio/saved-stories', {
+				method: 'PUT',
+				headers: {
+					Accept: 'application/json',
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify(payload)
+			});
+			const data = (await response.json().catch(() => ({}))) as Partial<AtproideasioSavedStories> & {
+				message?: string;
+			};
+			if (!response.ok) {
+				throw new Error(data.message || `Saved stories update failed with ${response.status}`);
+			}
+			applySavedStories(data.stories ?? nextStories);
+		} catch (error: any) {
+			savedStoriesError = error?.message || 'Failed to save stories.';
+		} finally {
+			savedStoriesSaving = false;
+		}
+	}
+
+	async function updateSavedIdeaClaim(id: string, claimedBy: string | null) {
+		const cleanClaimant = claimedBy?.trim() ?? '';
+		if (claimedBy !== null && !cleanClaimant) {
+			savedStoriesError = 'Enter a name or handle before claiming an idea.';
+			return;
+		}
+
+		savedStoriesSaving = true;
+		savedStoriesError = null;
+		try {
+			const response = await fetch('/api/atproideasio/saved-stories', {
+				method: 'POST',
+				headers: {
+					Accept: 'application/json',
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({
+					action: cleanClaimant ? 'claim' : 'release',
+					id,
+					claimedBy: cleanClaimant || undefined
+				})
+			});
+			const data = (await response.json().catch(() => ({}))) as Partial<AtproideasioSavedStories> & {
+				message?: string;
+			};
+			if (!response.ok) {
+				throw new Error(data.message || `Claim update failed with ${response.status}`);
+			}
+			applySavedStories(data.stories ?? savedIdeas);
+			if (cleanClaimant) {
+				setClaimDraft(id, cleanClaimant);
+			} else {
+				clearClaimDraft(id);
+			}
+		} catch (error: any) {
+			savedStoriesError = error?.message || 'Failed to update claim.';
+		} finally {
+			savedStoriesSaving = false;
+		}
+	}
+
+	function claimSavedIdea(idea: SavedIdea) {
+		void updateSavedIdeaClaim(idea.id, claimDraftValue(idea));
+	}
+
+	function releaseSavedIdeaClaim(id: string) {
+		void updateSavedIdeaClaim(id, null);
 	}
 
 	function moveSavedIdeaToStatus(id: string, status: IdeaStatus) {
-		setSavedIdeaField(id, 'status', status);
+		const nextIdeas = updateSavedIdeaField(id, 'status', status);
+		savedIdeas = nextIdeas;
+		void persistSavedStories(nextIdeas);
 	}
 
 	function toggleCandidatePost(candidateId: string, postUri: string) {
@@ -573,11 +590,12 @@
 	function clearDismissedIdeas() {
 		dismissedRootUris = [];
 		persistDismissedRootUris();
+		void loadCachedIdeas();
 	}
 
 	function saveCandidate(candidateId: string) {
 		const candidate = candidates.find((item) => item.id === candidateId);
-		if (!candidate) return;
+		if (!candidate || candidateIsSaved(candidate)) return;
 		const sourcePosts = selectedPostsForCandidate(candidate);
 		if (sourcePosts.length === 0) return;
 
@@ -595,127 +613,126 @@
 			authorDisplayName: candidate.thread.rootPost.author.displayName,
 			createdAt: existing?.createdAt ?? now,
 			updatedAt: now,
+			ai: candidate.ai,
 			...candidate.issue
 		};
 
-		savedIdeas = [saved, ...savedIdeas.filter((idea) => idea.id !== saved.id)];
-		persistSavedIdeas();
-		candidates = candidates.filter((item) => item.id !== candidateId);
-		activeCandidateId = candidates[0]?.id ?? null;
+		const nextIdeas = [saved, ...savedIdeas.filter((idea) => idea.id !== saved.id)];
+		savedIdeas = nextIdeas;
+		candidates = candidates.map((item) =>
+			item.id === candidateId
+				? {
+						...item,
+						state: {
+							saved: true,
+							improved: Boolean(item.ai ?? item.state?.improved)
+						}
+					}
+				: item
+		);
+		void persistSavedStories(nextIdeas);
 	}
 
 	function deleteSavedIdea(id: string) {
-		savedIdeas = savedIdeas.filter((idea) => idea.id !== id);
-		persistSavedIdeas();
+		const deleted = savedIdeas.find((idea) => idea.id === id);
+		const nextIdeas = savedIdeas.filter((idea) => idea.id !== id);
+		savedIdeas = nextIdeas;
+		if (deleted) {
+			candidates = candidates.map((candidate) =>
+				candidate.thread.rootUri === deleted.rootUri
+					? {
+							...candidate,
+							state: {
+								saved: false,
+								improved: Boolean(candidate.ai ?? candidate.state?.improved)
+							}
+						}
+					: candidate
+			);
+		}
+		void persistSavedStories(nextIdeas);
 	}
 
 	function cancelFetch() {
 		activeFetchController?.abort();
 	}
 
-	async function fetchTaggedIdeas() {
-		if (loading) return;
-		if (!authAgent) {
-			authError = 'Connect Bluesky first, then fetch tagged posts.';
-			return;
+	async function loadSavedStories() {
+		savedStoriesError = null;
+		try {
+			const response = await fetch('/api/atproideasio/saved-stories', {
+				headers: { Accept: 'application/json' }
+			});
+			const data = (await response.json().catch(() => ({}))) as Partial<AtproideasioSavedStories> & {
+				message?: string;
+			};
+			if (!response.ok) {
+				throw new Error(data.message || `Saved stories failed with ${response.status}`);
+			}
+			applySavedStories(data.stories ?? []);
+		} catch (error: any) {
+			savedStoriesError = error?.message || 'Failed to load saved stories.';
+			savedIdeas = [];
 		}
+	}
+
+	async function loadCachedIdeas() {
+		if (loading) return;
 
 		const controller = new AbortController();
 		activeFetchController = controller;
 		loading = true;
 		fetchError = null;
 		fetchWarnings = [];
-		fetchPhase = 'Searching posts';
+		fetchPhase = 'Loading cached intake';
 		fetchCurrent = 0;
 		fetchTotal = 0;
 		hitsTotal = null;
 
 		try {
-			const searchAgent = await getSearchAgent();
-			fetchPhase = 'Searching posts';
-			const posts: ThreadPost[] = [];
-			const seenPostUris = new Set<string>();
+			const response = await fetch('/api/atproideasio/board', {
+				headers: { Accept: 'application/json' },
+				signal: controller.signal
+			});
+			const data = (await response.json().catch(() => ({}))) as Partial<AtproideasioBoardResponse> & {
+				message?: string;
+			};
 
-			let result: TaggedPostSearchPage;
-			try {
-				result = await searchTaggedPostsPage({
-					agent: searchAgent,
-					limit: 100,
-					signal: controller.signal
-				});
-			} catch (error) {
-				if (!isMissingSearchScopeError(error)) throw error;
-				logSearchPostsError(error, 0);
-				if (!grantedScope || !hasBlueskySearchPostsScope(grantedScope)) {
-					throw new Error(missingSearchScopeMessage());
-				}
-				throw new Error(rejectedSearchScopeMessage());
-			}
-			hitsTotal = result.hitsTotal ?? hitsTotal;
-			for (const post of result.posts) {
-				if (seenPostUris.has(post.uri)) continue;
-				seenPostUris.add(post.uri);
-				posts.push(post);
-			}
-			fetchCurrent = posts.length;
-			fetchTotal = result.hitsTotal ?? posts.length;
-			if (result.cursor) {
-				fetchWarnings = [
-					...fetchWarnings,
-					'Bluesky search pagination is disabled because the public AppView rejects cursor-based search requests.'
-				];
-			}
-			if (result.warnings?.length) {
-				fetchWarnings = [
-					...fetchWarnings,
-					...result.warnings.slice(0, 3).map((warning) => warning.detail)
-				];
+			if (!response.ok) {
+				throw new Error(data.message || `Cached intake failed with ${response.status}`);
 			}
 
-			const knownRootUris = new Set([
-				...candidates.map((candidate) => candidate.thread.rootUri),
-				...savedIdeas.map((idea) => idea.rootUri),
-				...dismissedRootUris
-			]);
-			const nextCandidates: IdeaCandidate[] = [];
-			fetchPhase = 'Fetching threads';
-			fetchCurrent = 0;
-			fetchTotal = posts.length;
+			const nextCandidates = filterCachedCandidates(data.candidates ?? []);
+			candidates = nextCandidates;
+			activeCandidateId = nextCandidates[0]?.id ?? null;
+			cacheUpdatedAt = data.updatedAt || null;
+			cacheMissing = Boolean(data.missing);
+			cacheStats = data.stats ?? null;
+			hitsTotal = data.stats?.hitsTotal ?? null;
+			fetchWarnings = data.warnings ?? [];
 
-			for (let index = 0; index < posts.length; index += 1) {
-				const post = posts[index];
-				fetchCurrent = index + 1;
-				try {
-					const thread = await getFullThread(post.uri);
-					if (knownRootUris.has(thread.rootUri)) continue;
-					knownRootUris.add(thread.rootUri);
-					nextCandidates.push(makeCandidate(thread, post));
-				} catch (error: any) {
-					if (isAbortError(error)) throw error;
-					if (fetchWarnings.length < 6) {
-						fetchWarnings = [
-							...fetchWarnings,
-							`Could not load @${post.author.handle}'s thread: ${error?.message || 'unknown error'}`
-						];
-					}
-				}
-			}
-
-			candidates = [...nextCandidates, ...candidates];
-			activeCandidateId = nextCandidates[0]?.id ?? candidates[0]?.id ?? null;
-			fetchPhase = nextCandidates.length ? 'Ready' : 'No new threads';
+			fetchPhase = cacheMissing
+				? 'No cached intake'
+				: nextCandidates.length
+					? 'Cached intake loaded'
+					: 'No open cached candidates';
 			fetchCurrent = nextCandidates.length;
 			fetchTotal = nextCandidates.length;
 		} catch (error: any) {
 			if (isAbortError(error)) {
 				fetchPhase = 'Stopped';
 			} else {
-				fetchError = error?.message || 'Failed to fetch tagged posts.';
+				fetchError = error?.message || 'Failed to load cached intake.';
 			}
 		} finally {
 			loading = false;
 			activeFetchController = null;
 		}
+	}
+
+	async function loadBoardData() {
+		await loadSavedStories();
+		await loadCachedIdeas();
 	}
 
 	onMount(() => {
@@ -726,12 +743,10 @@
 			}
 		} catch {}
 
-		savedIdeas = readStoredArray<SavedIdea>(SAVED_IDEAS_STORAGE_KEY).map(normalizeSavedIdea);
 		dismissedRootUris = readStoredArray<string>(DISMISSED_STORAGE_KEY).filter(
 			(uri) => typeof uri === 'string'
 		);
-		void refreshOAuthDebug();
-		void restoreSession();
+		void loadBoardData();
 	});
 </script>
 
@@ -747,6 +762,7 @@
 					class="saved-title"
 					value={idea.title}
 					oninput={(event) => setSavedIdeaField(idea.id, 'title', inputValue(event))}
+					onblur={() => void persistSavedStories()}
 				/>
 				<p>
 					@{idea.authorHandle} · {idea.postCount} posts
@@ -765,7 +781,54 @@
 			rows="5"
 			value={savedIdeaPostText(idea)}
 			oninput={(event) => setSavedIdeaField(idea.id, 'userStory', inputValue(event))}
+			onblur={() => void persistSavedStories()}
 		></textarea>
+
+		{#if idea.ai}
+			<div class="ai-summary compact">
+				<span>DeepSeek V4</span>
+				<p>{idea.ai.summary}</p>
+			</div>
+		{/if}
+
+		<div class="claim-panel" class:claimed={Boolean(idea.claim?.claimedBy)}>
+			<div class="claim-meta">
+				<span>Reserved</span>
+				{#if idea.claim?.claimedBy}
+					<strong>{idea.claim.claimedBy}</strong>
+					<small>{dateLabel(idea.claim.claimedAt)}</small>
+				{:else}
+					<strong>Unclaimed</strong>
+				{/if}
+			</div>
+			<div class="claim-actions">
+				<input
+					class="claim-input"
+					type="text"
+					placeholder="Name or @handle"
+					value={claimDraftValue(idea)}
+					oninput={(event) => setClaimDraft(idea.id, inputValue(event))}
+				/>
+				<button
+					type="button"
+					class="mini-btn"
+					disabled={savedStoriesSaving || !canSubmitClaim(idea)}
+					onclick={() => claimSavedIdea(idea)}
+				>
+					{idea.claim?.claimedBy ? 'Reassign' : 'Claim'}
+				</button>
+				{#if idea.claim?.claimedBy}
+					<button
+						type="button"
+						class="mini-btn danger"
+						disabled={savedStoriesSaving}
+						onclick={() => releaseSavedIdeaClaim(idea.id)}
+					>
+						Release
+					</button>
+				{/if}
+			</div>
+		</div>
 
 		<div class="status-toggle" role="group" aria-label={`Status for ${idea.title}`}>
 			{#each IDEA_STATUS_COLUMNS as status}
@@ -785,7 +848,10 @@
 				<span>Priority</span>
 				<select
 					value={idea.priority}
-					onchange={(event) => setSavedIdeaField(idea.id, 'priority', inputValue(event))}
+					onchange={(event) => {
+						setSavedIdeaField(idea.id, 'priority', inputValue(event));
+						void persistSavedStories();
+					}}
 				>
 					<option value="low">Low</option>
 					<option value="medium">Medium</option>
@@ -821,62 +887,35 @@
 		<button
 			type="button"
 			class="primary-btn wobbly-border"
-			disabled={!authAgent || loading || connecting || restoringSession}
-			onclick={fetchTaggedIdeas}
+			disabled={loading}
+			onclick={loadBoardData}
 		>
-			Fetch #{IDEA_TAG}
+			Reload Cached Intake
 		</button>
 		{#if loading}
 			<button type="button" class="ghost-btn wobbly-border-light" onclick={cancelFetch}>Stop</button>
 		{/if}
-		<div class="auth-strip">
-			<span>{sessionLabel}</span>
-			{#if profile}
-				<button
-					type="button"
-					class="text-btn"
-					disabled={loading || connecting}
-					onclick={handleDisconnect}
-				>
-					Disconnect
-				</button>
-			{:else}
-				<button
-					type="button"
-					class="text-btn"
-					disabled={loading || connecting || restoringSession}
-					onclick={handleConnect}
-				>
-					Connect Bluesky
-				</button>
-			{/if}
-		</div>
 		<div class="stats-strip">
 			<span>{candidates.length} candidates</span>
 			<span>{savedIdeas.length} ideas</span>
+			<span>{claimedSavedCount} claimed</span>
+			{#if savedStoriesSaving}
+				<span>saving stories</span>
+			{/if}
 			<span>{dismissedRootUris.length} dismissed</span>
+			{#if cacheUpdatedAt}
+				<span>cached {dateLabel(cacheUpdatedAt)}</span>
+			{/if}
+			{#if cacheStats}
+				<span>{cacheStats.taggedPosts} tagged posts</span>
+				<span>{cacheStats.searchPages} pages</span>
+			{:else if cacheMissing}
+				<span>no R2 snapshot</span>
+			{/if}
 			{#if dismissedRootUris.length > 0}
 				<button type="button" class="text-btn" onclick={clearDismissedIdeas}>Clear dismissed</button>
 			{/if}
 		</div>
-		{#if oauthDebug}
-			<details class="oauth-debug">
-				<summary>OAuth</summary>
-				<p>
-					<strong>{oauthDebug.mode}</strong>
-					{#if oauthDebug.clientName}
-						· {oauthDebug.clientName}
-					{:else}
-						· loopback clients do not show an app name in Bluesky
-					{/if}
-				</p>
-				<code>{oauthDebug.clientId}</code>
-				<code class:missing={!oauthDebug.hasSearchPostsScope}>requested {oauthDebug.scope}</code>
-				{#if grantedScope}
-					<code class:missing={!hasGrantedSearchPostsScope}>granted {grantedScope}</code>
-				{/if}
-			</details>
-		{/if}
 	</section>
 
 	{#if loading}
@@ -889,8 +928,8 @@
 		<div class="error-banner wobbly-border-light">{fetchError}</div>
 	{/if}
 
-	{#if authError}
-		<div class="error-banner wobbly-border-light">{authError}</div>
+	{#if savedStoriesError}
+		<div class="error-banner wobbly-border-light">{savedStoriesError}</div>
 	{/if}
 
 	{#if fetchWarnings.length > 0}
@@ -901,27 +940,103 @@
 		</div>
 	{/if}
 
-	<section class="workspace" aria-label="Idea kanban workspace">
+	<section class="intake-section" aria-label="Cached intake">
+		<div class="section-heading">
+			<div class="section-title">
+				<h2>Cached Intake</h2>
+				<span>{intakeCountLabel}</span>
+			</div>
+			<button
+				type="button"
+				class="ghost-btn wobbly-border-light"
+				aria-expanded={!intakeCollapsed}
+				onclick={() => {
+					intakeCollapsed = !intakeCollapsed;
+				}}
+			>
+				{intakeCollapsed ? 'Open Intake' : 'Collapse Intake'}
+			</button>
+		</div>
+
+		{#if !intakeCollapsed}
+			<div class="filter-bar" aria-label="Cached intake filters">
+				<label class="search-control" for="intake-search">
+					<span>Search cached posts</span>
+					<input
+						id="intake-search"
+						type="text"
+						placeholder="Text, title, author, summary"
+						bind:value={intakeSearchQuery}
+					/>
+				</label>
+				<label>
+					<span>Status</span>
+					<select bind:value={intakeStatusFilter}>
+						<option value="all">All</option>
+						<option value="todo">Todo</option>
+						<option value="in_progress">In Progress</option>
+						<option value="done">Done</option>
+					</select>
+				</label>
+				<label>
+					<span>Priority</span>
+					<select bind:value={intakePriorityFilter}>
+						<option value="all">All</option>
+						<option value="low">Low</option>
+						<option value="medium">Medium</option>
+						<option value="high">High</option>
+					</select>
+				</label>
+				<label>
+					<span>State</span>
+					<select bind:value={intakeStateFilter}>
+						<option value="all">All</option>
+						<option value="unsaved">Unsaved</option>
+						<option value="saved">Saved</option>
+						<option value="improved">Improved</option>
+					</select>
+				</label>
+				{#if hasIntakeFilters}
+					<button type="button" class="text-btn" onclick={clearIntakeFilters}>Clear filters</button>
+				{/if}
+				<p class="filter-summary">
+					Showing {filteredCandidates.length} of {candidates.length} cached posts
+				</p>
+			</div>
+			<section class="workspace" aria-label="Idea kanban workspace">
 		<aside class="candidate-lane">
 			<div class="lane-heading">
 				<h2>Intake</h2>
-				<span>{candidates.length}</span>
+				<span>{filteredCandidates.length}</span>
 			</div>
 			{#if candidates.length === 0}
-				<p class="empty-state">No open candidates.</p>
+				<p class="empty-state">
+					{cacheMissing ? 'Run the R2 ingestion job to fill intake.' : 'No open candidates.'}
+				</p>
+			{:else if filteredCandidates.length === 0}
+				<p class="empty-state">No cached posts match the current filters.</p>
 			{:else}
 				<div class="candidate-list">
-					{#each candidates as candidate}
+					{#each filteredCandidates as candidate}
 						<button
 							type="button"
 							class="candidate-card"
 							class:active={candidate.id === activeCandidate?.id}
+							class:saved={candidateIsSaved(candidate)}
 							onclick={() => {
 								activeCandidateId = candidate.id;
 							}}
 						>
-							<span>{candidate.issue.title}</span>
-							<small>@{candidate.thread.rootPost.author.handle} · {candidate.includedUris.length} posts</small>
+							<span>{candidate.ai?.title ?? candidate.issue.title}</span>
+							<small>
+								@{candidate.thread.rootPost.author.handle} · {candidate.includedUris.length} posts
+								{#if candidate.state?.improved}
+									· improved
+								{/if}
+								{#if candidateIsSaved(candidate)}
+									· saved
+								{/if}
+							</small>
 						</button>
 					{/each}
 				</div>
@@ -952,14 +1067,24 @@
 							type="button"
 							class="primary-btn wobbly-border"
 							onclick={() => saveCandidate(activeCandidate.id)}
-							disabled={activeKeptPostCount === 0 || !activeCandidate.issue.title.trim()}
+							disabled={candidateIsSaved(activeCandidate) || activeKeptPostCount === 0 || !activeCandidate.issue.title.trim()}
 						>
-							Save Idea
+							{candidateIsSaved(activeCandidate) ? 'Saved' : 'Save Idea'}
 						</button>
 					</div>
 				</div>
 
 				<div class="issue-card wobbly-border-light">
+					{#if activeCandidate.ai}
+						<div class="ai-summary">
+							<span>DeepSeek V4 title and summary</span>
+							<h3>{activeCandidate.ai.title}</h3>
+							<p>{activeCandidate.ai.summary}</p>
+							<small>
+								{activeCandidate.ai.model} · {activeCandidate.ai.inputPostCount} posts · {dateLabel(activeCandidate.ai.generatedAt)}
+							</small>
+						</div>
+					{/if}
 					<label>
 						<span>Title</span>
 						<input
@@ -1007,7 +1132,13 @@
 			{:else}
 				<div class="empty-editor wobbly-border-light">
 					<h2>Post Text</h2>
-					<p>Fetch tagged posts to start.</p>
+					<p>
+						{cacheMissing
+							? 'No cached intake has been written yet.'
+							: hasIntakeFilters
+								? 'No cached post matches the current filters.'
+								: 'No cached thread selected.'}
+					</p>
 				</div>
 			{/if}
 		</section>
@@ -1049,12 +1180,14 @@
 			{/if}
 		</aside>
 	</section>
+		{/if}
+	</section>
 
 	<section class="ideas-section" aria-label="Saved ideas">
 		<div class="section-heading">
 			<div class="section-title">
 				<h2>Saved Ideas</h2>
-				<span>{savedIdeas.length}</span>
+				<span>{savedCountLabel}</span>
 			</div>
 			<div class="view-toggle" role="group" aria-label="Saved ideas view">
 				<button
@@ -1080,11 +1213,49 @@
 			</div>
 		</div>
 
+		<div class="filter-bar saved-filter-bar" aria-label="Saved ideas filters">
+			<label class="search-control" for="saved-search">
+				<span>Search saved ideas</span>
+				<input
+					id="saved-search"
+					type="text"
+					placeholder="Text, title, author, summary"
+					bind:value={savedSearchQuery}
+				/>
+			</label>
+			<label>
+				<span>Status</span>
+				<select bind:value={savedStatusFilter}>
+					<option value="all">All</option>
+					<option value="todo">Todo</option>
+					<option value="in_progress">In Progress</option>
+					<option value="done">Done</option>
+				</select>
+			</label>
+			<label>
+				<span>Priority</span>
+				<select bind:value={savedPriorityFilter}>
+					<option value="all">All</option>
+					<option value="low">Low</option>
+					<option value="medium">Medium</option>
+					<option value="high">High</option>
+				</select>
+			</label>
+			{#if hasSavedFilters}
+				<button type="button" class="text-btn" onclick={clearSavedFilters}>Clear filters</button>
+			{/if}
+			<p class="filter-summary">
+				Showing {filteredSavedIdeas.length} of {savedIdeas.length} saved ideas
+			</p>
+		</div>
+
 		{#if !hasSavedIdeas}
 			<p class="empty-state">No ideas saved yet.</p>
+		{:else if !hasVisibleSavedIdeas}
+			<p class="empty-state">No saved ideas match the current filters.</p>
 		{:else if savedIdeasView === 'list'}
 			<div class="idea-list">
-				{#each savedIdeas as idea}
+				{#each filteredSavedIdeas as idea}
 					{@render savedIdeaCard(idea)}
 				{/each}
 			</div>
@@ -1160,6 +1331,7 @@
 	}
 
 	.toolbar,
+	.intake-section,
 	.workspace,
 	.ideas-section {
 		margin-top: 16px;
@@ -1253,59 +1425,47 @@
 		font-size: 0.92rem;
 	}
 
-	.auth-strip {
-		display: flex;
-		align-items: center;
-		flex-wrap: wrap;
-		gap: 8px;
-		margin-left: auto;
-		color: var(--muted);
-		font-size: 0.92rem;
-	}
-
-	.auth-strip span {
-		padding: 5px 9px;
-		border-radius: 8px;
-		background: color-mix(in srgb, var(--card-bg) 76%, transparent);
-	}
-
-	.oauth-debug {
-		flex-basis: 100%;
-		padding: 8px 10px;
-		border: 1px dashed var(--control-border);
-		border-radius: 8px;
-		background: color-mix(in srgb, var(--card-bg) 72%, transparent);
-		color: var(--muted);
-		font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-		font-size: 0.76rem;
-	}
-
-	.oauth-debug summary {
-		cursor: pointer;
-		font-weight: 900;
-		color: var(--text-ink);
-	}
-
-	.oauth-debug p {
-		margin: 8px 0 6px;
-	}
-
-	.oauth-debug code {
-		display: block;
-		margin-top: 6px;
-		overflow-wrap: anywhere;
-		white-space: normal;
-	}
-
-	.oauth-debug code.missing {
-		color: var(--danger-text);
-	}
-
 	.stats-strip span,
 	.fetch-status {
 		padding: 5px 9px;
 		border-radius: 8px;
 		background: color-mix(in srgb, var(--card-bg) 76%, transparent);
+	}
+
+	.filter-bar {
+		display: flex;
+		align-items: end;
+		flex-wrap: wrap;
+		gap: 10px;
+		margin-top: 12px;
+		padding: 10px;
+		border: 1px solid var(--control-border);
+		border-radius: 8px;
+		background: color-mix(in srgb, var(--panel-bg-muted) 72%, transparent);
+	}
+
+	.saved-filter-bar {
+		margin-bottom: 12px;
+	}
+
+	.filter-bar label {
+		flex: 0 1 150px;
+	}
+
+	.filter-bar .search-control {
+		flex: 1 1 280px;
+	}
+
+	.filter-bar .text-btn {
+		min-height: 38px;
+		align-self: end;
+	}
+
+	.filter-summary {
+		margin: 0 0 4px auto;
+		color: var(--muted);
+		font-size: 0.86rem;
+		line-height: 1.25;
 	}
 
 	.fetch-status,
@@ -1340,11 +1500,16 @@
 	.candidate-lane,
 	.editor-lane,
 	.thread-lane,
+	.intake-section,
 	.ideas-section {
 		min-width: 0;
 		border: 1px solid var(--warm-border);
 		border-radius: 8px;
 		background: var(--panel-bg-plain);
+	}
+
+	.intake-section {
+		padding: 14px;
 	}
 
 	.candidate-lane,
@@ -1413,6 +1578,11 @@
 		border-color: color-mix(in srgb, var(--accent) 55%, var(--control-border));
 	}
 
+	.candidate-card.saved {
+		border-color: color-mix(in srgb, var(--success-text, #2f7d32) 48%, var(--control-border));
+		background: color-mix(in srgb, var(--active-bg) 70%, var(--card-bg));
+	}
+
 	.candidate-card span,
 	.saved-title {
 		font-weight: 900;
@@ -1447,6 +1617,34 @@
 		border-radius: 8px;
 		background: var(--card-bg);
 		box-shadow: var(--shadow-soft);
+	}
+
+	.ai-summary {
+		display: grid;
+		gap: 6px;
+		padding: 10px;
+		border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--control-border));
+		border-radius: 8px;
+		background: color-mix(in srgb, var(--active-bg) 62%, var(--card-bg));
+	}
+
+	.ai-summary.compact {
+		padding: 8px;
+	}
+
+	.ai-summary span {
+		font-size: 0.78rem;
+		font-weight: 900;
+		color: var(--warm-text);
+	}
+
+	.ai-summary p,
+	.ai-summary h3 {
+		margin: 0;
+	}
+
+	.ai-summary small {
+		color: var(--muted);
 	}
 
 	label {
@@ -1582,6 +1780,58 @@
 		min-height: 118px;
 	}
 
+	.claim-panel {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+		padding: 9px;
+		border: 1px solid var(--control-border);
+		border-radius: 8px;
+		background: color-mix(in srgb, var(--panel-bg-muted) 64%, transparent);
+	}
+
+	.claim-panel.claimed {
+		border-color: color-mix(in srgb, var(--accent) 48%, var(--control-border));
+		background: color-mix(in srgb, var(--active-bg) 50%, var(--card-bg));
+	}
+
+	.claim-meta {
+		display: grid;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.claim-meta span {
+		color: var(--warm-text);
+		font-size: 0.76rem;
+		font-weight: 900;
+	}
+
+	.claim-meta strong,
+	.claim-meta small {
+		overflow-wrap: anywhere;
+	}
+
+	.claim-meta small {
+		color: var(--muted);
+	}
+
+	.claim-actions {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		justify-content: end;
+		gap: 6px;
+	}
+
+	.claim-input {
+		flex: 1 1 150px;
+		min-width: 0;
+		padding: 6px 8px;
+		font-size: 0.86rem;
+	}
+
 	.status-toggle {
 		display: grid;
 		grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1657,6 +1907,19 @@
 			justify-content: start;
 		}
 
+		.claim-panel {
+			align-items: stretch;
+			flex-direction: column;
+		}
+
+		.claim-actions {
+			justify-content: start;
+		}
+
+		.claim-input {
+			flex-basis: 100%;
+		}
+
 		.primary-btn,
 		.ghost-btn {
 			width: 100%;
@@ -1668,6 +1931,18 @@
 
 		.view-toggle button {
 			flex: 1;
+		}
+
+		.filter-bar label,
+		.filter-bar .search-control,
+		.filter-bar .text-btn,
+		.filter-summary {
+			width: 100%;
+			flex-basis: 100%;
+		}
+
+		.filter-summary {
+			margin-left: 0;
 		}
 	}
 </style>

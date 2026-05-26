@@ -1,4 +1,4 @@
-import type { ThreadPost } from '$lib/types';
+import type { ThreadPost } from '../types';
 
 export type RecordEmbed = NonNullable<NonNullable<ThreadPost['embed']>['record']>;
 

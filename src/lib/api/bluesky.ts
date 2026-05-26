@@ -1,13 +1,14 @@
 import { AtpAgent } from '@atproto/api';
-import type { ThreadPost } from '$lib/types';
-import type { RecordEmbed } from '$lib/utils/recordEmbed';
+import type { ThreadPost } from '../types';
+import type { RecordEmbed } from '../utils/recordEmbed';
 import {
 	buildAtUri,
 	extractBskyPostUrlsFromFacets,
 	parseBskyPostUrl
-} from '$lib/utils/viewerLinks';
+} from '../utils/viewerLinks';
 
 const agent = new AtpAgent({ service: 'https://public.api.bsky.app' });
+type ThreadApiAgent = typeof agent;
 const recordEmbedRequestCache = new Map<string, Promise<RecordEmbed | null>>();
 const resolvedRecordEmbedCache = new Map<string, RecordEmbed | null>();
 const hydratedPostViewRequestCache = new Map<string, Promise<ThreadPost | null>>();
@@ -307,8 +308,8 @@ export async function searchPostsByTag(
 	};
 }
 
-export async function fetchPostThread(uri: string): Promise<any> {
-	const res = await agent.getPostThread({
+export async function fetchPostThread(uri: string, apiAgent: ThreadApiAgent = agent): Promise<any> {
+	const res = await apiAgent.getPostThread({
 		uri,
 		depth: 1000,
 		parentHeight: 0
@@ -1108,8 +1109,11 @@ export async function fetchSelfReplyChain(
 	}
 }
 
-async function discoverVisibleRootUriViaFlatThread(uri: string): Promise<string | null> {
-	const getPostThreadV2 = (agent as any).app?.bsky?.unspecced?.getPostThreadV2;
+async function discoverVisibleRootUriViaFlatThread(
+	uri: string,
+	apiAgent: ThreadApiAgent = agent
+): Promise<string | null> {
+	const getPostThreadV2 = (apiAgent as any).app?.bsky?.unspecced?.getPostThreadV2;
 	if (typeof getPostThreadV2 !== 'function') {
 		return null;
 	}
@@ -1233,7 +1237,10 @@ export function hasMissingDirectReplies(post: Pick<ThreadPost, 'replyCount' | 'c
 	return post.replyCount > post.children.length;
 }
 
-async function recoverMissingDirectReplies(node: ThreadPost): Promise<boolean> {
+async function recoverMissingDirectReplies(
+	node: ThreadPost,
+	apiAgent: ThreadApiAgent = agent
+): Promise<boolean> {
 	if (!hasMissingDirectReplies(node)) {
 		return false;
 	}
@@ -1248,7 +1255,7 @@ async function recoverMissingDirectReplies(node: ThreadPost): Promise<boolean> {
 		return false;
 	}
 
-	const fetchedPosts = await fetchPostsByUris(backlinkedUris);
+	const fetchedPosts = await fetchPostsByUris(backlinkedUris, { agent: apiAgent });
 	const directReplies = [...fetchedPosts.values()]
 		.filter((post) => post.parentUri === node.uri)
 		.sort(compareThreadPostsChronologically);
@@ -1261,7 +1268,8 @@ async function recoverMissingDirectReplies(node: ThreadPost): Promise<boolean> {
 
 async function recoverHiddenGapChildren(
 	rootPost: ThreadPost,
-	hiddenGaps: HiddenThreadGap[]
+	hiddenGaps: HiddenThreadGap[],
+	apiAgent: ThreadApiAgent = agent
 ): Promise<ThreadPost> {
 	if (hiddenGaps.length === 0) {
 		return rootPost;
@@ -1287,7 +1295,7 @@ async function recoverHiddenGapChildren(
 		gapNode.replyCount = Math.max(gapNode.replyCount, backlinkResult.total, gapNode.children.length);
 		if (backlinkedUris.length === 0) continue;
 
-		const fetchedPosts = await fetchPostsByUris(backlinkedUris);
+		const fetchedPosts = await fetchPostsByUris(backlinkedUris, { agent: apiAgent });
 		const replies = [...fetchedPosts.values()]
 			.filter((post) => post.parentUri === gap.uri)
 			.map((post) => nodesByUri.get(post.uri) ?? post)
@@ -1306,9 +1314,10 @@ async function fetchThreadViaFlatThreadApi(
 	anchorUri: string,
 	options: {
 		above: boolean;
-	}
+	},
+	apiAgent: ThreadApiAgent = agent
 ): Promise<{ rootPost: ThreadPost; hasOtherReplies: boolean } | null> {
-	const getPostThreadV2 = (agent as any).app?.bsky?.unspecced?.getPostThreadV2;
+	const getPostThreadV2 = (apiAgent as any).app?.bsky?.unspecced?.getPostThreadV2;
 	if (typeof getPostThreadV2 !== 'function') {
 		return null;
 	}
@@ -1326,7 +1335,7 @@ async function fetchThreadViaFlatThreadApi(
 			return null;
 		}
 
-		const recoveredRoot = await recoverHiddenGapChildren(parsed.rootPost, parsed.hiddenGaps);
+		const recoveredRoot = await recoverHiddenGapChildren(parsed.rootPost, parsed.hiddenGaps, apiAgent);
 
 		return {
 			rootPost: recoveredRoot,
@@ -1338,9 +1347,10 @@ async function fetchThreadViaFlatThreadApi(
 }
 
 async function fetchFullThreadViaFlatThreadApi(
-	rootUri: string
+	rootUri: string,
+	apiAgent: ThreadApiAgent = agent
 ): Promise<{ rootPost: ThreadPost; hasOtherReplies: boolean } | null> {
-	return fetchThreadViaFlatThreadApi(rootUri, { above: true });
+	return fetchThreadViaFlatThreadApi(rootUri, { above: true }, apiAgent);
 }
 
 interface HydrationResult {
@@ -1348,23 +1358,26 @@ interface HydrationResult {
 	sawOtherReplies: boolean;
 }
 
-async function hydrateNodeChildren(node: ThreadPost): Promise<HydrationResult> {
+async function hydrateNodeChildren(
+	node: ThreadPost,
+	apiAgent: ThreadApiAgent = agent
+): Promise<HydrationResult> {
 	let changed = false;
 	let sawOtherReplies = false;
 
-	const flatThread = await fetchThreadViaFlatThreadApi(node.uri, { above: false });
+	const flatThread = await fetchThreadViaFlatThreadApi(node.uri, { above: false }, apiAgent);
 	if (flatThread && flatThread.rootPost.uri === node.uri) {
 		node.replyCount = Math.max(node.replyCount, flatThread.rootPost.replyCount);
 		changed = mergeDirectReplies(node, flatThread.rootPost.children) > 0;
 		sawOtherReplies = flatThread.hasOtherReplies;
 	} else {
-		const raw = await fetchPostThread(node.uri);
+		const raw = await fetchPostThread(node.uri, apiAgent);
 		const parsed = parseThread(raw);
 		node.replyCount = Math.max(node.replyCount, parsed.replyCount);
 		changed = mergeDirectReplies(node, parsed.children) > 0;
 	}
 
-	const recoveredMissingReplies = await recoverMissingDirectReplies(node);
+	const recoveredMissingReplies = await recoverMissingDirectReplies(node, apiAgent);
 	return {
 		changed: changed || recoveredMissingReplies,
 		sawOtherReplies
@@ -1394,7 +1407,11 @@ function findHydrationCandidates(post: ThreadPost): ThreadPost[] {
 }
 
 // Recursively fetch and attach missing replies
-async function hydrateThread(root: ThreadPost, maxRounds = 30): Promise<boolean> {
+async function hydrateThread(
+	root: ThreadPost,
+	maxRounds = 30,
+	apiAgent: ThreadApiAgent = agent
+): Promise<boolean> {
 	let encounteredExtraReplies = false;
 	const exhaustedUris = new Set<string>();
 
@@ -1409,7 +1426,7 @@ async function hydrateThread(root: ThreadPost, maxRounds = 30): Promise<boolean>
 			const results = await Promise.allSettled(
 				batch.map(async (node) => ({
 					node,
-					result: await hydrateNodeChildren(node)
+					result: await hydrateNodeChildren(node, apiAgent)
 				}))
 			);
 			for (const [resultIndex, result] of results.entries()) {
@@ -1467,9 +1484,10 @@ export async function fetchPostsByUris(
 		signal?: AbortSignal;
 		concurrency?: number;
 		onProgress?: (progress: FetchPostsProgress) => void;
+		agent?: ThreadApiAgent;
 	} = {}
 ): Promise<Map<string, ThreadPost>> {
-	const { signal, concurrency = 4, onProgress } = options;
+	const { signal, concurrency = 4, onProgress, agent: apiAgent = agent } = options;
 	const result = new Map<string, ThreadPost>();
 	const uniqueUris = [...new Set(uris.map((uri) => uri.trim()).filter(Boolean))];
 	if (uniqueUris.length === 0) return result;
@@ -1494,7 +1512,7 @@ export async function fetchPostsByUris(
 			if (batchIndex >= totalBatches) return;
 			const batch = batches[batchIndex];
 			try {
-				const res = await agent.getPosts({ uris: batch });
+				const res = await apiAgent.getPosts({ uris: batch });
 				for (const post of res.data.posts ?? []) {
 					result.set(post.uri, parsePostView(post));
 				}
@@ -1585,12 +1603,16 @@ export async function fetchPostEngagementCounts(
 	return result;
 }
 
-export async function getFullThread(uri: string): Promise<{ rootPost: ThreadPost; depth: number; rootUri: string; isTruncated: boolean }> {
+export async function getFullThread(
+	uri: string,
+	options: { agent?: ThreadApiAgent } = {}
+): Promise<{ rootPost: ThreadPost; depth: number; rootUri: string; isTruncated: boolean }> {
+	const apiAgent = options.agent ?? agent;
 	let rootUri = uri;
 
 	try {
 		// First fetch with parentHeight to find the true root of the conversation
-		const res = await agent.getPostThread({
+		const res = await apiAgent.getPostThread({
 			uri,
 			depth: 0,
 			parentHeight: 1000
@@ -1606,14 +1628,14 @@ export async function getFullThread(uri: string): Promise<{ rootPost: ThreadPost
 		// Fallback to original URI if root discovery fails
 	}
 
-	const flatRootUri = await discoverVisibleRootUriViaFlatThread(uri);
+	const flatRootUri = await discoverVisibleRootUriViaFlatThread(uri, apiAgent);
 	if (flatRootUri) {
 		rootUri = flatRootUri;
 	}
 
-	const flatThread = await fetchFullThreadViaFlatThreadApi(rootUri);
+	const flatThread = await fetchFullThreadViaFlatThreadApi(rootUri, apiAgent);
 	if (flatThread) {
-		const encounteredExtraReplies = await hydrateThread(flatThread.rootPost);
+		const encounteredExtraReplies = await hydrateThread(flatThread.rootPost, 30, apiAgent);
 		const isTruncated =
 			flatThread.hasOtherReplies || encounteredExtraReplies || detectTruncation(flatThread.rootPost);
 		return {
@@ -1625,11 +1647,11 @@ export async function getFullThread(uri: string): Promise<{ rootPost: ThreadPost
 	}
 
 	// Now fetch the full thread from the root with full depth
-	const rootRaw = await fetchPostThread(rootUri);
+	const rootRaw = await fetchPostThread(rootUri, apiAgent);
 	const rootPost = parseThread(rootRaw);
 
 	// Recursively hydrate truncated branches
-	const encounteredExtraReplies = await hydrateThread(rootPost);
+	const encounteredExtraReplies = await hydrateThread(rootPost, 30, apiAgent);
 
 	const isTruncated = encounteredExtraReplies || detectTruncation(rootPost);
 	return {

@@ -1,26 +1,49 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import type { SelfReplyThread } from '$lib/types';
+	import type { SelfReplyThread, ThreadPost } from '$lib/types';
 	import {
 		formatThreadExport,
+		formatThreadPostMarkdown,
+		formatThreadPostsMarkdown,
 		type ThreadExportFormat,
 		type ThreadExportIdentityMode
 	} from '$lib/utils/threadExport';
 
+	type ThreadExportScope = 'thread' | 'selected-post' | 'all-posts';
+
 	interface Props {
 		thread: SelfReplyThread;
+		selectedPost?: ThreadPost | null;
+		allPosts?: ThreadPost[];
 		label?: string;
 		compact?: boolean;
 	}
 
-	let { thread, label = 'Export', compact = false }: Props = $props();
+	let {
+		thread,
+		selectedPost = null,
+		allPosts = [],
+		label = 'Export',
+		compact = false
+	}: Props = $props();
 
 	let open = $state(false);
+	let scope = $state<ThreadExportScope>('thread');
 	let format = $state<ThreadExportFormat>('md');
 	let identityMode = $state<ThreadExportIdentityMode>('author');
 	let status = $state('');
 	let copying = $state(false);
 	let statusTimer: ReturnType<typeof setTimeout> | null = null;
+	let hasExtraScopes = $derived(Boolean(selectedPost) || allPosts.length > 0);
+
+	$effect(() => {
+		if (scope === 'selected-post' && !selectedPost) {
+			scope = 'thread';
+		}
+		if (scope === 'all-posts' && allPosts.length === 0) {
+			scope = 'thread';
+		}
+	});
 
 	function setStatus(message: string) {
 		status = message;
@@ -47,13 +70,21 @@
 	async function copyExport() {
 		copying = true;
 		try {
-			const value = formatThreadExport(thread, { format, identityMode });
+			const value =
+				scope === 'selected-post' && selectedPost
+					? formatThreadPostMarkdown(selectedPost, { identityMode })
+					: scope === 'all-posts'
+						? formatThreadPostsMarkdown(allPosts, {
+								identityMode,
+								title: 'All loaded board posts'
+							})
+						: formatThreadExport(thread, { format, identityMode });
 			if (navigator.clipboard?.writeText) {
 				await navigator.clipboard.writeText(value);
 			} else if (!fallbackCopy(value)) {
 				throw new Error('Clipboard unavailable');
 			}
-			setStatus(`Copied ${format.toUpperCase()}`);
+			setStatus(`Copied ${scope === 'thread' ? format.toUpperCase() : 'Markdown'}`);
 			open = false;
 		} catch {
 			setStatus('Copy failed');
@@ -80,14 +111,36 @@
 
 	{#if open}
 		<div class="thread-export-popover wobbly-border-light" role="dialog" aria-label="Thread export">
-			<label>
-				<span>Format</span>
-				<select bind:value={format}>
-					<option value="md">Markdown</option>
-					<option value="yaml">YAML</option>
-					<option value="json">JSON</option>
-				</select>
-			</label>
+			{#if hasExtraScopes}
+				<label>
+					<span>Scope</span>
+					<select bind:value={scope}>
+						<option value="thread">Current thread</option>
+						{#if selectedPost}
+							<option value="selected-post">Selected post</option>
+						{/if}
+						{#if allPosts.length > 0}
+							<option value="all-posts">All loaded posts</option>
+						{/if}
+					</select>
+				</label>
+			{/if}
+
+			{#if scope === 'thread'}
+				<label>
+					<span>Format</span>
+					<select bind:value={format}>
+						<option value="md">Markdown</option>
+						<option value="yaml">YAML</option>
+						<option value="json">JSON</option>
+					</select>
+				</label>
+			{:else}
+				<div class="thread-export-fixed-format">
+					<span>Format</span>
+					<strong>Markdown</strong>
+				</div>
+			{/if}
 
 			<label>
 				<span>Authors</span>
@@ -172,6 +225,28 @@
 		font-weight: 800;
 		color: var(--muted, #6b6670);
 		text-transform: uppercase;
+	}
+
+	.thread-export-fixed-format {
+		display: grid;
+		gap: 3px;
+		font-size: 0.68rem;
+		font-weight: 800;
+		color: var(--muted, #6b6670);
+		text-transform: uppercase;
+	}
+
+	.thread-export-fixed-format strong {
+		min-height: 30px;
+		display: inline-flex;
+		align-items: center;
+		padding: 0 9px;
+		border: 1px solid var(--control-border, rgba(63, 56, 78, 0.24));
+		border-radius: 7px;
+		background: color-mix(in srgb, var(--control-bg, var(--card-bg, #fff)) 88%, transparent);
+		color: var(--text-ink, #2d2733);
+		font-size: 0.8rem;
+		text-transform: none;
 	}
 
 	.thread-export-popover select {
