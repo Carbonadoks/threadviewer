@@ -18,6 +18,7 @@
 		| 'chat'
 		| 'board'
 		| 'blog'
+		| 'clock'
 		| 'treeviewer'
 		| 'town'
 		| 'parallelboard'
@@ -36,7 +37,9 @@
 		| 'analyzer'
 		| 'cluster'
 		| 'toponomy'
-		| 'wordcloud';
+		| 'wordcloud'
+		| 'hashtag'
+		| 'jetstreamfiltered';
 	type RouteNavAlign = 'start' | 'center';
 
 	type RouteNavItem = {
@@ -53,6 +56,7 @@
 	export let handle: string | null = null;
 	export let dialogueHandleA: string | null = null;
 	export let dialogueHandleB: string | null = null;
+	export let hideThreadTools = false;
 
 	const items: RouteNavItem[] = [
 		{ id: 'landing', href: '/', label: 'Landing', compactLabel: 'Start' },
@@ -67,6 +71,7 @@
 		{ id: 'chat', href: '/chat', label: 'Chat' },
 		{ id: 'board', href: '/board', label: 'Board' },
 		{ id: 'blog', href: '/blog', label: 'Blog' },
+		{ id: 'clock', href: '/clock', label: 'Clock' },
 		{ id: 'treeviewer', href: '/treeviewer', label: 'Treeviewer', compactLabel: 'Tree' },
 		{ id: 'parallelboard', href: '/parallelboard', label: 'Parallel Board', compactLabel: 'Parallel' },
 		{ id: 'band', href: '/band', label: 'Band' },
@@ -81,6 +86,8 @@
 		{ id: 'autobattler', href: '/autobattler', label: 'Autobattler', compactLabel: 'Battle' },
 		{ id: 'superautobisks', href: '/superautobisks', label: 'Super Auto Bisks', compactLabel: 'Auto Bisks' },
 		{ id: 'localstorage', href: '/localstorage', label: 'localStorage', compactLabel: 'Storage' },
+		{ id: 'hashtag', href: '/hashtag', label: 'Hashtag', compactLabel: 'Tags' },
+		{ id: 'jetstreamfiltered', href: '/jetstreamfiltered', label: 'Jetstream Filtered', compactLabel: 'Jetstream' },
 		{ id: 'analyzer', href: '/analyzer', label: 'Analyze' },
 		{ id: 'toponomy', href: '/toponomy', label: 'Toponomy', compactLabel: 'Topo' },
 		{ id: 'wordcloud', href: '/wordcloud', label: 'Word Cloud', compactLabel: 'Words' }
@@ -94,6 +101,7 @@
 			item.id === 'chat' ||
 			item.id === 'board' ||
 			item.id === 'blog' ||
+			item.id === 'clock' ||
 			item.id === 'treeviewer' ||
 			item.id === 'parallelboard' ||
 			item.id === 'band' ||
@@ -137,6 +145,11 @@
 
 		return item.href;
 	}
+
+	function shouldShowItem(item: RouteNavItem): boolean {
+		if (!hideThreadTools) return true;
+		return item.id !== 'treeviewer' && item.id !== 'judge';
+	}
 </script>
 
 <nav
@@ -146,15 +159,17 @@
 	aria-label="Primary"
 >
 	{#each items as item}
-		{@const active = item.id === current}
-		<a
-			href={hrefFor(item)}
-			class="route-nav-link wobbly-border-light"
-			class:active
-			aria-current={active ? 'page' : undefined}
-		>
-			{compact ? item.compactLabel ?? item.label : item.label}
-		</a>
+		{#if shouldShowItem(item)}
+			{@const active = item.id === current}
+			<a
+				href={hrefFor(item)}
+				class="route-nav-link wobbly-border-light"
+				class:active
+				aria-current={active ? 'page' : undefined}
+			>
+				{compact ? item.compactLabel ?? item.label : item.label}
+			</a>
+		{/if}
 	{/each}
 </nav>
 

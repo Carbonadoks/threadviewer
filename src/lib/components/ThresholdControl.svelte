@@ -1,5 +1,5 @@
 <script lang="ts">
-	let { value = $bindable(3), min = 2, max = 20 }: { value: number; min?: number; max?: number } = $props();
+	let { value = $bindable(1), min = 1, max = 20 }: { value: number; min?: number; max?: number } = $props();
 </script>
 
 <div class="threshold-control">

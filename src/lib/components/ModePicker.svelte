@@ -8,9 +8,7 @@
 
 	const modes = [
 		{ key: 'default', label: 'Default' },
-		{ key: 'chat', label: 'Chat' },
-		{ key: 'conspiracy', label: 'Conspiracy' },
-		{ key: 'ransom', label: 'Ransom' }
+		{ key: 'gallery', label: 'Gallery' }
 	];
 </script>
 

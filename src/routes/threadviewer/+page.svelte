@@ -28,7 +28,6 @@
 	import ParallelBoardView from '$lib/components/ParallelBoardView.svelte';
 	import FontPicker from '$lib/components/FontPicker.svelte';
 	import ThreadExportButton from '$lib/components/ThreadExportButton.svelte';
-	import ThreadJudgePanel from '$lib/components/ThreadJudgePanel.svelte';
 	import {
 		buildAtUri,
 		buildBskyPostUrl,
@@ -71,7 +70,7 @@
 
 	let allThreads: SelfReplyThread[] = $state([]);
 	let author: AuthorInfo | null = $state(null);
-	let threshold = $state(2);
+	let threshold = $state(1);
 	let loading = $state(false);
 	let error: string | null = $state(null);
 	let progress: DiscoverProgress = $state({ phase: '', current: 0, total: 0 });
@@ -118,7 +117,7 @@
 	let threadOnlyReturnTo: string | null = $state(null);
 
 	// Expanded panel view mode
-	let expandedViewMode: 'chat' | 'board' | 'parallel' | 'judge' = $state('chat');
+	let expandedViewMode: 'chat' | 'board' | 'parallel' | 'treeviewer' = $state('chat');
 
 	type SearchMatcherMode = 'none' | 'literal' | 'regex';
 	type SearchMatcherTone = 'info' | 'warning';
@@ -1269,6 +1268,16 @@
 		}
 	}
 
+	function buildTreeviewerEmbedSrc(thread: SelfReplyThread): string | null {
+		const threadUrl =
+			activeThreadUrl ??
+			buildBskyPostUrl(thread.rootUri, thread.rootPost.author.handle) ??
+			buildBskyPostUrl(thread.rootUri);
+		if (!threadUrl) return null;
+		const href = buildViewerHref('treeviewer', { url: threadUrl });
+		return `${href}${href.includes('?') ? '&' : '?'}embed=thread-section`;
+	}
+
 	async function restoreSharedThread(
 		threadUrl: string,
 		fallbackHandle?: string | null,
@@ -1477,25 +1486,25 @@
 						<button class="view-toggle-btn wobbly-border" class:active={expandedViewMode === 'chat'} onclick={() => expandedViewMode = 'chat'}>Chat</button>
 						<button class="view-toggle-btn wobbly-border" class:active={expandedViewMode === 'board'} onclick={() => expandedViewMode = 'board'}>Board</button>
 						<button class="view-toggle-btn wobbly-border" class:active={expandedViewMode === 'parallel'} onclick={() => expandedViewMode = 'parallel'}>Parallel</button>
-						{#if !threadOnlyMode}
-							<button class="view-toggle-btn wobbly-border" class:active={expandedViewMode === 'judge'} onclick={() => expandedViewMode = 'judge'}>Judge</button>
-						{/if}
+						<button class="view-toggle-btn wobbly-border" class:active={expandedViewMode === 'treeviewer'} onclick={() => expandedViewMode = 'treeviewer'}>Treeviewer</button>
 					</div>
 				</div>
 				{#if expandedThread.isTruncated}
 					<p class="truncation-warning">Some replies may be missing</p>
 				{/if}
-				<div class="expanded-thread" class:expanded-thread--wide={expandedViewMode === 'board' || expandedViewMode === 'parallel'}>
+				<div class="expanded-thread" class:expanded-thread--wide={expandedViewMode === 'board' || expandedViewMode === 'parallel' || expandedViewMode === 'treeviewer'}>
 					{#if expandedViewMode === 'chat'}
 						<GroupChat thread={expandedThread} showExport={false} />
 					{:else if expandedViewMode === 'board'}
 						<BoardView thread={expandedThread} showExport={false} />
 					{:else if expandedViewMode === 'parallel'}
 						<ParallelBoardView thread={expandedThread} showExport={false} />
-					{:else}
-						{#key expandedThread.rootUri}
-							<ThreadJudgePanel thread={expandedThread} autoloadCache />
-						{/key}
+					{:else if buildTreeviewerEmbedSrc(expandedThread)}
+						<iframe
+							class="treeviewer-frame"
+							src={buildTreeviewerEmbedSrc(expandedThread) ?? undefined}
+							title="Treeviewer"
+						></iframe>
 					{/if}
 				</div>
 			{/if}
@@ -1835,6 +1844,16 @@
 	.expanded-thread {
 		margin-top: 8px;
 		max-width: 100vw;
+	}
+
+	.treeviewer-frame {
+		display: block;
+		width: 100%;
+		height: min(82vh, 900px);
+		min-height: 620px;
+		border: 1.5px solid var(--control-border);
+		border-radius: 8px;
+		background: var(--card-bg);
 	}
 
 	.results-section {

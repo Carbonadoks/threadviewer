@@ -104,7 +104,7 @@
 						<p>{paragraph}</p>
 					{/each}
 
-					<PostEmbedPreview {post} compact />
+					<PostEmbedPreview {post} wide />
 				</section>
 			{/if}
 		{/each}
@@ -215,6 +215,10 @@
 	.article-post p + p,
 	.article-post :global(.post-embed-preview) {
 		margin-top: 1.78em;
+	}
+
+	.article-post :global(.post-embed-preview) {
+		width: 100%;
 	}
 
 	.post-actions {

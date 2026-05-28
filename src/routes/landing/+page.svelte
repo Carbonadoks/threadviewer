@@ -60,6 +60,7 @@
 				</p>
 				<div class="hero-actions" aria-label="Primary actions">
 					<a class="sketch-button primary" href="/viewer2">open the repo viewer</a>
+					<a class="sketch-button" href="/clock">open the clock</a>
 					<a class="sketch-button" href="/treeviewer">open the tree toy</a>
 					<a class="sketch-button" href="/parallelboard">open lanes</a>
 				</div>

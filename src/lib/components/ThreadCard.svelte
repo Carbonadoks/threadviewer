@@ -46,8 +46,22 @@
 		return counts;
 	}
 
+	function rootPostEngagement(post: ThreadPost) {
+		return {
+			likeCount: post.likeCount ?? 0,
+			repostCount: post.repostCount ?? 0,
+			quoteCount: post.quoteCount ?? 0
+		};
+	}
+
+	function formatCount(value: number): string {
+		if (value < 1000) return value.toLocaleString();
+		return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+	}
+
 	const totalPosts = $derived(countPosts(thread.rootPost));
 	const authorCounts = $derived([...countByAuthor(thread.rootPost).values()].sort((a, b) => b.count - a.count));
+	const engagement = $derived(rootPostEngagement(thread.rootPost));
 
 	function formatDate(iso: string): string {
 		const d = new Date(iso);
@@ -78,6 +92,11 @@
 			<div class="thread-header">
 				<span class="depth-badge wobbly-border">{thread.depth} deep</span>
 				<span class="posts-badge">{totalPosts} posts</span>
+				<span class="engagement-badges">
+					<span>{formatCount(engagement.likeCount)} likes</span>
+					<span>{formatCount(engagement.repostCount)} reposts</span>
+					<span>{formatCount(engagement.quoteCount)} quotes</span>
+				</span>
 				<span class="author-counts">
 					{#each authorCounts as ac}
 						<span class="author-count">@{ac.handle}: {ac.count}</span>
@@ -157,6 +176,14 @@
 		display: flex;
 		gap: 8px;
 		flex-wrap: wrap;
+	}
+
+	.engagement-badges {
+		display: flex;
+		gap: 7px;
+		flex-wrap: wrap;
+		color: var(--muted);
+		font-size: 0.8rem;
 	}
 
 	.author-count {

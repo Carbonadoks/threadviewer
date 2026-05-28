@@ -26,10 +26,11 @@
 		highlightedPostUri?: string | null;
 	} = $props();
 	const MAX_VISIBLE_DEPTH = 5;
+	const POST_HYDRATION_ENABLED = true;
 	let hydratedPost = $state<ThreadPost | null>(null);
 	let shouldHydratePost = $state(false);
 	let postContentEl = $state<HTMLDivElement | null>(null);
-	const needsPostHydration = $derived(Boolean(post.needsHydratedPostView));
+	const needsPostHydration = $derived(Boolean(POST_HYDRATION_ENABLED && post.needsHydratedPostView));
 	const displayPost = $derived.by(() => {
 		if (!hydratedPost) return post;
 

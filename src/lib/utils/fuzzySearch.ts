@@ -3,8 +3,14 @@ export type FuzzyTextMatcher = {
 	terms: string[];
 };
 
+export type FuzzyTextRange = {
+	start: number;
+	end: number;
+};
+
 const COMBINING_MARKS_PATTERN = /[\u0300-\u036f]/g;
 const NON_SEARCH_CHAR_PATTERN = /[^a-z0-9@#]+/g;
+const ORIGINAL_TOKEN_PATTERN = /[\p{L}\p{N}@#]+/gu;
 
 export function normalizeFuzzyText(value: string): string {
 	return value
@@ -33,6 +39,70 @@ export function fuzzyTextMatches(value: string, matcher: FuzzyTextMatcher): bool
 
 	const tokens = normalizedValue.split(' ');
 	return matcher.terms.every((term) => tokens.some((token) => fuzzyTermMatchesToken(term, token)));
+}
+
+export function fuzzyTextMatchRanges(value: string, matcher: FuzzyTextMatcher): FuzzyTextRange[] {
+	if (!fuzzyTextMatches(value, matcher)) return [];
+
+	const tokens = collectFuzzyTokens(value);
+	const ranges: FuzzyTextRange[] = [];
+
+	for (const term of matcher.terms) {
+		for (const token of tokens) {
+			if (!fuzzyTermMatchesToken(term, token.normalized)) continue;
+			ranges.push(rangeForMatchedToken(token, term));
+		}
+	}
+
+	return mergeFuzzyRanges(ranges);
+}
+
+function collectFuzzyTokens(value: string) {
+	return Array.from(value.matchAll(ORIGINAL_TOKEN_PATTERN), (match) => {
+		const raw = match[0];
+		const start = match.index ?? 0;
+		return {
+			raw,
+			normalized: normalizeFuzzyText(raw),
+			start,
+			end: start + raw.length
+		};
+	}).filter((token) => token.normalized);
+}
+
+function rangeForMatchedToken(
+	token: { raw: string; normalized: string; start: number; end: number },
+	term: string
+): FuzzyTextRange {
+	if (token.normalized.includes(term)) {
+		const rawStart = token.raw.toLowerCase().indexOf(term);
+		if (rawStart !== -1) {
+			return {
+				start: token.start + rawStart,
+				end: token.start + rawStart + term.length
+			};
+		}
+	}
+
+	return { start: token.start, end: token.end };
+}
+
+function mergeFuzzyRanges(ranges: FuzzyTextRange[]): FuzzyTextRange[] {
+	const sorted = [...ranges]
+		.filter((range) => range.end > range.start)
+		.sort((a, b) => a.start - b.start || a.end - b.end);
+	const merged: FuzzyTextRange[] = [];
+
+	for (const range of sorted) {
+		const previous = merged[merged.length - 1];
+		if (!previous || range.start > previous.end) {
+			merged.push({ ...range });
+		} else {
+			previous.end = Math.max(previous.end, range.end);
+		}
+	}
+
+	return merged;
 }
 
 function fuzzyTermMatchesToken(term: string, token: string): boolean {

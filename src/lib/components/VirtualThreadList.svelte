@@ -5,12 +5,25 @@
 	import ChatBubbles from '$lib/components/modes/ChatBubbles.svelte';
 	import ConspiracyBoard from '$lib/components/modes/ConspiracyBoard.svelte';
 	import RansomNote from '$lib/components/modes/RansomNote.svelte';
+	import GalleryThreads from '$lib/components/modes/GalleryThreads.svelte';
 
-	type RenderMode = 'default' | 'chat' | 'conspiracy' | 'ransom';
+	type RenderMode = 'default' | 'chat' | 'conspiracy' | 'ransom' | 'gallery';
+	type SearchMode = 'fuzzy' | 'literal';
+	type GalleryContentMode = 'all' | 'media' | 'images' | 'movies';
+	type GalleryGroupMode = 'threads' | 'posts';
+	type GalleryMediaLayout = 'grid' | 'masonry';
+	type GalleryMediaFit = 'fill' | 'fit';
 
 	let {
 		threads,
 		renderMode = 'default',
+		galleryContentMode = 'all',
+		galleryGroupMode = 'threads',
+		galleryMediaLayout = 'grid',
+		galleryMediaFit = 'fill',
+		galleryGridZoom = 100,
+		searchQuery = '',
+		searchMode = 'fuzzy',
 		highlightedThread = null,
 		highlightedPostByRootUri = {},
 		shattering = false,
@@ -28,6 +41,13 @@
 	}: {
 		threads: SelfReplyThread[];
 		renderMode?: RenderMode;
+		galleryContentMode?: GalleryContentMode;
+		galleryGroupMode?: GalleryGroupMode;
+		galleryMediaLayout?: GalleryMediaLayout;
+		galleryMediaFit?: GalleryMediaFit;
+		galleryGridZoom?: number;
+		searchQuery?: string;
+		searchMode?: SearchMode;
 		highlightedThread?: string | null;
 		highlightedPostByRootUri?: Record<string, string>;
 		shattering?: boolean;
@@ -135,11 +155,13 @@
 
 	function syncViewportMetrics() {
 		if (!browser) return;
-		viewportHeight = window.innerHeight;
-		windowScrollY = window.scrollY || window.pageYOffset || 0;
+		const nextViewportHeight = window.innerHeight;
+		const nextWindowScrollY = window.scrollY || window.pageYOffset || 0;
+		viewportHeight = nextViewportHeight;
+		windowScrollY = nextWindowScrollY;
 		if (!listEl) return;
 		const rect = listEl.getBoundingClientRect();
-		listPageTop = windowScrollY + rect.top;
+		listPageTop = nextWindowScrollY + rect.top;
 	}
 
 	function scheduleViewportSync() {
@@ -257,6 +279,8 @@
 				return;
 			}
 
+			if (renderMode === 'gallery') return;
+
 			const offset = prefixOffsets[index] ?? 0;
 			const targetScrollTop = Math.max(
 				0,
@@ -302,61 +326,81 @@
 	onanimationend={handleAnimationEnd}
 >
 	{#if threads.length > 0}
-		<div class="virtual-spacer" style={`height: ${topSpacerHeight}px;`}></div>
+		{#if renderMode === 'gallery'}
+			<GalleryThreads
+				{threads}
+				contentMode={galleryContentMode}
+				groupMode={galleryGroupMode}
+				mediaLayout={galleryMediaLayout}
+				mediaFit={galleryMediaFit}
+				gridZoom={galleryGridZoom}
+				{searchQuery}
+				{searchMode}
+				{highlightedThread}
+				onexpand={onexpand}
+				onblog={onblog}
+				onshare={onshare}
+				onopenbluesky={onopenbluesky}
+				{scrollToRootUri}
+				onscrolltorooturicomplete={onscrolltorooturicomplete}
+			/>
+		{:else}
+			<div class="virtual-spacer" style={`height: ${topSpacerHeight}px;`}></div>
 
-		{#each visibleThreads as thread (thread.rootUri)}
-			<div
-				class="virtual-row"
-				data-thread-uri={thread.rootUri}
-				class:thread-highlight={highlightedThread === thread.rootUri}
-				use:measureRow={thread.rootUri}
-			>
-				{#if renderMode === 'chat'}
-					<ChatBubbles
-						{thread}
-						collapsed={collapsed(thread.rootUri)}
-						oncollapsedchange={(nextCollapsed) => oncollapsedchange(thread.rootUri, nextCollapsed)}
-						onexpand={onexpand}
-						onblog={onblog}
-						onshare={onshare}
-						onopenbluesky={onopenbluesky}
-					/>
-				{:else if renderMode === 'conspiracy'}
-					<ConspiracyBoard
-						{thread}
-						collapsed={collapsed(thread.rootUri)}
-						oncollapsedchange={(nextCollapsed) => oncollapsedchange(thread.rootUri, nextCollapsed)}
-						onexpand={onexpand}
-						onblog={onblog}
-						onshare={onshare}
-						onopenbluesky={onopenbluesky}
-					/>
-				{:else if renderMode === 'ransom'}
-					<RansomNote
-						{thread}
-						collapsed={collapsed(thread.rootUri)}
-						oncollapsedchange={(nextCollapsed) => oncollapsedchange(thread.rootUri, nextCollapsed)}
-						onexpand={onexpand}
-						onblog={onblog}
-						onshare={onshare}
-						onopenbluesky={onopenbluesky}
-					/>
-				{:else}
-					<ThreadCard
-						{thread}
-						highlightedPostUri={highlightedPostByRootUri[thread.rootUri] ?? null}
-						collapsed={collapsed(thread.rootUri)}
-						oncollapsedchange={(nextCollapsed) => oncollapsedchange(thread.rootUri, nextCollapsed)}
-						onexpand={onexpand}
-						onblog={onblog}
-						onshare={onshare}
-						onopenbluesky={onopenbluesky}
-					/>
-				{/if}
-			</div>
-		{/each}
+			{#each visibleThreads as thread (thread.rootUri)}
+				<div
+					class="virtual-row"
+					data-thread-uri={thread.rootUri}
+					class:thread-highlight={highlightedThread === thread.rootUri}
+					use:measureRow={thread.rootUri}
+				>
+					{#if renderMode === 'chat'}
+						<ChatBubbles
+							{thread}
+							collapsed={collapsed(thread.rootUri)}
+							oncollapsedchange={(nextCollapsed) => oncollapsedchange(thread.rootUri, nextCollapsed)}
+							onexpand={onexpand}
+							onblog={onblog}
+							onshare={onshare}
+							onopenbluesky={onopenbluesky}
+						/>
+					{:else if renderMode === 'conspiracy'}
+						<ConspiracyBoard
+							{thread}
+							collapsed={collapsed(thread.rootUri)}
+							oncollapsedchange={(nextCollapsed) => oncollapsedchange(thread.rootUri, nextCollapsed)}
+							onexpand={onexpand}
+							onblog={onblog}
+							onshare={onshare}
+							onopenbluesky={onopenbluesky}
+						/>
+					{:else if renderMode === 'ransom'}
+						<RansomNote
+							{thread}
+							collapsed={collapsed(thread.rootUri)}
+							oncollapsedchange={(nextCollapsed) => oncollapsedchange(thread.rootUri, nextCollapsed)}
+							onexpand={onexpand}
+							onblog={onblog}
+							onshare={onshare}
+							onopenbluesky={onopenbluesky}
+						/>
+					{:else}
+						<ThreadCard
+							{thread}
+							highlightedPostUri={highlightedPostByRootUri[thread.rootUri] ?? null}
+							collapsed={collapsed(thread.rootUri)}
+							oncollapsedchange={(nextCollapsed) => oncollapsedchange(thread.rootUri, nextCollapsed)}
+							onexpand={onexpand}
+							onblog={onblog}
+							onshare={onshare}
+							onopenbluesky={onopenbluesky}
+						/>
+					{/if}
+				</div>
+			{/each}
 
-		<div class="virtual-spacer" style={`height: ${bottomSpacerHeight}px;`}></div>
+			<div class="virtual-spacer" style={`height: ${bottomSpacerHeight}px;`}></div>
+		{/if}
 	{/if}
 </div>
 
