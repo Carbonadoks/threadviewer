@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ImageGen</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #101216;
+        --panel: #181b21;
+        --panel-2: #20242c;
+        --text: #f2f4f8;
+        --muted: #a9b1bf;
+        --line: #343a45;
+        --accent: #74d7b9;
+        --accent-2: #f4c35d;
+        --danger: #ff7d7d;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        letter-spacing: 0;
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+
+      .app {
+        display: grid;
+        grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+        min-height: 100vh;
+      }
+
+      .controls {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        padding: 24px;
+        border-right: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .brand {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 720;
+      }
+
+      .status {
+        min-width: 92px;
+        color: var(--muted);
+        font-size: 12px;
+        text-align: right;
+      }
+
+      .status.ready {
+        color: var(--accent);
+      }
+
+      .status.error {
+        color: var(--danger);
+      }
+
+      form {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      label {
+        display: grid;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 650;
+        text-transform: uppercase;
+      }
+
+      textarea,
+      input,
+      select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #111419;
+        color: var(--text);
+        outline: none;
+      }
+
+      textarea:focus,
+      input:focus,
+      select:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgb(116 215 185 / 18%);
+      }
+
+      textarea {
+        min-height: 150px;
+        resize: vertical;
+        padding: 12px;
+        line-height: 1.4;
+      }
+
+      input,
+      select {
+        height: 40px;
+        padding: 0 10px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: center;
+      }
+
+      button {
+        height: 42px;
+        border: 0;
+        border-radius: 6px;
+        padding: 0 14px;
+        background: var(--accent);
+        color: #07100d;
+        font-weight: 760;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.62;
+      }
+
+      .meta {
+        display: grid;
+        gap: 8px;
+        padding-top: 4px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.35;
+      }
+
+      .meta strong {
+        color: var(--text);
+        font-weight: 650;
+      }
+
+      .stage {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        min-width: 0;
+      }
+
+      .toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 64px;
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--line);
+        background: #14171d;
+      }
+
+      .message {
+        min-width: 0;
+        color: var(--muted);
+        font-size: 14px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .viewer {
+        display: grid;
+        place-items: center;
+        min-height: 0;
+        padding: 24px;
+      }
+
+      .empty,
+      .error-box {
+        display: grid;
+        place-items: center;
+        width: min(100%, 720px);
+        aspect-ratio: 1 / 1;
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        color: var(--muted);
+        text-align: center;
+        padding: 24px;
+      }
+
+      .error-box {
+        border-color: rgb(255 125 125 / 55%);
+        color: var(--danger);
+      }
+
+      img {
+        display: block;
+        max-width: min(100%, 1024px);
+        max-height: calc(100vh - 112px);
+        border-radius: 8px;
+        object-fit: contain;
+        background: #08090c;
+      }
+
+      .download {
+        display: none;
+        height: 38px;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 0 12px;
+        color: var(--text);
+        text-decoration: none;
+        background: var(--panel-2);
+        font-weight: 650;
+      }
+
+      .download.visible {
+        display: inline-flex;
+      }
+
+      @media (max-width: 820px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
+
+        .controls {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+          padding: 18px;
+        }
+
+        .viewer {
+          padding: 16px;
+        }
+
+        img {
+          max-height: 78vh;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <section class="controls">
+        <div class="brand">
+          <h1>ImageGen</h1>
+          <div id="status" class="status">Checking</div>
+        </div>
+
+        <form id="form">
+          <label>
+            Prompt
+            <textarea id="prompt" name="prompt" required autofocus>a cinematic product photo of a translucent blue glass cube on a brushed steel table</textarea>
+          </label>
+
+          <div class="grid">
+            <label>
+              Width
+              <select id="width" name="width">
+                <option value="512">512</option>
+                <option value="768" selected>768</option>
+                <option value="1024">1024</option>
+              </select>
+            </label>
+
+            <label>
+              Height
+              <select id="height" name="height">
+                <option value="512">512</option>
+                <option value="768" selected>768</option>
+                <option value="1024">1024</option>
+              </select>
+            </label>
+
+            <label>
+              Steps
+              <input id="steps" name="steps" type="number" min="1" max="12" value="2" />
+            </label>
+
+            <label>
+              Seed
+              <input id="seed" name="seed" type="number" min="0" placeholder="random" />
+            </label>
+          </div>
+
+          <label>
+            Guidance
+            <input id="guidance" name="guidance" type="number" min="0" max="20" step="0.1" value="1.0" />
+          </label>
+
+          <div class="actions">
+            <button id="submit" type="submit">Generate</button>
+            <button id="randomSeed" class="secondary" type="button">Seed</button>
+          </div>
+        </form>
+
+        <div id="meta" class="meta"></div>
+      </section>
+
+      <section class="stage">
+        <div class="toolbar">
+          <div id="message" class="message">Ready</div>
+          <a id="download" class="download" download="imagegen.png">Download</a>
+        </div>
+        <div id="viewer" class="viewer">
+          <div class="empty">No image yet</div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const form = document.querySelector("#form");
+      const statusEl = document.querySelector("#status");
+      const messageEl = document.querySelector("#message");
+      const viewerEl = document.querySelector("#viewer");
+      const metaEl = document.querySelector("#meta");
+      const submitEl = document.querySelector("#submit");
+      const seedEl = document.querySelector("#seed");
+      const downloadEl = document.querySelector("#download");
+
+      let objectUrl = null;
+
+      function setMessage(text) {
+        messageEl.textContent = text;
+      }
+
+      function setStatus(text, className = "") {
+        statusEl.textContent = text;
+        statusEl.className = `status ${className}`.trim();
+      }
+
+      function renderError(text) {
+        viewerEl.innerHTML = "";
+        const box = document.createElement("div");
+        box.className = "error-box";
+        box.textContent = text;
+        viewerEl.append(box);
+      }
+
+      function setDownload(url) {
+        if (objectUrl) {
+          URL.revokeObjectURL(objectUrl);
+        }
+        objectUrl = url;
+        downloadEl.href = objectUrl;
+        downloadEl.classList.add("visible");
+      }
+
+      async function refreshHealth() {
+        try {
+          const response = await fetch("/health");
+          const health = await response.json();
+          setStatus(health.loaded ? "Loaded" : "Idle", health.cuda_available ? "ready" : "");
+          metaEl.innerHTML = `
+            <div><strong>Model</strong> ${health.model_id}</div>
+            <div><strong>Backend</strong> ${health.backend}</div>
+            <div><strong>CUDA</strong> ${health.cuda_available ? health.gpu || "available" : "not available"}</div>
+          `;
+        } catch (error) {
+          setStatus("Offline", "error");
+          metaEl.textContent = "";
+        }
+      }
+
+      function readRequest() {
+        const seed = seedEl.value.trim();
+        return {
+          prompt: document.querySelector("#prompt").value,
+          width: Number(document.querySelector("#width").value),
+          height: Number(document.querySelector("#height").value),
+          steps: Number(document.querySelector("#steps").value),
+          guidance_scale: Number(document.querySelector("#guidance").value),
+          seed: seed === "" ? null : Number(seed),
+          format: "png"
+        };
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        submitEl.disabled = true;
+        downloadEl.classList.remove("visible");
+        setStatus("Working");
+        setMessage("Generating");
+
+        try {
+          const started = performance.now();
+          const response = await fetch("/generate", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(readRequest())
+          });
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload.detail || `HTTP ${response.status}`);
+          }
+
+          const byteCharacters = atob(payload.image_base64);
+          const byteNumbers = new Array(byteCharacters.length);
+          for (let index = 0; index < byteCharacters.length; index += 1) {
+            byteNumbers[index] = byteCharacters.charCodeAt(index);
+          }
+          const blob = new Blob([new Uint8Array(byteNumbers)], { type: `image/${payload.format}` });
+          const src = URL.createObjectURL(blob);
+
+          viewerEl.innerHTML = "";
+          const image = document.createElement("img");
+          image.src = src;
+          image.alt = readRequest().prompt || "Generated image";
+          viewerEl.append(image);
+          setDownload(src);
+
+          const wallSeconds = (performance.now() - started) / 1000;
+          setMessage(
+            `Seed ${payload.seed} | model ${payload.timings.generation_seconds.toFixed(2)}s | wall ${wallSeconds.toFixed(2)}s`
+          );
+          await refreshHealth();
+        } catch (error) {
+          const text = error instanceof Error ? error.message : String(error);
+          setStatus("Error", "error");
+          setMessage(text);
+          renderError(text);
+        } finally {
+          submitEl.disabled = false;
+        }
+      });
+
+      document.querySelector("#randomSeed").addEventListener("click", () => {
+        seedEl.value = String(Math.floor(Math.random() * 2147483647));
+      });
+
+      refreshHealth();
+      window.setInterval(refreshHealth, 5000);
+    </script>
+  </body>
+</html>

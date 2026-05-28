@@ -796,14 +796,22 @@
 		);
 	});
 	const rowCount = $derived(Math.ceil(galleryEntries.length / columnCount));
+	const maxRow = $derived(Math.max(0, rowCount - 1));
 	const startRow = $derived(
-		Math.max(0, Math.floor(visibleTop / estimatedRowHeight) - OVERSCAN_ROWS)
+		rowCount === 0
+			? 0
+			: Math.min(
+					maxRow,
+					Math.max(0, Math.floor(visibleTop / estimatedRowHeight) - OVERSCAN_ROWS)
+			  )
 	);
 	const endRow = $derived(
-		Math.min(
-			Math.max(0, rowCount - 1),
-			Math.ceil(visibleBottom / estimatedRowHeight) + OVERSCAN_ROWS
-		)
+		rowCount === 0
+			? 0
+			: Math.max(
+					startRow,
+					Math.min(maxRow, Math.ceil(visibleBottom / estimatedRowHeight) + OVERSCAN_ROWS)
+			  )
 	);
 	const startIndex = $derived(Math.min(galleryEntries.length, startRow * columnCount));
 	const endIndex = $derived(Math.min(galleryEntries.length, (endRow + 1) * columnCount));

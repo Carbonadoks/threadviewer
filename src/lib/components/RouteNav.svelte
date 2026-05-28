@@ -27,6 +27,7 @@
 		| 'bisk2bisk'
 		| 'matrix'
 		| 'matrix-feed'
+		| 'abstractfeed'
 		| 'judge'
 		| 'atproideasio'
 		| 'llm'
@@ -79,6 +80,7 @@
 		{ id: 'bisk2bisk', href: '/bisk2bisk', label: 'Bisk2Bisk', compactLabel: 'Bisk2Bisk' },
 		{ id: 'matrix', href: '/matrix', label: 'Matrix' },
 		{ id: 'matrix-feed', href: '/matrix-feed', label: 'In Matrix', compactLabel: 'In Matrix' },
+		{ id: 'abstractfeed', href: '/abstractfeed', label: 'Abstract Thread', compactLabel: 'Abstract' },
 		{ id: 'judge', href: '/judge', label: 'Judge' },
 		{ id: 'atproideasio', href: '/atproideasio', label: 'atproideasio', compactLabel: 'Ideas' },
 		{ id: 'llm', href: '/llm', label: 'LLM' },
@@ -106,8 +108,13 @@
 			item.id === 'parallelboard' ||
 			item.id === 'band' ||
 			item.id === 'bisk2bisk' ||
+			item.id === 'abstractfeed' ||
 			item.id === 'judge'
 		) {
+			if (item.id === 'abstractfeed') {
+				const nextUrl = threadUrl?.trim() ?? '';
+				return nextUrl ? `${item.href}?url=${encodeURIComponent(nextUrl)}` : item.href;
+			}
 			return buildViewerHref(item.id, {
 				url: threadUrl,
 				handle
