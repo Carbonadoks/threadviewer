@@ -24,6 +24,17 @@ export const BLUESKY_SEARCH_POSTS_SCOPES = [
 	BLUESKY_SEARCH_POSTS_RESOURCE_SCOPE
 ] as const;
 
+// Minimal scope set for the Follow Search page: just enough to identify the
+// signed-in user (getProfile, used to build the auth context) and run searches.
+// Deliberately excludes feed reads and all write scopes from BLUESKY_OAUTH_SCOPES.
+export const BLUESKY_FOLLOWSEARCH_SCOPES = [
+	'atproto',
+	`rpc:app.bsky.actor.getProfile?aud=${BLUESKY_APPVIEW_AUDIENCE}`,
+	...BLUESKY_SEARCH_POSTS_SCOPES
+];
+
+export const BLUESKY_FOLLOWSEARCH_SCOPE = BLUESKY_FOLLOWSEARCH_SCOPES.join(' ');
+
 export const BLUESKY_GRAPH_LIST_CREATE_SCOPES = [
 	'repo:app.bsky.graph.list?action=create',
 	'repo:app.bsky.graph.listitem?action=create'

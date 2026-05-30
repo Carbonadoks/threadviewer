@@ -13,6 +13,7 @@
 		| 'summary2'
 		| 'blocked'
 		| 'followinteraction'
+		| 'followsearch'
 		| 'warg'
 		| 'dialogue'
 		| 'dialogue2'
@@ -68,6 +69,7 @@
 		{ id: 'summary2', href: '/summary2', label: 'Repo Summary', compactLabel: 'Repo Sum' },
 		{ id: 'blocked', href: '/blocked', label: 'Blocked', compactLabel: 'Blocked' },
 		{ id: 'followinteraction', href: '/followinteraction', label: 'Follow Interaction', compactLabel: 'Follow Int' },
+		{ id: 'followsearch', href: '/followsearch', label: 'Follow Search', compactLabel: 'Follow' },
 		{ id: 'warg', href: '/warg', label: 'Warg' },
 		{ id: 'dialogue2', href: '/dialogue2', label: 'Dialogue', compactLabel: 'Repo Dlg' },
 		{ id: 'chat', href: '/chat', label: 'Chat' },
@@ -140,6 +142,7 @@
 				item.id === 'summary2' ||
 				item.id === 'blocked' ||
 				item.id === 'followinteraction' ||
+				item.id === 'followsearch' ||
 				item.id === 'warg' ||
 				item.id === 'wordcloud' ||
 				item.id === 'loom' ||

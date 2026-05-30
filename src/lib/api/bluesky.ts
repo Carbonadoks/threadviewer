@@ -314,6 +314,42 @@ export async function searchPostsByTag(
 	};
 }
 
+export async function searchPostsFromAuthor(
+	query: string,
+	authorHandle: string,
+	options: {
+		cursor?: string;
+		limit?: number;
+		sort?: 'latest' | 'top';
+		signal?: AbortSignal;
+		agent?: PostSearchAgent;
+	} = {}
+): Promise<TaggedPostSearchPage> {
+	const cleanHandle = authorHandle.replace(/^@/, '').trim();
+	if (!cleanHandle) {
+		return { posts: [] };
+	}
+
+	const q = `${query.trim()} from:${cleanHandle}`.trim();
+	const limit = Math.max(1, Math.min(options.limit ?? 25, 100));
+	const searchAgent = options.agent ?? agent;
+	const res = await searchAgent.app.bsky.feed.searchPosts(
+		{
+			q,
+			sort: options.sort ?? 'latest',
+			limit,
+			cursor: options.cursor
+		},
+		{ signal: options.signal }
+	);
+
+	return {
+		posts: (res.data.posts ?? []).map((post: any) => parsePostView(post)),
+		cursor: res.data.cursor,
+		hitsTotal: res.data.hitsTotal
+	};
+}
+
 export async function fetchPostThread(uri: string, apiAgent: ThreadApiAgent = agent): Promise<any> {
 	const res = await apiAgent.getPostThread({
 		uri,
