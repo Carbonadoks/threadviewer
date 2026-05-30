@@ -195,6 +195,9 @@ body {
 	color: var(--text-ink);
 	line-height: 1.6;
 	min-height: 100vh;
+	/* Contain the full-bleed RouteNav (width: 100vw) so it can't add a
+	   horizontal scrollbar. `clip` (not `hidden`) avoids breaking sticky. */
+	overflow-x: clip;
 	transition:
 		background-color 180ms ease,
 		color 180ms ease;

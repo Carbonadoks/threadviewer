@@ -183,13 +183,22 @@
 </nav>
 
 <style>
+	/* Full-bleed: span the viewport regardless of the page's content column so the
+	   nav reads as one wide, centered block on every page. Relies on the nav's
+	   container being horizontally centered (the standard `margin: 0 auto` layout).
+	   Side padding clears the fixed top-right ThemeToggle (right:14px, ~42px). */
 	.route-nav {
 		display: flex;
 		flex-wrap: wrap;
+		justify-content: center;
 		gap: 10px;
-		width: 100%;
-		padding-right: 136px;
-		margin-bottom: 14px;
+		box-sizing: border-box;
+		width: 100vw;
+		position: relative;
+		left: 50%;
+		margin-left: -50vw;
+		padding: 0 64px;
+		margin-bottom: 18px;
 	}
 
 	.route-nav.center {
@@ -243,7 +252,7 @@
 	@media (max-width: 640px) {
 		.route-nav {
 			gap: 8px;
-			padding-right: 64px;
+			padding: 0 16px;
 		}
 
 		.route-nav-link {

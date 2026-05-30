@@ -29,11 +29,19 @@
 		chainStarts: number;
 		threadsWithSelfReplies: number;
 	};
+	type CachedLoadedRepoAccount = CachedAuthorInfo & {
+		totalPosts: number;
+		elapsedMs: number;
+		downloadedBytes: number;
+		source: 'pds' | 'relay' | null;
+		stats: CachedThreadStats;
+	};
 	type Viewer2MemoryCache = {
 		cacheVersion: number;
 		initialHandle: string;
 		selectedProfile: CachedProfileInfo | null;
 		author: CachedAuthorInfo | null;
+		repoAccounts?: CachedLoadedRepoAccount[];
 		allThreads: CachedSelfReplyThread[];
 		displayedThreads: CachedSelfReplyThread[];
 		displayedSearchQuery: string;
@@ -81,12 +89,13 @@
 	import ErrorBanner from '$lib/components/ErrorBanner.svelte';
 	import RouteNav from '$lib/components/RouteNav.svelte';
 	import type { SelfReplyThread, AuthorInfo, DiscoverProgress, ThreadPost } from '$lib/types';
-	import type { ProfileInfo } from '$lib/api/bluesky';
-	import { getProfile, getFullThread } from '$lib/api/bluesky';
+	import type { FollowProfileInfo, ProfileInfo } from '$lib/api/bluesky';
+	import { getFollowsPage, getProfile, getFullThread } from '$lib/api/bluesky';
 	import {
 		hydrateFeedItemsEngagement,
 		loadRepoFeedItems,
-		type RepoDownloadProgress
+		type RepoDownloadProgress,
+		type RepoFeedLoadResult
 	} from '$lib/utils/repoHydration';
 	import { buildThreadsFromFeed } from '$lib/utils/threadWalker';
 	import { toastError, toastSuccess, toastInfo } from '$lib/utils/toasts';
@@ -124,6 +133,13 @@
 	const GALLERY_GRID_ZOOM_MIN = 55;
 	const GALLERY_GRID_ZOOM_MAX = 160;
 	const VIEWER2_MEMORY_CACHE_SAVE_DELAY_MS = 450;
+	const MAX_FOLLOW_PAGES = 20;
+	const BATCH_CONCURRENCY_MIN = 1;
+	const BATCH_CONCURRENCY_MAX = 6;
+	const BATCH_START_DELAY_MIN_MS = 0;
+	const BATCH_START_DELAY_MAX_MS = 30_000;
+	const BATCH_RATE_LIMIT_BACKOFF_MS = 12_000;
+	const BATCH_RATE_LIMIT_RETRIES = 3;
 
 	type RenderMode = 'default' | 'gallery';
 	type SearchMode = 'fuzzy' | 'literal';
@@ -151,6 +167,30 @@
 		hydratedCount: number;
 		missingCount: number;
 	};
+	type LoadedRepoAccount = AuthorInfo & {
+		totalPosts: number;
+		elapsedMs: number;
+		downloadedBytes: number;
+		source: 'pds' | 'relay' | null;
+		stats: ThreadStats;
+	};
+	type BatchRepoStatus = 'pending' | 'waiting' | 'downloading' | 'parsing' | 'building' | 'done' | 'failed';
+	type BatchRepoItem = FollowProfileInfo & {
+		status: BatchRepoStatus;
+		detail: string;
+		error: string | null;
+		retries: number;
+		downloadedBytes: number;
+		threadCount: number;
+	};
+	type BatchProgress = {
+		done: number;
+		total: number;
+		active: number;
+		failed: number;
+		skipped: number;
+		rateLimitHits: number;
+	};
 	type EngagementHydrationContext = {
 		sourceFeedItems: any[];
 		hydrationFeedItems: any[];
@@ -172,6 +212,7 @@
 
 	let allThreads: SelfReplyThread[] = $state([]);
 	let author: AuthorInfo | null = $state(null);
+	let repoAccounts: LoadedRepoAccount[] = $state([]);
 	let threshold = $state(1);
 	let loading = $state(false);
 	let error: string | null = $state(null);
@@ -181,6 +222,28 @@
 	let activeSearchJob = 0;
 
 	let selectedProfile: ProfileInfo | null = $state(null);
+	let showAddAccount = $state(false);
+	let additionalHandle = $state('');
+	let additionalProfile: ProfileInfo | null = $state(null);
+	let followsSubject: ProfileInfo | null = $state(null);
+	let follows: FollowProfileInfo[] = $state([]);
+	let loadingFollows = $state(false);
+	let showFollowEditor = $state(false);
+	let followFilter = $state('');
+	let excludedFollowDids = $state(new Set<string>());
+	let batchDownloading = $state(false);
+	let batchConcurrency = $state(2);
+	let batchStartDelayMs = $state(1000);
+	let batchItems: BatchRepoItem[] = $state([]);
+	let batchProgress: BatchProgress = $state({
+		done: 0,
+		total: 0,
+		active: 0,
+		failed: 0,
+		skipped: 0,
+		rateLimitHits: 0
+	});
+	let followLoadController: AbortController | null = null;
 
 	// Text search
 	let searchQuery = $state('');
@@ -231,6 +294,32 @@
 		const numeric = Number(value);
 		if (!Number.isFinite(numeric)) return 100;
 		return Math.max(GALLERY_GRID_ZOOM_MIN, Math.min(GALLERY_GRID_ZOOM_MAX, Math.round(numeric)));
+	}
+
+	function normalizeBatchConcurrency(value: unknown): number {
+		const numeric = Number(value);
+		if (!Number.isFinite(numeric)) return 2;
+		return Math.max(
+			BATCH_CONCURRENCY_MIN,
+			Math.min(BATCH_CONCURRENCY_MAX, Math.round(numeric))
+		);
+	}
+
+	function normalizeBatchStartDelayMs(value: unknown): number {
+		const numeric = Number(value);
+		if (!Number.isFinite(numeric)) return 1000;
+		return Math.max(
+			BATCH_START_DELAY_MIN_MS,
+			Math.min(BATCH_START_DELAY_MAX_MS, Math.round(numeric))
+		);
+	}
+
+	function setBatchConcurrency(value: unknown) {
+		batchConcurrency = normalizeBatchConcurrency(value);
+	}
+
+	function setBatchStartDelayMs(value: unknown) {
+		batchStartDelayMs = normalizeBatchStartDelayMs(value);
 	}
 
 	function buildRepoDownloadDetail(downloadProgress: RepoDownloadProgress): string {
@@ -469,9 +558,107 @@
 	const maxDepth = $derived(
 		allThreads.length > 0 ? Math.max(...allThreads.map((t) => t.depth)) : 2
 	);
+	const loadedRepoDids = $derived.by(() => new Set(repoAccounts.map((account) => account.did)));
+	const activeFollows = $derived.by(() => follows.filter((follow) => !excludedFollowDids.has(follow.did)));
+	const downloadableActiveFollows = $derived.by(() =>
+		activeFollows.filter((follow) => !loadedRepoDids.has(follow.did))
+	);
+	const filteredFollows = $derived.by(() => {
+		const query = followFilter.trim().toLowerCase();
+		if (!query) return follows;
+		return follows.filter(
+			(follow) =>
+				follow.handle.toLowerCase().includes(query) ||
+				(follow.displayName ?? '').toLowerCase().includes(query)
+		);
+	});
 
 	function normalizeHandle(handle: string | null | undefined): string {
 		return (handle ?? '').replace(/^@/, '').trim();
+	}
+
+	function profileMatchesHandle(profile: ProfileInfo | null, handle: string): boolean {
+		if (!profile) return false;
+		const normalized = normalizeHandle(handle);
+		return normalized === normalizeHandle(profile.handle) || normalized === profile.did;
+	}
+
+	function aggregateThreadStats(accounts: LoadedRepoAccount[]): ThreadStats {
+		return accounts.reduce<ThreadStats>(
+			(total, account) => ({
+				postsScanned: total.postsScanned + account.stats.postsScanned,
+				chainStarts: total.chainStarts + account.stats.chainStarts,
+				threadsWithSelfReplies:
+					total.threadsWithSelfReplies + account.stats.threadsWithSelfReplies
+			}),
+			{ postsScanned: 0, chainStarts: 0, threadsWithSelfReplies: 0 }
+		);
+	}
+
+	function aggregateRepoStats(
+		accounts: LoadedRepoAccount[],
+		engagement: { hydratedCount: number; missingCount: number } = {
+			hydratedCount: repoStats.hydratedCount,
+			missingCount: repoStats.missingCount
+		}
+	): RepoStats {
+		const sourceValues = accounts
+			.map((account) => account.source)
+			.filter((source): source is 'pds' | 'relay' => source !== null);
+		const uniqueSources = new Set(sourceValues);
+
+		return {
+			totalPosts: accounts.reduce((total, account) => total + account.totalPosts, 0),
+			elapsedMs: accounts.reduce((total, account) => total + account.elapsedMs, 0),
+			downloadedBytes: accounts.reduce((total, account) => total + account.downloadedBytes, 0),
+			source: uniqueSources.size === 1 ? (sourceValues[0] ?? null) : null,
+			hydratedCount: engagement.hydratedCount,
+			missingCount: engagement.missingCount
+		};
+	}
+
+	function applyRepoAccounts(
+		accounts: LoadedRepoAccount[],
+		engagement: { hydratedCount: number; missingCount: number } = {
+			hydratedCount: repoStats.hydratedCount,
+			missingCount: repoStats.missingCount
+		}
+	) {
+		repoAccounts = accounts;
+		stats = aggregateThreadStats(accounts);
+		repoStats = aggregateRepoStats(accounts, engagement);
+	}
+
+	function upsertRepoAccount(account: LoadedRepoAccount): LoadedRepoAccount[] {
+		const existingIndex = repoAccounts.findIndex((candidate) => candidate.did === account.did);
+		if (existingIndex === -1) return [...repoAccounts, account];
+		return repoAccounts.map((candidate, index) => (index === existingIndex ? account : candidate));
+	}
+
+	function createLoadedRepoAccount(
+		authorInfo: AuthorInfo,
+		repo: RepoFeedLoadResult,
+		threadStats: ThreadStats
+	): LoadedRepoAccount {
+		return {
+			...authorInfo,
+			totalPosts: repo.totalPosts,
+			elapsedMs: repo.elapsedMs,
+			downloadedBytes: repo.downloadedBytes,
+			source: repo.source,
+			stats: threadStats
+		};
+	}
+
+	function replaceThreadsForAccount(
+		existingThreads: SelfReplyThread[],
+		did: string,
+		nextThreads: SelfReplyThread[]
+	): SelfReplyThread[] {
+		const withoutAccountThreads = existingThreads.filter(
+			(thread) => thread.rootPost.author.did !== did
+		);
+		return [...withoutAccountThreads, ...nextThreads].sort(compareThreadValues);
 	}
 
 	function toEngagementCount(value: unknown): number {
@@ -577,9 +764,14 @@
 		const handles = [
 			cache.initialHandle,
 			cache.selectedProfile?.handle,
-			cache.author?.handle
+			cache.author?.handle,
+			...(cache.repoAccounts ?? []).map((account) => account.handle)
 		];
-		const dids = [cache.selectedProfile?.did, cache.author?.did];
+		const dids = [
+			cache.selectedProfile?.did,
+			cache.author?.did,
+			...(cache.repoAccounts ?? []).map((account) => account.did)
+		];
 		return (
 			handles.some((value) => normalizeHandle(value) === normalized) ||
 			dids.some((value) => value === normalized)
@@ -610,6 +802,20 @@
 		initialHandle = cache.initialHandle;
 		selectedProfile = cache.selectedProfile;
 		author = cache.author;
+		repoAccounts =
+			cache.repoAccounts ??
+			(cache.author
+				? [
+						{
+							...cache.author,
+							totalPosts: cache.repoStats.totalPosts,
+							elapsedMs: cache.repoStats.elapsedMs,
+							downloadedBytes: cache.repoStats.downloadedBytes,
+							source: cache.repoStats.source,
+							stats: cache.stats
+						}
+					]
+				: []);
 		allThreads = patchedAllThreads;
 		displayedThreads = patchedDisplayedThreads;
 		displayedSearchQuery = cache.displayedSearchQuery;
@@ -626,8 +832,11 @@
 		searchMode = cache.searchMode;
 		dateFrom = cache.dateFrom;
 		dateTo = cache.dateTo;
-		stats = cache.stats;
-		repoStats = {
+		stats = repoAccounts.length > 0 ? aggregateThreadStats(repoAccounts) : cache.stats;
+		repoStats = repoAccounts.length > 0 ? aggregateRepoStats(repoAccounts, {
+			hydratedCount: cache.repoStats.hydratedCount ?? 0,
+			missingCount: cache.repoStats.missingCount ?? 0
+		}) : {
 			totalPosts: cache.repoStats.totalPosts,
 			elapsedMs: cache.repoStats.elapsedMs,
 			downloadedBytes: cache.repoStats.downloadedBytes,
@@ -698,6 +907,7 @@
 			initialHandle,
 			selectedProfile,
 			author,
+			repoAccounts,
 			allThreads,
 			displayedThreads,
 			displayedSearchQuery,
@@ -862,6 +1072,7 @@
 		initialHandle;
 		selectedProfile;
 		author;
+		repoAccounts;
 		allThreads;
 		displayedThreads;
 		displayedSearchQuery;
@@ -952,6 +1163,14 @@
 		engagementHydrationProgress = { current: 0, total: 0 };
 		blogLoadingFullThread = false;
 		activeBlogJob += 1;
+		if (batchDownloading) {
+			progress = {
+				phase: 'Canceling batch download...',
+				current: batchProcessedCount(),
+				total: batchProgress.total,
+				detail: buildBatchProgressDetail()
+			};
+		}
 	}
 
 	function isThreadCollapsed(rootUri: string): boolean {
@@ -979,10 +1198,473 @@
 		};
 	}
 
+	function handleAdditionalHandleChange(value: string) {
+		additionalHandle = value;
+		if (additionalProfile && !profileMatchesHandle(additionalProfile, value)) {
+			additionalProfile = null;
+		}
+	}
+
+	function handleAdditionalProfileSelected(profile: ProfileInfo) {
+		additionalProfile = profile;
+		additionalHandle = profile.handle;
+	}
+
+	async function handleAddAccountSearch(handle: string): Promise<void> {
+		const cleaned = normalizeHandle(handle);
+		if (!cleaned || loading) return;
+		const existingAccount = repoAccounts.find(
+			(account) => normalizeHandle(account.handle) === cleaned || account.did === cleaned
+		);
+		if (existingAccount) {
+			toastInfo(`@${existingAccount.handle} is already loaded.`);
+			return;
+		}
+		if (additionalProfile && profileMatchesHandle(additionalProfile, cleaned)) {
+			const existingProfileAccount = repoAccounts.find(
+				(account) => account.did === additionalProfile?.did
+			);
+			if (existingProfileAccount) {
+				toastInfo(`@${existingProfileAccount.handle} is already loaded.`);
+				return;
+			}
+		}
+		const success = await handleSearch(cleaned, {
+			profile: profileMatchesHandle(additionalProfile, cleaned) ? additionalProfile : null,
+			append: true
+		});
+		if (success) {
+			additionalHandle = '';
+			additionalProfile = null;
+			showAddAccount = false;
+		}
+	}
+
+	function resetBatchProgress() {
+		batchProgress = {
+			done: 0,
+			total: 0,
+			active: 0,
+			failed: 0,
+			skipped: 0,
+			rateLimitHits: 0
+		};
+	}
+
+	function resetFollowBatchState() {
+		followLoadController?.abort();
+		followLoadController = null;
+		followsSubject = null;
+		follows = [];
+		excludedFollowDids = new Set();
+		followFilter = '';
+		showFollowEditor = false;
+		batchItems = [];
+		batchDownloading = false;
+		resetBatchProgress();
+	}
+
+	function toggleFollow(did: string) {
+		const next = new Set(excludedFollowDids);
+		if (next.has(did)) next.delete(did);
+		else next.add(did);
+		excludedFollowDids = next;
+	}
+
+	function selectAllFollows() {
+		excludedFollowDids = new Set();
+	}
+
+	function clearAllFollows() {
+		excludedFollowDids = new Set(follows.map((follow) => follow.did));
+	}
+
+	function batchProcessedCount(value: BatchProgress = batchProgress): number {
+		return value.done + value.failed + value.skipped;
+	}
+
+	function buildBatchProgressDetail(value: BatchProgress = batchProgress): string {
+		const parts = [`${value.active.toLocaleString()} active`];
+		if (value.done > 0) parts.push(`${value.done.toLocaleString()} done`);
+		if (value.skipped > 0) parts.push(`${value.skipped.toLocaleString()} already loaded`);
+		if (value.failed > 0) parts.push(`${value.failed.toLocaleString()} failed`);
+		if (value.rateLimitHits > 0) {
+			parts.push(`${value.rateLimitHits.toLocaleString()} rate-limit backoff${value.rateLimitHits === 1 ? '' : 's'}`);
+		}
+		return parts.join(' · ');
+	}
+
+	function updateBatchProgress(patch: Partial<BatchProgress>) {
+		const next = { ...batchProgress, ...patch };
+		batchProgress = next;
+		if (batchDownloading) {
+			progress = {
+				phase: 'Batch downloading follow repos...',
+				current: batchProcessedCount(next),
+				total: next.total,
+				detail: buildBatchProgressDetail(next)
+			};
+		}
+	}
+
+	function updateBatchItem(did: string, patch: Partial<BatchRepoItem>) {
+		batchItems = batchItems.map((item) => (item.did === did ? { ...item, ...patch } : item));
+	}
+
+	function buildBatchItem(follow: FollowProfileInfo): BatchRepoItem {
+		const existingAccount = repoAccounts.find((account) => account.did === follow.did);
+		return {
+			...follow,
+			status: existingAccount ? 'done' : 'pending',
+			detail: existingAccount ? 'Already loaded' : '',
+			error: null,
+			retries: 0,
+			downloadedBytes: existingAccount?.downloadedBytes ?? 0,
+			threadCount: existingAccount?.stats.threadsWithSelfReplies ?? 0
+		};
+	}
+
+	function batchItemStatusLabel(status: BatchRepoStatus): string {
+		if (status === 'done') return 'Done';
+		if (status === 'failed') return 'Failed';
+		if (status === 'downloading') return 'Downloading';
+		if (status === 'parsing') return 'Parsing';
+		if (status === 'building') return 'Building';
+		if (status === 'waiting') return 'Waiting';
+		return 'Pending';
+	}
+
+	function isRateLimitError(value: unknown): boolean {
+		const status = Number((value as { status?: number })?.status);
+		const message = value instanceof Error ? value.message : String(value ?? '');
+		return status === 429 || /\b429\b|rate.?limit|too many requests/i.test(message);
+	}
+
+	function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+		if (ms <= 0) return Promise.resolve();
+		if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+
+		return new Promise((resolve, reject) => {
+			const timeout = window.setTimeout(() => {
+				signal.removeEventListener('abort', abort);
+				resolve();
+			}, ms);
+			const abort = () => {
+				window.clearTimeout(timeout);
+				reject(new DOMException('Aborted', 'AbortError'));
+			};
+			signal.addEventListener('abort', abort, { once: true });
+		});
+	}
+
+	async function loadFollowsForBatch() {
+		if (loadingFollows || batchDownloading) return;
+		let profile = selectedProfile;
+		try {
+			if (!profile) {
+				const handle = normalizeHandle(initialHandle);
+				if (!handle) {
+					toastInfo('Load a Bluesky account first.');
+					return;
+				}
+				profile = await getProfile(handle);
+				await handleProfileSelected(profile);
+			}
+		} catch (err) {
+			const message = err instanceof Error ? err.message : 'Could not load the selected profile.';
+			error = message;
+			toastError(message);
+			return;
+		}
+
+		followLoadController?.abort();
+		const controller = new AbortController();
+		followLoadController = controller;
+		loadingFollows = true;
+		error = null;
+		follows = [];
+		excludedFollowDids = new Set();
+		followFilter = '';
+		batchItems = [];
+		resetBatchProgress();
+		followsSubject = profile;
+
+		try {
+			const collected: FollowProfileInfo[] = [];
+			let cursor: string | undefined;
+			for (let page = 0; page < MAX_FOLLOW_PAGES; page += 1) {
+				const res = await getFollowsPage(profile.did, {
+					cursor,
+					limit: 100,
+					signal: controller.signal
+				});
+				collected.push(...res.follows);
+				cursor = res.cursor;
+				if (!cursor) break;
+			}
+			follows = collected;
+			showFollowEditor = true;
+			if (collected.length === 0) {
+				toastInfo(`@${profile.handle} does not follow anyone.`);
+			}
+		} catch (err: any) {
+			if (err?.name !== 'AbortError') {
+				const message = err?.message || 'Failed to load follows.';
+				error = message;
+				toastError(message);
+			}
+		} finally {
+			if (followLoadController === controller) {
+				followLoadController = null;
+			}
+			loadingFollows = false;
+		}
+	}
+
+	function buildCurrentEngagementSummary(): { hydratedCount: number; missingCount: number } {
+		const hydratedCount = Object.keys(engagementCountsByUri).length;
+		if (hydratedCount === 0) return { hydratedCount: 0, missingCount: 0 };
+		return {
+			hydratedCount,
+			missingCount: Math.max(0, countUniqueThreadPostUris(allThreads) - hydratedCount)
+		};
+	}
+
+	async function loadFollowRepoForBatch(
+		follow: FollowProfileInfo,
+		searchJob: number,
+		signal: AbortSignal,
+		waitForDownloadSlot: () => Promise<void>
+	) {
+		const authorInfo: AuthorInfo = {
+			did: follow.did,
+			handle: follow.handle,
+			displayName: follow.displayName,
+			avatar: follow.avatar
+		};
+		let latestDownloadedBytes = 0;
+		let repo: RepoFeedLoadResult | null = null;
+
+		for (let attempt = 0; attempt <= BATCH_RATE_LIMIT_RETRIES; attempt += 1) {
+			updateBatchItem(follow.did, {
+				status: 'waiting',
+				detail: attempt > 0 ? `Retry ${attempt} queued` : 'Queued',
+				retries: attempt
+			});
+			await waitForDownloadSlot();
+			if (signal.aborted || searchJob !== activeSearchJob) {
+				throw new DOMException('Aborted', 'AbortError');
+			}
+
+			try {
+				updateBatchItem(follow.did, {
+					status: 'downloading',
+					detail: attempt > 0 ? `Retry ${attempt}` : 'Starting download'
+				});
+				repo = await loadRepoFeedItems(follow.did, authorInfo, {
+					signal,
+					onDownloadProgress: (downloadProgress) => {
+						latestDownloadedBytes = downloadProgress.receivedBytes;
+						updateBatchItem(follow.did, {
+							status: 'downloading',
+							detail: buildRepoDownloadDetail(downloadProgress),
+							downloadedBytes: downloadProgress.receivedBytes
+						});
+					},
+					onParseProgress: (count) => {
+						updateBatchItem(follow.did, {
+							status: 'parsing',
+							detail: buildRepoParseDetail(count, latestDownloadedBytes)
+						});
+					}
+				});
+				break;
+			} catch (err: any) {
+				if (err?.name === 'AbortError' || signal.aborted || searchJob !== activeSearchJob) {
+					throw err;
+				}
+				if (isRateLimitError(err) && attempt < BATCH_RATE_LIMIT_RETRIES) {
+					updateBatchProgress({ rateLimitHits: batchProgress.rateLimitHits + 1 });
+					const backoffMs = BATCH_RATE_LIMIT_BACKOFF_MS * (attempt + 1);
+					updateBatchItem(follow.did, {
+						status: 'waiting',
+						detail: `Rate limited; retrying in ${formatDuration(backoffMs)}`,
+						retries: attempt + 1
+					});
+					await abortableSleep(backoffMs, signal);
+					continue;
+				}
+				throw err;
+			}
+		}
+
+		if (!repo) {
+			throw new Error('Repository download did not complete.');
+		}
+
+		updateBatchItem(follow.did, {
+			status: 'building',
+			detail: `${repo.totalPosts.toLocaleString()} posts ready`
+		});
+
+		const { stats: accountThreadStats } = applyThreadsFromFeed(repo.feedItems, follow.did, {
+			reportProgress: false,
+			announce: false,
+			applyMode: 'replace-account',
+			updateStats: false
+		});
+		const account = createLoadedRepoAccount(authorInfo, repo, accountThreadStats);
+		applyRepoAccounts(upsertRepoAccount(account), buildCurrentEngagementSummary());
+		updateBatchItem(follow.did, {
+			status: 'done',
+			detail: `${accountThreadStats.threadsWithSelfReplies.toLocaleString()} self-reply thread${accountThreadStats.threadsWithSelfReplies !== 1 ? 's' : ''}`,
+			error: null,
+			downloadedBytes: repo.downloadedBytes,
+			threadCount: accountThreadStats.threadsWithSelfReplies
+		});
+	}
+
+	async function runFollowBatchDownload() {
+		if (batchDownloading || loadingFollows) return;
+		if (activeFollows.length === 0) {
+			toastInfo('Select at least one follow to download.');
+			return;
+		}
+
+		const targets = activeFollows.filter((follow) => !loadedRepoDids.has(follow.did));
+		const skipped = activeFollows.length - targets.length;
+		if (targets.length === 0) {
+			batchItems = activeFollows.map(buildBatchItem);
+			batchProgress = {
+				done: 0,
+				total: activeFollows.length,
+				active: 0,
+				failed: 0,
+				skipped,
+				rateLimitHits: 0
+			};
+			toastInfo('Selected follow repos are already loaded.');
+			return;
+		}
+
+		const searchJob = ++activeSearchJob;
+		const controller = new AbortController();
+		abortController?.abort();
+		abortController = controller;
+		engagementHydrationController?.abort();
+		engagementHydrationController = null;
+		engagementHydrationContext = null;
+		cachedRepoFeedItems = null;
+		cachedHydrationFeedItems = null;
+		cachedEngagementDid = null;
+		engagementTargetPostCount = countUniqueThreadPostUris(allThreads);
+		engagementHydrationProgress = {
+			current: Object.keys(engagementCountsByUri).length,
+			total: engagementTargetPostCount
+		};
+		engagementHydrationState = Object.keys(engagementCountsByUri).length > 0 ? 'partial' : 'idle';
+		loading = true;
+		batchDownloading = true;
+		error = null;
+		hasSearched = true;
+		showExpanded = false;
+		expandedThread = null;
+		showBlogReader = false;
+		blogThread = null;
+		blogLoadingFullThread = false;
+		activeBlogJob += 1;
+		expandedLoading = false;
+		batchItems = activeFollows.map(buildBatchItem);
+		updateBatchProgress({
+			done: 0,
+			total: activeFollows.length,
+			active: 0,
+			failed: 0,
+			skipped,
+			rateLimitHits: 0
+		});
+
+		let nextTargetIndex = 0;
+		let nextStartAt = 0;
+		const workerCount = Math.min(normalizeBatchConcurrency(batchConcurrency), targets.length);
+		const waitForDownloadSlot = async () => {
+			const delayMs = normalizeBatchStartDelayMs(batchStartDelayMs);
+			const now = Date.now();
+			const startAt = Math.max(now, nextStartAt);
+			nextStartAt = startAt + delayMs;
+			await abortableSleep(Math.max(0, startAt - now), controller.signal);
+		};
+
+		const worker = async () => {
+			while (nextTargetIndex < targets.length && !controller.signal.aborted) {
+				const follow = targets[nextTargetIndex];
+				nextTargetIndex += 1;
+				updateBatchProgress({ active: batchProgress.active + 1 });
+				try {
+					await loadFollowRepoForBatch(follow, searchJob, controller.signal, waitForDownloadSlot);
+					updateBatchProgress({ done: batchProgress.done + 1 });
+				} catch (err: any) {
+					if (err?.name === 'AbortError' || controller.signal.aborted || searchJob !== activeSearchJob) {
+						updateBatchItem(follow.did, {
+							status: 'pending',
+							detail: 'Canceled',
+							error: null
+						});
+						return;
+					}
+					updateBatchItem(follow.did, {
+						status: 'failed',
+						detail: '',
+						error: err?.message || 'Download failed.'
+					});
+					updateBatchProgress({ failed: batchProgress.failed + 1 });
+				} finally {
+					updateBatchProgress({ active: Math.max(0, batchProgress.active - 1) });
+				}
+			}
+		};
+
+		try {
+			await Promise.all(Array.from({ length: workerCount }, () => worker()));
+			if (!controller.signal.aborted && searchJob === activeSearchJob) {
+				refreshDisplayedThreadsNow(allThreads);
+				if (batchProgress.failed > 0) {
+					toastInfo(
+						`Loaded ${batchProgress.done.toLocaleString()} follow repo${batchProgress.done === 1 ? '' : 's'}; ${batchProgress.failed.toLocaleString()} failed.`
+					);
+				} else {
+					toastSuccess(
+						`Loaded ${batchProgress.done.toLocaleString()} follow repo${batchProgress.done === 1 ? '' : 's'}.`
+					);
+				}
+			}
+		} finally {
+			if (abortController === controller) {
+				abortController = null;
+			}
+			if (searchJob === activeSearchJob) {
+				loading = false;
+				batchDownloading = false;
+				progress = {
+					phase: 'Batch download complete',
+					current: batchProcessedCount(),
+					total: batchProgress.total,
+					detail: buildBatchProgressDetail()
+				};
+				saveViewer2MemoryCache();
+			}
+		}
+	}
+
 	function applyThreadsFromFeed(
 		feedItems: any[],
 		did: string,
-		options: { reportProgress?: boolean; announce?: boolean } = {}
+		options: {
+			reportProgress?: boolean;
+			announce?: boolean;
+			applyMode?: 'replace' | 'replace-account' | 'none';
+			updateStats?: boolean;
+		} = {}
 	): { threads: SelfReplyThread[]; stats: ThreadStats } {
 		const built = buildThreadsFromFeed(
 			feedItems,
@@ -1000,8 +1682,15 @@
 			threadsWithSelfReplies: threads.filter((t) => t.depth >= 2).length
 		};
 
-		allThreads = threads;
-		stats = nextStats;
+		const applyMode = options.applyMode ?? 'replace';
+		if (applyMode === 'replace') {
+			allThreads = threads;
+		} else if (applyMode === 'replace-account') {
+			allThreads = replaceThreadsForAccount(allThreads, did, threads);
+		}
+		if (options.updateStats ?? true) {
+			stats = nextStats;
+		}
 
 		if (options.announce) {
 			if (nextStats.threadsWithSelfReplies > 0) {
@@ -1197,8 +1886,11 @@
 				return;
 			}
 
-			const { threads } = applyThreadsFromFeed(context.sourceFeedItems, context.did);
-			refreshDisplayedThreadsNow(threads);
+			applyThreadsFromFeed(context.sourceFeedItems, context.did, {
+				applyMode: repoAccounts.length > 1 ? 'replace-account' : 'replace',
+				updateStats: false
+			});
+			refreshDisplayedThreadsNow(allThreads);
 			engagementHydrationState = repoStats.missingCount > 0 ? 'partial' : 'done';
 			engagementHydrationProgress = { current: context.total, total: context.total };
 			if (threadSortMode === 'liked' || threadSortMode === 'reposted' || threadSortMode === 'quoted') {
@@ -1227,53 +1919,69 @@
 
 	async function handleSearch(
 		handle: string,
-		options: { profile?: ProfileInfo | null; threadUrl?: string | null } = {}
+		options: { profile?: ProfileInfo | null; threadUrl?: string | null; append?: boolean } = {}
 	): Promise<boolean> {
 		const cleaned = normalizeHandle(handle);
 		if (!cleaned || loading) return false;
+		const appendMode = options.append === true && repoAccounts.length > 0;
 
 		const searchJob = ++activeSearchJob;
 		engagementHydrationController?.abort();
 		engagementHydrationController = null;
 		engagementHydrationContext = null;
 		engagementAttemptedPostUris = new Set();
-		engagementHydratedCount = 0;
-		engagementCountsByUri = {};
-		engagementTargetPostCount = 0;
+		engagementHydratedCount = appendMode ? Object.keys(engagementCountsByUri).length : 0;
+		if (!appendMode) {
+			engagementCountsByUri = {};
+		}
+		engagementTargetPostCount = appendMode ? countUniqueThreadPostUris(allThreads) : 0;
 		cachedRepoFeedItems = null;
 		cachedHydrationFeedItems = null;
 		cachedEngagementDid = null;
-		engagementHydrationState = 'idle';
-		engagementHydrationProgress = { current: 0, total: 0 };
+		engagementHydrationState = appendMode && engagementHydratedCount > 0 ? 'partial' : 'idle';
+		engagementHydrationProgress = appendMode
+			? { current: engagementHydratedCount, total: engagementTargetPostCount }
+			: { current: 0, total: 0 };
 		loading = true;
 		error = null;
-		allThreads = [];
-		collapsedByRootUri = {};
-		pendingScrollToRootUri = null;
-		highlightedThread = null;
-		showExpanded = false;
-		expandedThread = null;
-		showBlogReader = false;
-		blogThread = null;
-		blogLoadingFullThread = false;
-		activeBlogJob += 1;
-		expandedLoading = false;
+		if (!appendMode) {
+			allThreads = [];
+			repoAccounts = [];
+			resetFollowBatchState();
+			collapsedByRootUri = {};
+			pendingScrollToRootUri = null;
+			highlightedThread = null;
+			showExpanded = false;
+			expandedThread = null;
+			showBlogReader = false;
+			blogThread = null;
+			blogLoadingFullThread = false;
+			activeBlogJob += 1;
+			expandedLoading = false;
+			showAddAccount = false;
+			additionalHandle = '';
+			additionalProfile = null;
+		}
 		hasSearched = true;
-		stats = { postsScanned: 0, chainStarts: 0, threadsWithSelfReplies: 0 };
-		repoStats = {
-			totalPosts: 0,
-			elapsedMs: 0,
-			downloadedBytes: 0,
-			source: null,
-			hydratedCount: 0,
-			missingCount: 0
-		};
+		if (!appendMode) {
+			stats = { postsScanned: 0, chainStarts: 0, threadsWithSelfReplies: 0 };
+			repoStats = {
+				totalPosts: 0,
+				elapsedMs: 0,
+				downloadedBytes: 0,
+				source: null,
+				hydratedCount: 0,
+				missingCount: 0
+			};
+		}
 
 		const controller = new AbortController();
 		abortController = controller;
 
 		const requestedThreadUrl = options.threadUrl ? normalizeBskyPostUrl(options.threadUrl) : null;
-		updateRouteState({ handle: cleaned, threadUrl: requestedThreadUrl });
+		if (!appendMode) {
+			updateRouteState({ handle: cleaned, threadUrl: requestedThreadUrl });
+		}
 
 		let success = false;
 
@@ -1283,10 +1991,19 @@
 				profile = await getProfile(cleaned);
 			}
 
-			await handleProfileSelected(profile);
 			if (!profile) throw new Error('Profile is not available.');
+			if (appendMode && repoAccounts.some((account) => account.did === profile.did)) {
+				toastInfo(`@${profile.handle} is already loaded.`);
+				return false;
+			}
 
-			updateRouteState({ handle: profile.handle, threadUrl: requestedThreadUrl });
+			if (!appendMode || !selectedProfile) {
+				await handleProfileSelected(profile);
+			}
+
+			if (!appendMode) {
+				updateRouteState({ handle: profile.handle, threadUrl: requestedThreadUrl });
+			}
 
 			const did = profile.did;
 			const authorInfo: AuthorInfo = {
@@ -1296,7 +2013,13 @@
 				avatar: profile.avatar
 			};
 			let latestDownloadedBytes = 0;
-			progress = { phase: 'Downloading repository...', current: 0, total: 0 };
+			const downloadPhase = appendMode
+				? `Downloading repository for @${profile.handle}...`
+				: 'Downloading repository...';
+			const parsePhase = appendMode
+				? `Parsing repository for @${profile.handle}...`
+				: 'Parsing repository posts...';
+			progress = { phase: downloadPhase, current: 0, total: 0 };
 			const repo = await loadRepoFeedItems(did, authorInfo, {
 				signal: controller.signal,
 				onDownloadProgress: (downloadProgress) => {
@@ -1304,7 +2027,7 @@
 					progress =
 						downloadProgress.totalBytes > 0
 							? {
-									phase: 'Downloading repository...',
+									phase: downloadPhase,
 									current: Math.round(
 										(downloadProgress.receivedBytes / downloadProgress.totalBytes) * 100
 									),
@@ -1312,7 +2035,7 @@
 									detail: buildRepoDownloadDetail(downloadProgress)
 								}
 							: {
-									phase: 'Downloading repository...',
+									phase: downloadPhase,
 									current: 0,
 									total: 0,
 									detail: buildRepoDownloadDetail(downloadProgress)
@@ -1320,7 +2043,7 @@
 				},
 				onParseProgress: (count) => {
 					progress = {
-						phase: 'Parsing repository posts...',
+						phase: parsePhase,
 						current: 0,
 						total: 0,
 						detail: buildRepoParseDetail(count, latestDownloadedBytes)
@@ -1329,27 +2052,39 @@
 			});
 
 			progress = {
-				phase: 'Building threads...',
+				phase: appendMode ? `Adding @${profile.handle} threads...` : 'Building threads...',
 				current: 0,
 				total: repo.feedItems.length,
 				detail: `${repo.totalPosts.toLocaleString()} repository posts ready for thread discovery`
 			};
 
-			repoStats = {
-				totalPosts: repo.totalPosts,
-				elapsedMs: repo.elapsedMs,
-				downloadedBytes: repo.downloadedBytes,
-				source: repo.source,
-				hydratedCount: 0,
-				missingCount: 0
-			};
-
-			const { threads } = applyThreadsFromFeed(repo.feedItems, did, {
+			const { threads, stats: accountThreadStats } = applyThreadsFromFeed(repo.feedItems, did, {
 				reportProgress: true,
-				announce: true
+				announce: true,
+				applyMode: appendMode ? 'replace-account' : 'replace',
+				updateStats: false
 			});
+			const account = createLoadedRepoAccount(authorInfo, repo, accountThreadStats);
+			const nextAccounts = appendMode ? upsertRepoAccount(account) : [account];
+			const hydratedUriCount = Object.keys(engagementCountsByUri).length;
+			const engagement = appendMode && hydratedUriCount > 0
+				? {
+						hydratedCount: hydratedUriCount,
+						missingCount: Math.max(0, countUniqueThreadPostUris(allThreads) - hydratedUriCount)
+					}
+				: { hydratedCount: 0, missingCount: 0 };
+			applyRepoAccounts(nextAccounts, engagement);
 			const hydrationFeedItems = selectThreadFeedItems(repo.feedItems, threads);
-			prepareEngagementHydration(repo.feedItems, hydrationFeedItems, did, searchJob, { reset: true });
+			if (appendMode) {
+				engagementTargetPostCount = countUniqueThreadPostUris(allThreads);
+				engagementHydrationProgress = {
+					current: engagement.hydratedCount,
+					total: engagementTargetPostCount
+				};
+				engagementHydrationState = engagement.hydratedCount > 0 ? 'partial' : 'idle';
+			} else {
+				prepareEngagementHydration(repo.feedItems, hydrationFeedItems, did, searchJob, { reset: true });
+			}
 			success = true;
 		} catch (e: any) {
 			if (e?.name === 'AbortError') {
@@ -1768,6 +2503,8 @@
 	});
 
 	onDestroy(() => {
+		abortController?.abort();
+		followLoadController?.abort();
 		engagementHydrationController?.abort();
 		flushViewer2MemoryCacheSave();
 	});
@@ -1810,7 +2547,228 @@
 
 		<section class="search-section">
 			<SearchBar onsearch={handleSearch} onprofile={handleProfileSelected} disabled={loading} {initialHandle} />
-		</section>
+				{#if hasSearched}
+					<div class="add-account-panel">
+						{#if showAddAccount}
+							<SearchBar
+							onsearch={(handle) => void handleAddAccountSearch(handle)}
+							onprofile={handleAdditionalProfileSelected}
+							onchange={handleAdditionalHandleChange}
+							disabled={loading}
+							initialHandle={additionalHandle}
+							placeholder="Add another Bluesky user..."
+							buttonLabel="Download Repo"
+						/>
+						<button
+							type="button"
+							class="add-account-cancel"
+							disabled={loading}
+							onclick={() => {
+								showAddAccount = false;
+								additionalHandle = '';
+								additionalProfile = null;
+							}}
+						>
+							Cancel
+						</button>
+					{:else}
+						<button
+							type="button"
+							class="add-account-btn wobbly-border-light"
+							disabled={loading}
+							onclick={() => (showAddAccount = true)}
+						>
+							+ Add account repo
+						</button>
+						{/if}
+					</div>
+				{/if}
+				{#if hasSearched && selectedProfile}
+					<div class="follow-batch-panel wobbly-border-light">
+						<div class="follow-batch-head">
+							<div class="follow-batch-title">
+								<strong>Follow repos</strong>
+								<span>@{(followsSubject ?? selectedProfile).handle}</span>
+							</div>
+							<div class="follow-batch-actions">
+								<button
+									type="button"
+									class="mini-action-btn"
+									disabled={loadingFollows || batchDownloading || loading}
+									onclick={loadFollowsForBatch}
+								>
+									{#if loadingFollows}
+										Loading...
+									{:else if follows.length > 0}
+										Refresh
+									{:else}
+										Load follows
+									{/if}
+								</button>
+								{#if follows.length > 0}
+									<button
+										type="button"
+										class="mini-action-btn"
+										disabled={batchDownloading}
+										onclick={() => (showFollowEditor = !showFollowEditor)}
+									>
+										{showFollowEditor ? 'Done' : 'Edit list'}
+									</button>
+								{/if}
+							</div>
+						</div>
+
+						{#if loadingFollows}
+							<div class="follow-batch-status">Loading follows...</div>
+						{/if}
+
+						{#if follows.length > 0}
+							<div class="follow-batch-summary">
+								<span>{follows.length.toLocaleString()} follows</span>
+								<span>{activeFollows.length.toLocaleString()} selected</span>
+								<span>{downloadableActiveFollows.length.toLocaleString()} not loaded</span>
+							</div>
+
+							{#if showFollowEditor}
+								<div class="follow-editor">
+									<div class="follow-editor-toolbar">
+										<input
+											type="text"
+											class="follow-filter"
+											bind:value={followFilter}
+											placeholder="Filter accounts..."
+										/>
+										<button type="button" class="mini-action-btn" disabled={batchDownloading} onclick={selectAllFollows}>All</button>
+										<button type="button" class="mini-action-btn" disabled={batchDownloading} onclick={clearAllFollows}>None</button>
+									</div>
+									<ul class="follow-list">
+										{#each filteredFollows as follow (follow.did)}
+											{@const selected = !excludedFollowDids.has(follow.did)}
+											{@const loaded = loadedRepoDids.has(follow.did)}
+											<li class="follow-item" class:deselected={!selected}>
+												<label class="follow-label">
+													<input
+														type="checkbox"
+														checked={selected}
+														disabled={batchDownloading}
+														onchange={() => toggleFollow(follow.did)}
+													/>
+													{#if follow.avatar}
+														<img class="follow-avatar" src={follow.avatar} alt={follow.handle} />
+													{:else}
+														<span class="follow-avatar follow-avatar-fallback">{follow.handle.slice(0, 1).toUpperCase()}</span>
+													{/if}
+													<span class="follow-names">
+														{#if follow.displayName}
+															<span class="follow-name">{follow.displayName}</span>
+														{/if}
+														<span class="follow-handle">@{follow.handle}</span>
+													</span>
+													{#if loaded}
+														<span class="loaded-badge">Loaded</span>
+													{/if}
+												</label>
+											</li>
+										{/each}
+										{#if filteredFollows.length === 0}
+											<li class="follow-empty">No follows match "{followFilter}".</li>
+										{/if}
+									</ul>
+								</div>
+							{:else}
+								<div class="follow-avatar-strip">
+									{#each activeFollows.slice(0, 36) as follow (follow.did)}
+										{#if follow.avatar}
+											<img class="follow-avatar" src={follow.avatar} alt={follow.handle} title={'@' + follow.handle} />
+										{:else}
+											<span class="follow-avatar follow-avatar-fallback" title={'@' + follow.handle}>
+												{follow.handle.slice(0, 1).toUpperCase()}
+											</span>
+										{/if}
+									{/each}
+									{#if activeFollows.length > 36}
+										<span class="follow-avatar-more">+{(activeFollows.length - 36).toLocaleString()}</span>
+									{/if}
+								</div>
+							{/if}
+
+							<div class="batch-controls">
+								<label>
+									<span>Concurrent</span>
+									<input
+										type="number"
+										min={BATCH_CONCURRENCY_MIN}
+										max={BATCH_CONCURRENCY_MAX}
+										step="1"
+										value={batchConcurrency}
+										disabled={batchDownloading}
+										oninput={(event) => setBatchConcurrency(event.currentTarget.value)}
+									/>
+								</label>
+								<label>
+									<span>Start delay</span>
+									<input
+										type="number"
+										min={BATCH_START_DELAY_MIN_MS}
+										max={BATCH_START_DELAY_MAX_MS}
+										step="250"
+										value={batchStartDelayMs}
+										disabled={batchDownloading}
+										oninput={(event) => setBatchStartDelayMs(event.currentTarget.value)}
+									/>
+									<small>ms</small>
+								</label>
+								{#if batchDownloading}
+									<button type="button" class="batch-download-btn" onclick={cancelFetch}>Cancel batch</button>
+								{:else}
+									<button
+										type="button"
+										class="batch-download-btn"
+										disabled={loading || downloadableActiveFollows.length === 0}
+										onclick={runFollowBatchDownload}
+									>
+										Download {downloadableActiveFollows.length.toLocaleString()} repo{downloadableActiveFollows.length === 1 ? '' : 's'}
+									</button>
+								{/if}
+							</div>
+
+							{#if batchProgress.total > 0}
+								<div class="batch-status">
+									<span>
+										{batchProcessedCount().toLocaleString()} / {batchProgress.total.toLocaleString()} processed
+									</span>
+									{#if batchProgress.active > 0}
+										<span>{batchProgress.active.toLocaleString()} active</span>
+									{/if}
+									{#if batchProgress.rateLimitHits > 0}
+										<span>{batchProgress.rateLimitHits.toLocaleString()} rate-limit backoff{batchProgress.rateLimitHits === 1 ? '' : 's'}</span>
+									{/if}
+									{#if batchProgress.failed > 0}
+										<span>{batchProgress.failed.toLocaleString()} failed</span>
+									{/if}
+								</div>
+							{/if}
+
+							{#if batchItems.length > 0}
+								<ul class="batch-item-list">
+									{#each batchItems as item (item.did)}
+										<li class:failed={item.status === 'failed'} class:done={item.status === 'done'}>
+											<span class="batch-item-name">@{item.handle}</span>
+											<span class="batch-item-status">{batchItemStatusLabel(item.status)}</span>
+											{#if item.detail}
+												<span class="batch-item-detail">{item.detail}</span>
+											{/if}
+											{#if item.error}
+												<span class="batch-item-error">{item.error}</span>
+											{/if}
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						{/if}
+					</div>
+				{/if}
+			</section>
 
 		{#if error}
 			<ErrorBanner message={error} />
@@ -1846,7 +2804,28 @@
 		{#if hasSearched}
 			<section class="results-section">
 				<div class="results-header">
-					{#if author}
+					{#if repoAccounts.length > 0}
+						<div class="author-list" class:author-list--multiple={repoAccounts.length > 1}>
+							{#each repoAccounts as account (account.did)}
+								<div class="author-chip">
+									{#if account.avatar}
+										<img src={account.avatar} alt="" class="author-avatar" />
+									{:else}
+										<div class="author-avatar placeholder"></div>
+									{/if}
+									<span>
+										{account.displayName || account.handle}
+										<span class="author-handle">@{account.handle}</span>
+										{#if repoAccounts.length > 1}
+											<span class="author-repo-count">
+												{account.stats.threadsWithSelfReplies.toLocaleString()} thread{account.stats.threadsWithSelfReplies !== 1 ? 's' : ''}
+											</span>
+										{/if}
+									</span>
+								</div>
+							{/each}
+						</div>
+					{:else if author}
 						<div class="author-info">
 							{#if author.avatar}
 								<img src={author.avatar} alt="" class="author-avatar" />
@@ -1861,7 +2840,10 @@
 					{#if !loading && repoStats.totalPosts > 0}
 						<div class="stats-bar">
 							<span>
-								Downloaded {repoStats.totalPosts.toLocaleString()} posts in {(repoStats.elapsedMs / 1000).toFixed(1)}s
+								Downloaded {repoStats.totalPosts.toLocaleString()} posts{#if repoAccounts.length > 1}
+									from {repoAccounts.length.toLocaleString()} repos
+								{/if}
+								in {(repoStats.elapsedMs / 1000).toFixed(1)}s
 								from {formatBytes(repoStats.downloadedBytes)}{#if repoStats.source}
 									via {repoStats.source === 'pds' ? 'PDS' : 'relay'}
 								{/if}
@@ -2172,7 +3154,7 @@
 						{/if}
 					</div>
 				{/if}
-			</section>
+				</section>
 		{/if}
 
 		{#if !loading && !hasSearched}
@@ -2269,6 +3251,359 @@
 
 	.search-section {
 		margin-bottom: 32px;
+	}
+
+	.add-account-panel {
+		display: flex;
+		justify-content: center;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 10px;
+		max-width: 680px;
+		margin: 12px auto 0;
+	}
+
+	.add-account-panel :global(.search-bar) {
+		flex: 1 1 520px;
+		margin: 0;
+	}
+
+	.add-account-btn,
+	.add-account-cancel {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-height: 34px;
+		padding: 7px 13px;
+		border-radius: 999px;
+		background: var(--card-bg);
+		color: var(--muted);
+		border-color: var(--control-border);
+		font: inherit;
+		font-size: 0.86rem;
+		font-weight: 700;
+		cursor: pointer;
+	}
+
+	.add-account-btn:hover:not(:disabled),
+	.add-account-cancel:hover:not(:disabled) {
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+
+	.add-account-btn:disabled,
+	.add-account-cancel:disabled {
+		cursor: not-allowed;
+		opacity: 0.55;
+	}
+
+	.follow-batch-panel {
+		max-width: 760px;
+		margin: 14px auto 0;
+		padding: 12px 14px;
+		background: var(--card-bg);
+		color: var(--text-ink);
+		border-color: var(--control-border);
+		box-shadow: var(--shadow-soft);
+		text-align: left;
+	}
+
+	.follow-batch-head,
+	.follow-editor-toolbar,
+	.batch-controls,
+	.batch-status {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.follow-batch-head {
+		justify-content: space-between;
+	}
+
+	.follow-batch-title {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.follow-batch-title span,
+	.follow-batch-summary,
+	.follow-batch-status {
+		color: var(--muted);
+		font-size: 0.86rem;
+	}
+
+	.follow-batch-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.mini-action-btn,
+	.batch-download-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-height: 31px;
+		padding: 6px 11px;
+		border: 1px solid var(--control-border);
+		border-radius: 999px;
+		background: var(--control-bg);
+		color: var(--text-ink);
+		font: inherit;
+		font-size: 0.8rem;
+		font-weight: 700;
+		line-height: 1.1;
+		cursor: pointer;
+	}
+
+	.mini-action-btn:hover:not(:disabled),
+	.batch-download-btn:hover:not(:disabled) {
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+
+	.mini-action-btn:disabled,
+	.batch-download-btn:disabled {
+		cursor: not-allowed;
+		opacity: 0.55;
+	}
+
+	.follow-batch-summary {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin-top: 8px;
+	}
+
+	.follow-batch-summary span,
+	.batch-status span {
+		padding: 2px 8px;
+		border: 1px solid var(--control-border);
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--control-bg) 70%, transparent);
+	}
+
+	.follow-editor {
+		margin-top: 10px;
+		padding-top: 10px;
+		border-top: 1px solid var(--control-border);
+	}
+
+	.follow-editor-toolbar {
+		margin-bottom: 8px;
+	}
+
+	.follow-filter {
+		flex: 1 1 220px;
+		min-width: 0;
+		padding: 7px 11px;
+		border: 1px solid var(--control-border);
+		border-radius: 999px;
+		background: var(--control-bg);
+		color: var(--text-ink);
+		font: inherit;
+		font-size: 0.86rem;
+	}
+
+	.follow-list,
+	.batch-item-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		overflow-y: auto;
+	}
+
+	.follow-list {
+		max-height: 280px;
+	}
+
+	.follow-item {
+		border-top: 1px solid color-mix(in srgb, var(--control-border) 55%, transparent);
+	}
+
+	.follow-item:first-child {
+		border-top: 0;
+	}
+
+	.follow-item.deselected {
+		opacity: 0.52;
+	}
+
+	.follow-label {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+		padding: 6px 2px;
+		cursor: pointer;
+	}
+
+	.follow-avatar-strip {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 4px;
+		margin-top: 10px;
+	}
+
+	.follow-avatar {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		border: 1px solid var(--control-border);
+		border-radius: 999px;
+		object-fit: cover;
+		flex: 0 0 auto;
+		font-size: 0.78rem;
+	}
+
+	.follow-avatar-fallback {
+		background: var(--control-bg);
+		color: var(--text-ink);
+	}
+
+	.follow-avatar-more {
+		margin-left: 4px;
+		color: var(--muted);
+		font-size: 0.82rem;
+	}
+
+	.follow-names {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+		min-width: 0;
+		flex: 1;
+	}
+
+	.follow-name {
+		overflow: hidden;
+		color: var(--text-ink);
+		font-weight: 700;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.follow-handle {
+		color: var(--muted);
+		font-size: 0.84rem;
+		white-space: nowrap;
+	}
+
+	.loaded-badge {
+		margin-left: auto;
+		padding: 1px 7px;
+		border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--control-border));
+		border-radius: 999px;
+		color: var(--accent);
+		font-size: 0.72rem;
+		font-weight: 700;
+	}
+
+	.follow-empty {
+		padding: 10px 2px;
+		color: var(--muted);
+		font-size: 0.86rem;
+	}
+
+	.batch-controls {
+		margin-top: 10px;
+		padding-top: 10px;
+		border-top: 1px solid var(--control-border);
+	}
+
+	.batch-controls label {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		color: var(--muted);
+		font-size: 0.82rem;
+	}
+
+	.batch-controls input {
+		width: 76px;
+		padding: 5px 7px;
+		border: 1px solid var(--control-border);
+		border-radius: 6px;
+		background: var(--control-bg);
+		color: var(--text-ink);
+		font: inherit;
+		font-size: 0.82rem;
+	}
+
+	.batch-controls small {
+		color: var(--muted);
+		font-size: 0.78rem;
+	}
+
+	.batch-download-btn {
+		margin-left: auto;
+		background: color-mix(in srgb, var(--accent) 14%, var(--control-bg));
+	}
+
+	.batch-status {
+		margin-top: 8px;
+		color: var(--muted);
+		font-size: 0.8rem;
+	}
+
+	.batch-item-list {
+		max-height: 190px;
+		margin-top: 8px;
+		border-top: 1px solid var(--control-border);
+	}
+
+	.batch-item-list li {
+		display: grid;
+		grid-template-columns: minmax(120px, 1fr) auto minmax(0, 1.4fr);
+		gap: 8px;
+		align-items: center;
+		padding: 6px 2px;
+		border-bottom: 1px solid color-mix(in srgb, var(--control-border) 55%, transparent);
+		color: var(--muted);
+		font-size: 0.8rem;
+	}
+
+	.batch-item-list li.done {
+		color: var(--text-ink);
+	}
+
+	.batch-item-list li.failed {
+		color: var(--danger-text);
+	}
+
+	.batch-item-name {
+		min-width: 0;
+		overflow: hidden;
+		color: var(--text-ink);
+		font-weight: 700;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.batch-item-status {
+		padding: 1px 7px;
+		border: 1px solid var(--control-border);
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--control-bg) 70%, transparent);
+		font-size: 0.72rem;
+		font-weight: 700;
+	}
+
+	.batch-item-detail,
+	.batch-item-error {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.search-filter {
@@ -2511,24 +3846,68 @@
 		margin-bottom: 24px;
 	}
 
-	.author-info {
+	.author-info,
+	.author-chip {
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		gap: 12px;
+	}
+
+	.author-info {
 		margin-bottom: 16px;
 		font-size: 1.2rem;
+	}
+
+	.author-list {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-wrap: wrap;
+		gap: 10px;
+		margin-bottom: 16px;
+	}
+
+	.author-chip {
+		max-width: min(100%, 320px);
+		padding: 8px 12px;
+		border: 1.5px solid var(--control-border);
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--card-bg) 88%, transparent);
+		font-size: 0.95rem;
+		box-shadow: var(--shadow-soft);
+	}
+
+	.author-chip > span {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		min-width: 0;
+		line-height: 1.18;
+		text-align: left;
 	}
 
 	.author-avatar {
 		width: 40px;
 		height: 40px;
 		border-radius: 50%;
+		object-fit: cover;
+		flex: 0 0 auto;
+	}
+
+	.author-avatar.placeholder {
+		background: var(--muted);
+		opacity: 0.3;
 	}
 
 	.author-handle {
 		color: var(--muted);
 		font-size: 0.95rem;
+	}
+
+	.author-repo-count {
+		color: var(--muted);
+		font-size: 0.75rem;
 	}
 
 	.stats-bar {
@@ -2613,6 +3992,39 @@
 	.empty-hint {
 		color: var(--muted);
 		font-size: 0.95rem !important;
+	}
+
+	@media (max-width: 640px) {
+		.follow-batch-head,
+		.batch-controls {
+			align-items: stretch;
+			flex-direction: column;
+		}
+
+		.follow-batch-actions,
+		.batch-controls label,
+		.batch-download-btn {
+			width: 100%;
+		}
+
+		.batch-download-btn {
+			margin-left: 0;
+		}
+
+		.follow-names {
+			align-items: flex-start;
+			flex-direction: column;
+			gap: 1px;
+		}
+
+		.batch-item-list li {
+			grid-template-columns: minmax(0, 1fr) auto;
+		}
+
+		.batch-item-detail,
+		.batch-item-error {
+			grid-column: 1 / -1;
+		}
 	}
 
 	.welcome {

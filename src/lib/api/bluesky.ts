@@ -314,6 +314,11 @@ export async function searchPostsByTag(
 	};
 }
 
+export function buildAuthorSearchQuery(query: string, authorHandle: string): string {
+	const cleanHandle = authorHandle.replace(/^@/, '').trim();
+	return `${query.trim()} from:${cleanHandle}`.trim();
+}
+
 export async function searchPostsFromAuthor(
 	query: string,
 	authorHandle: string,
@@ -323,6 +328,7 @@ export async function searchPostsFromAuthor(
 		sort?: 'latest' | 'top';
 		signal?: AbortSignal;
 		agent?: PostSearchAgent;
+		expectedAuthorDid?: string;
 	} = {}
 ): Promise<TaggedPostSearchPage> {
 	const cleanHandle = authorHandle.replace(/^@/, '').trim();
@@ -330,7 +336,7 @@ export async function searchPostsFromAuthor(
 		return { posts: [] };
 	}
 
-	const q = `${query.trim()} from:${cleanHandle}`.trim();
+	const q = buildAuthorSearchQuery(query, cleanHandle);
 	const limit = Math.max(1, Math.min(options.limit ?? 25, 100));
 	const searchAgent = options.agent ?? agent;
 	const res = await searchAgent.app.bsky.feed.searchPosts(
@@ -343,8 +349,12 @@ export async function searchPostsFromAuthor(
 		{ signal: options.signal }
 	);
 
+	const posts: ThreadPost[] = (res.data.posts ?? []).map((post: any) => parsePostView(post));
+
 	return {
-		posts: (res.data.posts ?? []).map((post: any) => parsePostView(post)),
+		posts: options.expectedAuthorDid
+			? posts.filter((post) => post.author.did === options.expectedAuthorDid)
+			: posts,
 		cursor: res.data.cursor,
 		hitsTotal: res.data.hitsTotal
 	};

@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+	buildAuthorSearchQuery,
 	buildHydratableThreadFromFlatItems,
 	buildVisibleThreadFromFlatItems,
 	getReplyParentVisibilityFromFlatItems,
-	hasMissingDirectReplies
+	hasMissingDirectReplies,
+	searchPostsFromAuthor
 } from './bluesky';
 
 function flatPostItem(options: {
@@ -73,6 +75,82 @@ function blockedGapItem(options: { uri: string; depth: number; authorDid?: strin
 		}
 	};
 }
+
+function searchPostView(options: {
+	id: string;
+	authorDid: string;
+	handle: string;
+	text?: string;
+}): any {
+	return {
+		uri: `at://${options.authorDid}/app.bsky.feed.post/${options.id}`,
+		cid: `cid-${options.id}`,
+		author: {
+			did: options.authorDid,
+			handle: options.handle,
+			displayName: options.handle
+		},
+		record: {
+			text: options.text ?? options.id,
+			createdAt: '2026-03-01T12:00:00.000Z'
+		},
+		indexedAt: '2026-03-01T12:00:00.000Z',
+		likeCount: 0,
+		repostCount: 0,
+		replyCount: 0,
+		quoteCount: 0
+	};
+}
+
+test('searchPostsFromAuthor filters backend leaks by expected author DID', async () => {
+	const calls: Array<Record<string, unknown>> = [];
+	const fakeAgent = {
+		app: {
+			bsky: {
+				feed: {
+					searchPosts: async (params: Record<string, unknown>) => {
+						calls.push(params);
+						return {
+							data: {
+								posts: [
+									searchPostView({
+										id: 'follow-post',
+										authorDid: 'did:plc:follow',
+										handle: 'follow.test'
+									}),
+									searchPostView({
+										id: 'stray-post',
+										authorDid: 'did:plc:stray',
+										handle: 'stray.test'
+									})
+								],
+								cursor: 'next',
+								hitsTotal: 2
+							}
+						};
+					}
+				}
+			}
+		}
+	};
+
+	const page = await searchPostsFromAuthor('needle', 'follow.test', {
+		agent: fakeAgent,
+		expectedAuthorDid: 'did:plc:follow'
+	});
+
+	assert.equal(calls[0].q, 'needle from:follow.test');
+	assert.deepEqual(
+		page.posts.map((post) => post.author.did),
+		['did:plc:follow']
+	);
+	assert.equal(page.cursor, 'next');
+	assert.equal(page.hitsTotal, 2);
+});
+
+test('buildAuthorSearchQuery shows the exact from search sent to Bluesky', () => {
+	assert.equal(buildAuthorSearchQuery(' needle ', '@follow.test '), 'needle from:follow.test');
+});
 
 test('buildVisibleThreadFromFlatItems keeps descendants when a blocked post is in the middle', () => {
 	const root = flatPostItem({
