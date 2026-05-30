@@ -1,3 +1,47 @@
+export interface EmbedImage {
+	thumb: string;
+	fullsize: string;
+	alt: string;
+	aspectRatio?: {
+		width: number;
+		height: number;
+	};
+}
+
+export interface EmbedVideo {
+	cid: string;
+	playlist: string;
+	thumbnail?: string;
+	alt?: string;
+	aspectRatio?: {
+		width: number;
+		height: number;
+	};
+	presentation?: string;
+}
+
+export interface EmbedExternal {
+	uri: string;
+	title: string;
+	description: string;
+	thumb?: string;
+}
+
+export interface QuotedRecordEmbed {
+	uri: string;
+	author: {
+		handle: string;
+		displayName?: string;
+		avatar?: string;
+	};
+	text: string;
+	createdAt: string;
+	images?: EmbedImage[];
+	video?: EmbedVideo;
+	external?: EmbedExternal;
+	record?: QuotedRecordEmbed;
+}
+
 export interface ThreadPost {
 	uri: string;
 	cid: string;
@@ -11,60 +55,18 @@ export interface ThreadPost {
 	createdAt: string;
 	linkedUrls?: string[];
 	needsHydratedPostView?: boolean;
+	hydrationEmbedType?: string;
+	hydrationMediaEmbedType?: string;
 	likeCount: number;
 	repostCount: number;
 	replyCount: number;
 	quoteCount: number;
 	embed?: {
 		type: string;
-		images?: Array<{
-			thumb: string;
-			fullsize: string;
-			alt: string;
-		}>;
-		video?: {
-			cid: string;
-			playlist: string;
-			thumbnail?: string;
-			alt?: string;
-			aspectRatio?: {
-				width: number;
-				height: number;
-			};
-			presentation?: string;
-		};
-		external?: {
-			uri: string;
-			title: string;
-			description: string;
-			thumb?: string;
-		};
-		record?: {
-			uri: string;
-			author: {
-				handle: string;
-				displayName?: string;
-				avatar?: string;
-			};
-			text: string;
-			createdAt: string;
-			images?: Array<{
-				thumb: string;
-				fullsize: string;
-				alt: string;
-			}>;
-			video?: {
-				cid: string;
-				playlist: string;
-				thumbnail?: string;
-				alt?: string;
-				aspectRatio?: {
-					width: number;
-					height: number;
-				};
-				presentation?: string;
-			};
-		};
+		images?: EmbedImage[];
+		video?: EmbedVideo;
+		external?: EmbedExternal;
+		record?: QuotedRecordEmbed;
 	};
 	parentUri?: string;
 	children: ThreadPost[];

@@ -213,8 +213,8 @@
 			<div class="post-images">
 				{#each displayPost.embed.images as img}
 					<img src={img.thumb} alt={img.alt} class="embed-thumb"
-					 onclick={(e) => { e.stopPropagation(); openLightbox(img.fullsize); }}
-					 onkeydown={(e) => { if (e.key === 'Enter') openLightbox(img.fullsize); }}
+					 onclick={(e) => { e.stopPropagation(); openLightbox(img.fullsize, img.alt); }}
+					 onkeydown={(e) => { if (e.key === 'Enter') openLightbox(img.fullsize, img.alt); }}
 					 role="button" tabindex="0" style="cursor: pointer;" />
 				{/each}
 			</div>
@@ -268,8 +268,8 @@
 					<div class="embed-images">
 						{#each displayRecord.images as img}
 							<img src={img.thumb} alt={img.alt} class="embed-image"
-								onclick={(e) => { e.stopPropagation(); openLightbox(img.fullsize); }}
-								onkeydown={(e) => { if (e.key === 'Enter') openLightbox(img.fullsize); }}
+								onclick={(e) => { e.stopPropagation(); openLightbox(img.fullsize, img.alt); }}
+								onkeydown={(e) => { if (e.key === 'Enter') openLightbox(img.fullsize, img.alt); }}
 								role="button" tabindex="0" style="cursor: pointer;" />
 						{/each}
 					</div>

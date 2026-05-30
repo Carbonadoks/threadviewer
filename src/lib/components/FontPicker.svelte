@@ -19,6 +19,14 @@
 		return fonts.find((f) => f.key === key)?.family ?? fonts[0].family;
 	}
 
+	// Publish the active font globally so root-level UI (e.g. the Lightbox,
+	// mounted outside any page's font wrapper) can match the selected font.
+	$effect(() => {
+		if (typeof document !== 'undefined') {
+			document.documentElement.style.setProperty('--app-font', getFontFamily(value));
+		}
+	});
+
 	function handleChange(e: Event) {
 		const select = e.target as HTMLSelectElement;
 		onchange(select.value);

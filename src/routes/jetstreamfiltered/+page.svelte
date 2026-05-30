@@ -1671,7 +1671,7 @@ ${JSON.stringify(payload, null, 2)}`;
 									type="button"
 									class="image-button"
 									style={`--image-ratio: ${image.aspectRatio}`}
-									onclick={() => openLightbox(image.fullsize)}
+									onclick={() => openLightbox(image.fullsize, image.alt)}
 								>
 									<img src={image.thumb} alt={image.alt || post.text || 'Jetstream image'} loading="lazy" />
 								</button>

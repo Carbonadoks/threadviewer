@@ -104,7 +104,7 @@
 						<p>{paragraph}</p>
 					{/each}
 
-					<PostEmbedPreview {post} wide />
+					<PostEmbedPreview {post} wide eager />
 				</section>
 			{/if}
 		{/each}

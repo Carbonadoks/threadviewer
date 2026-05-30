@@ -10,7 +10,6 @@ export type ViewerPage =
 	| 'parallelboard'
 	| 'band'
 	| 'bisk2bisk'
-	| 'judge'
 	| 'dialogue'
 	| 'dialogue2';
 

@@ -4186,7 +4186,7 @@
 																class="card-media-btn"
 																onclick={(event) => {
 																	event.stopPropagation();
-																	openLightbox(img.fullsize);
+																	openLightbox(img.fullsize, img.alt);
 																}}
 															>
 																<img src={img.thumb} alt={img.alt} class="card-media-thumb" />
@@ -4270,7 +4270,7 @@
 																		class="card-media-btn"
 																		onclick={(event) => {
 																			event.stopPropagation();
-																			openLightbox(img.fullsize);
+																			openLightbox(img.fullsize, img.alt);
 																		}}
 																	>
 																		<img src={img.thumb} alt={img.alt} class="card-media-thumb" />
@@ -4675,7 +4675,7 @@
 							{#if detailModalCard.post.embed?.images}
 								<div class="detail-images">
 									{#each detailModalCard.post.embed.images as img}
-										<button type="button" class="detail-image-btn" onclick={() => openLightbox(img.fullsize)}>
+										<button type="button" class="detail-image-btn" onclick={() => openLightbox(img.fullsize, img.alt)}>
 											<img src={img.thumb} alt={img.alt} class="detail-image" />
 										</button>
 									{/each}

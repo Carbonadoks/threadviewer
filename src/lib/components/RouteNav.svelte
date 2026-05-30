@@ -7,6 +7,7 @@
 		| 'home'
 		| 'threadviewer'
 		| 'viewer2'
+		| 'twitterarchiveviewer'
 		| 'semantic'
 		| 'summary'
 		| 'summary2'
@@ -28,7 +29,6 @@
 		| 'matrix'
 		| 'matrix-feed'
 		| 'abstractfeed'
-		| 'judge'
 		| 'atproideasio'
 		| 'llm'
 		| 'card'
@@ -63,6 +63,7 @@
 		{ id: 'landing', href: '/', label: 'Landing', compactLabel: 'Start' },
 		{ id: 'frontpage', href: '/frontpage', label: 'Frontpage', compactLabel: 'Front' },
 		{ id: 'viewer2', href: '/viewer2', label: 'Repo Viewer', compactLabel: 'Repo' },
+		{ id: 'twitterarchiveviewer', href: '/twitterarchiveviewer', label: 'Twitter Archive', compactLabel: 'X Archive' },
 		{ id: 'semantic', href: '/semantic', label: 'Semantic', compactLabel: 'Semantic' },
 		{ id: 'summary2', href: '/summary2', label: 'Repo Summary', compactLabel: 'Repo Sum' },
 		{ id: 'blocked', href: '/blocked', label: 'Blocked', compactLabel: 'Blocked' },
@@ -81,7 +82,6 @@
 		{ id: 'matrix', href: '/matrix', label: 'Matrix' },
 		{ id: 'matrix-feed', href: '/matrix-feed', label: 'In Matrix', compactLabel: 'In Matrix' },
 		{ id: 'abstractfeed', href: '/abstractfeed', label: 'Abstract Thread', compactLabel: 'Abstract' },
-		{ id: 'judge', href: '/judge', label: 'Judge' },
 		{ id: 'atproideasio', href: '/atproideasio', label: 'atproideasio', compactLabel: 'Ideas' },
 		{ id: 'llm', href: '/llm', label: 'LLM' },
 		{ id: 'card', href: '/card', label: 'Cards', compactLabel: 'Cards' },
@@ -108,8 +108,7 @@
 			item.id === 'parallelboard' ||
 			item.id === 'band' ||
 			item.id === 'bisk2bisk' ||
-			item.id === 'abstractfeed' ||
-			item.id === 'judge'
+			item.id === 'abstractfeed'
 		) {
 			if (item.id === 'abstractfeed') {
 				const nextUrl = threadUrl?.trim() ?? '';
@@ -155,7 +154,7 @@
 
 	function shouldShowItem(item: RouteNavItem): boolean {
 		if (!hideThreadTools) return true;
-		return item.id !== 'treeviewer' && item.id !== 'judge';
+		return item.id !== 'treeviewer';
 	}
 </script>
 

@@ -1,11 +1,16 @@
 import { writable } from 'svelte/store';
 
-export const lightboxSrc = writable<string | null>(null);
+export interface LightboxState {
+	src: string;
+	alt: string;
+}
 
-export function openLightbox(src: string) {
-	lightboxSrc.set(src);
+export const lightbox = writable<LightboxState | null>(null);
+
+export function openLightbox(src: string, alt = '') {
+	lightbox.set({ src, alt: alt ?? '' });
 }
 
 export function closeLightbox() {
-	lightboxSrc.set(null);
+	lightbox.set(null);
 }

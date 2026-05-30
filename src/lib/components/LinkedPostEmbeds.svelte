@@ -10,12 +10,14 @@
 		text,
 		externalUri = null,
 		urls = [],
-		excludeUris = []
+		excludeUris = [],
+		eager = false
 	}: {
 		text: string;
 		externalUri?: string | null;
 		urls?: string[];
 		excludeUris?: string[];
+		eager?: boolean;
 	} = $props();
 
 	const candidateUrls = $derived.by(() => {
@@ -52,6 +54,11 @@
 	$effect(() => {
 		if (!browser || candidateUrls.length === 0) {
 			shouldFetch = false;
+			return;
+		}
+
+		if (eager) {
+			shouldFetch = true;
 			return;
 		}
 
@@ -120,7 +127,7 @@
 	<div class="linked-post-embeds" class:is-empty={linkedRecords.length === 0} bind:this={containerEl}>
 		{#each linkedRecords as entry (entry.key)}
 			{#if entry.record}
-				<RecordEmbed record={entry.record} dense />
+				<RecordEmbed record={entry.record} dense {eager} />
 			{:else if entry.unavailable}
 				<div class="linked-post-unavailable wobbly-border-light">
 					<p class="linked-post-unavailable-text">Linked post not available.</p>

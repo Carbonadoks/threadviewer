@@ -221,14 +221,23 @@
 
 	function applyTags() {
 		const nextTags = parseTagList(tagInput);
+		const nextTagSet = new Set(nextTags);
 		watchedTags = nextTags;
 		tagInput = nextTags.join(', ');
-		galleryCandidates = [];
-		seenImageIds = new Set();
+		galleryCandidates =
+			nextTags.length === 0
+				? []
+				: galleryCandidates.filter((item) =>
+						item.tags.some((tag) => nextTagSet.has(tag.toLowerCase()))
+					);
+		seenImageIds = new Set(galleryCandidates.map((item) => item.id));
 		try {
 			localStorage.setItem(STORAGE_TAGS_KEY, tagInput);
 		} catch {}
 		updateQuery(nextTags);
+		for (const tag of nextTags) {
+			void hydrateGalleryFromRecentTag(tag);
+		}
 	}
 
 	function updateQuery(tags: string[]) {
@@ -1135,7 +1144,7 @@
 															class="event-image-button"
 															aria-label={`Open image from ${event.uri}`}
 															style={`--image-ratio: ${image.aspectRatio}`}
-															onclick={() => openLightbox(image.fullsize)}
+															onclick={() => openLightbox(image.fullsize, image.alt)}
 														>
 															<img src={image.thumb} alt={image.alt || `Image tagged ${event.tags.join(', ')}`} />
 														</button>
@@ -1187,7 +1196,7 @@
 															class="event-image-button"
 															aria-label={`Open image from ${event.uri}`}
 															style={`--image-ratio: ${image.aspectRatio}`}
-															onclick={() => openLightbox(image.fullsize)}
+															onclick={() => openLightbox(image.fullsize, image.alt)}
 														>
 															<img src={image.thumb} alt={image.alt || `Image tagged ${event.tags.join(', ')}`} />
 														</button>
@@ -1235,7 +1244,7 @@
 							type="button"
 							class="image-button"
 							aria-label={`Open image from ${item.postUri}`}
-							onclick={() => openLightbox(item.fullsize)}
+							onclick={() => openLightbox(item.fullsize, item.alt)}
 						>
 							<img
 								src={item.thumb}

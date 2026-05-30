@@ -145,13 +145,12 @@
 		Math.max(0, totalHeight - (prefixOffsets[endIndex + 1] ?? totalHeight))
 	);
 
-	const threadIndexByRootUri = $derived.by(() => {
-		const map = new Map<string, number>();
-		for (let i = 0; i < threads.length; i++) {
-			map.set(threads[i].rootUri, i);
+	function findThreadIndex(rootUri: string): number {
+		for (let i = 0; i < threads.length; i += 1) {
+			if (threads[i].rootUri === rootUri) return i;
 		}
-		return map;
-	});
+		return -1;
+	}
 
 	function syncViewportMetrics() {
 		if (!browser) return;
@@ -271,10 +270,10 @@
 			if (cancelled) return;
 
 			syncViewportMetrics();
-			const index = threadIndexByRootUri.get(target);
+			const index = findThreadIndex(target);
 			handledScrollTarget = target;
 
-			if (index === undefined) {
+			if (index < 0) {
 				onscrolltorooturicomplete?.(target, false);
 				return;
 			}

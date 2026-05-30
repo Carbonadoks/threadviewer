@@ -1,6 +1,6 @@
 # Thread Viewer AGENTS Guide
 
-Last updated: 2026-05-24
+Last updated: 2026-05-29
 
 This is the primary agent-facing guide for this repository. Read it before changing code. `CLAUDE.md` is useful historical context, but this file is the current route, data-flow, and operations map.
 
@@ -8,7 +8,7 @@ This is the primary agent-facing guide for this repository. Read it before chang
 
 This repo is a SvelteKit 2 / Svelte 5 workbench for Bluesky and AT Protocol data. It includes:
 
-- public Bluesky thread viewers: chat, board, tree, blog, lanes, and judged views
+- public Bluesky thread viewers: chat, board, tree, blog, lanes, and embedded judged views
 - account feed and self-reply thread discovery from either R2 post cache or local repo CAR snapshots
 - repo-local tools for summaries, blocked-parent replies, follow interactions, word clouds, and writing/corpus experiments
 - authenticated Bluesky tools using OAuth for personal feeds, following feeds, list creation, and town/frontpage modes
@@ -95,7 +95,6 @@ Implication: route restoration, query parsing, localStorage, and most page state
 | `/parallelboard` | `src/routes/parallelboard/+page.svelte`, `src/lib/components/ParallelBoardView.svelte` | One thread in multi-lane/parallel board mode | `getProfile` + `getFullThread`; worker-assisted lane hydration when available |
 | `/treeviewer` | `src/routes/treeviewer/+page.svelte` | Thread tree, chains, quotes, and recent-thread navigation | `getFullThread`, `fetchQuotesForPost`, local recent-thread storage |
 | `/blog` | `src/routes/blog/+page.svelte`, `src/lib/components/BlogArticle.svelte` | One thread as article/blog layout | `getProfile` + `getFullThread` |
-| `/judge` | `src/routes/judge/+page.svelte` | One thread plus cached/live Gemini thread judgments | `getFullThread`, `ThreadJudgePanel`, `/api/thread/judge` |
 | `/bisk2bisk` | `src/routes/bisk2bisk/+page.svelte` | Compare/navigate from one thread/post to another in parallel board | custom URLs or `/api/bisk2bisk` cached pair |
 
 ### Repo And Local Data Tools
@@ -261,7 +260,7 @@ Storage shape:
 
 Code: `src/lib/api/bluesky.ts`.
 
-Used by `/chat`, `/board`, `/parallelboard`, `/blog`, `/treeviewer`, `/judge`, `/bisk2bisk`, expanded viewer panels, and worker-assisted parallel board fetch mode.
+Used by `/chat`, `/board`, `/parallelboard`, `/blog`, `/treeviewer`, `/bisk2bisk`, expanded viewer panels, and worker-assisted parallel board fetch mode.
 
 Flow:
 

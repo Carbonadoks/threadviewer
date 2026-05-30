@@ -2583,7 +2583,7 @@
 																	class="forum-media-button"
 																	onclick={(event) => {
 																		event.stopPropagation();
-																		openLightbox(image.fullsize);
+																		openLightbox(image.fullsize, image.alt);
 																	}}
 																>
 																	<img src={image.thumb} alt={image.alt} />
@@ -2603,7 +2603,7 @@
 																			class="forum-media-button"
 																			onclick={(event) => {
 																				event.stopPropagation();
-																				openLightbox(image.fullsize);
+																				openLightbox(image.fullsize, image.alt);
 																			}}
 																		>
 																			<img src={image.thumb} alt={image.alt} />

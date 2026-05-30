@@ -1046,7 +1046,7 @@
 								class="image-lightbox-btn"
 								onclick={(event) => {
 									event.stopPropagation();
-									openLightbox(img.fullsize);
+									openLightbox(img.fullsize, img.alt);
 								}}
 							>
 								<img src={img.thumb} alt={img.alt} class="card-img" />
@@ -1111,7 +1111,7 @@
 				{#if post.embed?.images}
 					<div class="card-images">
 						{#each post.embed.images as img}
-							<button type="button" class="image-lightbox-btn" onclick={() => openLightbox(img.fullsize)}>
+							<button type="button" class="image-lightbox-btn" onclick={() => openLightbox(img.fullsize, img.alt)}>
 								<img src={img.thumb} alt={img.alt} class="card-img" />
 							</button>
 						{/each}
@@ -1214,7 +1214,7 @@
 							class="image-lightbox-btn"
 							onclick={(event) => {
 								event.stopPropagation();
-								openLightbox(img.fullsize);
+								openLightbox(img.fullsize, img.alt);
 							}}
 						>
 							<img src={img.thumb} alt={img.alt} class="card-img" />

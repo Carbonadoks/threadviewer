@@ -8,7 +8,7 @@
 	type CachedGalleryGroupMode = 'threads' | 'posts';
 	type CachedGalleryMediaLayout = 'grid' | 'masonry';
 	type CachedGalleryMediaFit = 'fill' | 'fit';
-	type CachedThreadSortMode = 'depth' | 'liked' | 'reposted' | 'quoted';
+	type CachedThreadSortMode = 'depth' | 'newest' | 'oldest' | 'liked' | 'reposted' | 'quoted';
 	type CachedExpandedThread = CachedSelfReplyThread & { isTruncated?: boolean };
 	type CachedPostEngagementCounts = {
 		likeCount: number;
@@ -123,6 +123,7 @@
 	const POST_HYDRATION_ENABLED = true;
 	const GALLERY_GRID_ZOOM_MIN = 55;
 	const GALLERY_GRID_ZOOM_MAX = 160;
+	const VIEWER2_MEMORY_CACHE_SAVE_DELAY_MS = 450;
 
 	type RenderMode = 'default' | 'gallery';
 	type SearchMode = 'fuzzy' | 'literal';
@@ -130,7 +131,7 @@
 	type GalleryGroupMode = 'threads' | 'posts';
 	type GalleryMediaLayout = 'grid' | 'masonry';
 	type GalleryMediaFit = 'fill' | 'fit';
-	type ThreadSortMode = 'depth' | 'liked' | 'reposted' | 'quoted';
+	type ThreadSortMode = 'depth' | 'newest' | 'oldest' | 'liked' | 'reposted' | 'quoted';
 	type EngagementHydrationState = 'idle' | 'running' | 'paused' | 'done' | 'partial' | 'failed';
 	type ThreadEngagementTotals = {
 		likeCount: number;
@@ -260,6 +261,7 @@
 	let cachedRepoFeedItems: any[] | null = null;
 	let cachedHydrationFeedItems: any[] | null = null;
 	let cachedEngagementDid: string | null = null;
+	let viewer2MemoryCacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// Expanded thread state
 	let expandedThread: (SelfReplyThread & { isTruncated?: boolean }) | null = $state(null);
@@ -440,16 +442,14 @@
 		return Number.isFinite(parsed) ? parsed : 0;
 	}
 
-	const threadEngagementByRootUri = $derived.by(() => {
-		const totals = new Map<string, ThreadEngagementTotals>();
-		for (const thread of allThreads) {
-			totals.set(thread.rootUri, rootPostEngagement(thread));
-		}
-		return totals;
-	});
-
 	function compareThreadValues(a: SelfReplyThread, b: SelfReplyThread): number {
-		if (threadSortMode !== 'depth') {
+		if (threadSortMode === 'newest') {
+			return timestamp(b.rootPost.createdAt) - timestamp(a.rootPost.createdAt) || b.depth - a.depth;
+		}
+		if (threadSortMode === 'oldest') {
+			return timestamp(a.rootPost.createdAt) - timestamp(b.rootPost.createdAt) || b.depth - a.depth;
+		}
+		if (threadSortMode === 'liked' || threadSortMode === 'reposted' || threadSortMode === 'quoted') {
 			const metric =
 				threadSortMode === 'liked'
 					? 'likeCount'
@@ -464,12 +464,7 @@
 		return b.depth - a.depth || timestamp(b.rootPost.createdAt) - timestamp(a.rootPost.createdAt);
 	}
 
-	function compareThreads(a: SelfReplyThread, b: SelfReplyThread): number {
-		threadEngagementByRootUri;
-		return compareThreadValues(a, b);
-	}
-
-	const sortedThreads = $derived([...allThreads].sort(compareThreads));
+	const sortedThreads = $derived([...allThreads].sort(compareThreadValues));
 
 	const maxDepth = $derived(
 		allThreads.length > 0 ? Math.max(...allThreads.map((t) => t.depth)) : 2
@@ -542,7 +537,30 @@
 		countsByUri: Record<string, CachedPostEngagementCounts>
 	): T[] {
 		if (Object.keys(countsByUri).length === 0) return threads;
-		return threads.map((thread) => applyEngagementCountsToThread(thread, countsByUri));
+		let changed = false;
+		const nextThreads = threads.map((thread) => {
+			const nextThread = applyEngagementCountsToThread(thread, countsByUri);
+			if (nextThread !== thread) changed = true;
+			return nextThread;
+		});
+		return changed ? nextThreads : threads;
+	}
+
+	function applyEngagementCountsToActiveViews(
+		countsByUri: Record<string, CachedPostEngagementCounts>
+	) {
+		if (Object.keys(countsByUri).length === 0) return;
+		displayedThreads = applyEngagementCountsToThreadList(displayedThreads, countsByUri);
+		if (expandedThread) {
+			expandedThread = applyEngagementCountsToThread(expandedThread, countsByUri);
+		}
+		if (blogThread) {
+			blogThread = applyEngagementCountsToThread(blogThread, countsByUri);
+		}
+		for (const [key, cachedThread] of expandedThreadMemoryCache) {
+			const patchedThread = applyEngagementCountsToThread(cachedThread, countsByUri);
+			if (patchedThread !== cachedThread) expandedThreadMemoryCache.set(key, patchedThread);
+		}
 	}
 
 	function countUniqueThreadPostUris(threads: SelfReplyThread[]): number {
@@ -650,7 +668,7 @@
 		} else if (restoredEngagementAttempts >= restoredEngagementTarget) {
 			engagementHydrationState = cache.repoStats.missingCount ? 'partial' : 'done';
 		} else if (engagementHydrationContext) {
-			engagementHydrationState = 'paused';
+			engagementHydrationState = restoredEngagementAttempts ? 'paused' : 'idle';
 		} else {
 			engagementHydrationState = restoredEngagementAttempts ? 'partial' : 'idle';
 		}
@@ -712,6 +730,25 @@
 		if (expandedThread) {
 			expandedThreadMemoryCache.set(expandedThread.rootUri, expandedThread);
 		}
+	}
+
+	function scheduleViewer2MemoryCacheSave() {
+		if (!browser) return;
+		if (viewer2MemoryCacheSaveTimer !== null) {
+			clearTimeout(viewer2MemoryCacheSaveTimer);
+		}
+		viewer2MemoryCacheSaveTimer = setTimeout(() => {
+			viewer2MemoryCacheSaveTimer = null;
+			saveViewer2MemoryCache();
+		}, VIEWER2_MEMORY_CACHE_SAVE_DELAY_MS);
+	}
+
+	function flushViewer2MemoryCacheSave() {
+		if (viewer2MemoryCacheSaveTimer !== null) {
+			clearTimeout(viewer2MemoryCacheSaveTimer);
+			viewer2MemoryCacheSaveTimer = null;
+		}
+		saveViewer2MemoryCache();
 	}
 
 	function clearScheduledFilter() {
@@ -777,6 +814,10 @@
 
 			filterTimer = null;
 			displayedThreads = result;
+			displayedThreads = applyEngagementCountsToThreadList(
+				displayedThreads,
+				engagementCountsByUri
+			);
 			displayedSearchQuery = options.query;
 			displayedSearchMode = options.mode;
 			isFilteringThreads = false;
@@ -798,6 +839,7 @@
 					threadMatchesGalleryContentCandidate(thread, galleryMode) &&
 					matchesSearch(thread, matcher, { galleryContentMode: galleryMode })
 			);
+		displayedThreads = applyEngagementCountsToThreadList(displayedThreads, engagementCountsByUri);
 		displayedSearchQuery = searchQuery;
 		displayedSearchMode = searchMode;
 		isFilteringThreads = false;
@@ -817,7 +859,37 @@
 	});
 
 	$effect(() => {
-		saveViewer2MemoryCache();
+		initialHandle;
+		selectedProfile;
+		author;
+		allThreads;
+		displayedThreads;
+		displayedSearchQuery;
+		displayedSearchMode;
+		threshold;
+		renderMode;
+		galleryContentMode;
+		galleryGroupMode;
+		galleryMediaLayout;
+		galleryMediaFit;
+		galleryGridZoom;
+		threadSortMode;
+		searchQuery;
+		searchMode;
+		dateFrom;
+		dateTo;
+		stats;
+		repoStats;
+		collapsedByRootUri;
+		hasSearched;
+		expandedThread;
+		cachedRepoFeedItems;
+		cachedHydrationFeedItems;
+		cachedEngagementDid;
+		engagementCountsByUri;
+		engagementTargetPostCount;
+		engagementHydrationProgress;
+		scheduleViewer2MemoryCacheSave();
 	});
 
 	function updateRouteState(options: { handle?: string | null; threadUrl?: string | null } = {}) {
@@ -987,7 +1059,7 @@
 		return selected;
 	}
 
-	function startEngagementHydration(
+	function prepareEngagementHydration(
 		sourceFeedItems: any[],
 		hydrationFeedItems: any[],
 		did: string,
@@ -1017,6 +1089,11 @@
 			return;
 		}
 
+		engagementHydrationState = engagementAttemptedPostUris.size > 0 ? 'paused' : 'idle';
+	}
+
+	function startEngagementHydration() {
+		if (!engagementHydrationContext || engagementHydrationState === 'running') return;
 		void runEngagementHydration();
 	}
 
@@ -1030,11 +1107,6 @@
 		engagementHydrationController?.abort();
 		engagementHydrationController = null;
 		saveViewer2MemoryCache();
-	}
-
-	function resumeEngagementHydration() {
-		if (!engagementHydrationContext || engagementHydrationState === 'running') return;
-		void runEngagementHydration();
 	}
 
 	async function runEngagementHydration() {
@@ -1096,9 +1168,10 @@
 				for (const uri of chunkUris) {
 					engagementAttemptedPostUris.add(uri);
 				}
+				const chunkCounts = collectEngagementCountsFromFeedItems(chunk);
 				engagementCountsByUri = {
 					...engagementCountsByUri,
-					...collectEngagementCountsFromFeedItems(chunk)
+					...chunkCounts
 				};
 				engagementHydratedCount += engagement.hydratedCount;
 				repoStats = {
@@ -1110,8 +1183,8 @@
 					current: engagementAttemptedPostUris.size,
 					total: context.total
 				};
-				applyThreadsFromFeed(context.sourceFeedItems, context.did);
-				saveViewer2MemoryCache();
+				applyEngagementCountsToActiveViews(chunkCounts);
+				scheduleViewer2MemoryCacheSave();
 
 				await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			}
@@ -1128,7 +1201,7 @@
 			refreshDisplayedThreadsNow(threads);
 			engagementHydrationState = repoStats.missingCount > 0 ? 'partial' : 'done';
 			engagementHydrationProgress = { current: context.total, total: context.total };
-			if (threadSortMode !== 'depth') {
+			if (threadSortMode === 'liked' || threadSortMode === 'reposted' || threadSortMode === 'quoted') {
 				toastInfo('Engagement counts updated.');
 			}
 			saveViewer2MemoryCache();
@@ -1276,7 +1349,7 @@
 				announce: true
 			});
 			const hydrationFeedItems = selectThreadFeedItems(repo.feedItems, threads);
-			startEngagementHydration(repo.feedItems, hydrationFeedItems, did, searchJob, { reset: true });
+			prepareEngagementHydration(repo.feedItems, hydrationFeedItems, did, searchJob, { reset: true });
 			success = true;
 		} catch (e: any) {
 			if (e?.name === 'AbortError') {
@@ -1317,8 +1390,21 @@
 
 	function setGalleryContentMode(mode: GalleryContentMode) {
 		if (mode === galleryContentMode) return;
+		const wasMedia = galleryContentMode !== 'all';
+		const isMedia = mode !== 'all';
 		galleryContentMode = mode;
 		try { localStorage.setItem('preferred-gallery-content-mode', mode); } catch {}
+
+		// Media tabs (media/photos/movies) default to Fit + Masonry + Posts; All stays
+		// on Threads grouping. Only apply on crossing the all↔media boundary so manual
+		// tweaks are preserved when switching between media sub-modes.
+		if (isMedia && !wasMedia) {
+			setGalleryMediaFit('fit');
+			setGalleryMediaLayout('masonry');
+			setGalleryGroupMode('posts');
+		} else if (!isMedia && wasMedia) {
+			setGalleryGroupMode('threads');
+		}
 	}
 
 	function isGalleryContentMode(value: string): value is GalleryContentMode {
@@ -1369,8 +1455,31 @@
 	}
 
 	function isThreadSortMode(value: string): value is ThreadSortMode {
-		return value === 'depth' || value === 'liked' || value === 'reposted' || value === 'quoted';
+		return (
+			value === 'depth' ||
+			value === 'newest' ||
+			value === 'oldest' ||
+			value === 'liked' ||
+			value === 'reposted' ||
+			value === 'quoted'
+		);
 	}
+
+	// Engagement-based sorts (liked/reposted/quoted) are only meaningful once engagement
+	// counts have been hydrated. Until then only Highest chain / Newest / Oldest apply.
+	const engagementSortReady = $derived(
+		engagementHydrationState === 'done' || engagementHydrationState === 'partial'
+	);
+
+	$effect(() => {
+		if (
+			!engagementSortReady &&
+			(threadSortMode === 'liked' || threadSortMode === 'reposted' || threadSortMode === 'quoted')
+		) {
+			// Fall back to Highest chain without clobbering the saved preference.
+			threadSortMode = 'depth';
+		}
+	});
 
 	function setSearchMode(mode: SearchMode) {
 		if (mode === searchMode) return;
@@ -1660,7 +1769,7 @@
 
 	onDestroy(() => {
 		engagementHydrationController?.abort();
-		saveViewer2MemoryCache();
+		flushViewer2MemoryCacheSave();
 	});
 </script>
 
@@ -1772,6 +1881,8 @@
 										{/if}
 									{:else if engagementHydrationState === 'failed'}
 										Engagement hydration failed
+									{:else if engagementHydrationState === 'idle'}
+										Engagement not hydrated
 									{:else}
 										Hydrated {repoStats.hydratedCount.toLocaleString()} engagement count{repoStats.hydratedCount !== 1 ? 's' : ''}
 										{#if repoStats.missingCount > 0}
@@ -1784,8 +1895,8 @@
 										Stop engagement
 									</button>
 								{:else if engagementHydrationContext && engagementHydrationProgress.current < engagementHydrationProgress.total}
-									<button type="button" class="engagement-control-btn" onclick={resumeEngagementHydration}>
-										Resume engagement
+									<button type="button" class="engagement-control-btn" onclick={startEngagementHydration}>
+										{engagementHydrationState === 'idle' ? 'Hydrate engagement' : 'Resume engagement'}
 									</button>
 								{/if}
 							{/if}
@@ -1817,25 +1928,41 @@
 								</button>
 								<button
 									type="button"
-									class:active={threadSortMode === 'liked'}
-									onclick={() => setThreadSortMode('liked')}
+									class:active={threadSortMode === 'newest'}
+									onclick={() => setThreadSortMode('newest')}
 								>
-									Liked
+									Newest
 								</button>
 								<button
 									type="button"
-									class:active={threadSortMode === 'reposted'}
-									onclick={() => setThreadSortMode('reposted')}
+									class:active={threadSortMode === 'oldest'}
+									onclick={() => setThreadSortMode('oldest')}
 								>
-									Reposted
+									Oldest
 								</button>
-								<button
-									type="button"
-									class:active={threadSortMode === 'quoted'}
-									onclick={() => setThreadSortMode('quoted')}
-								>
-									Quoted
-								</button>
+								{#if engagementSortReady}
+									<button
+										type="button"
+										class:active={threadSortMode === 'liked'}
+										onclick={() => setThreadSortMode('liked')}
+									>
+										Liked
+									</button>
+									<button
+										type="button"
+										class:active={threadSortMode === 'reposted'}
+										onclick={() => setThreadSortMode('reposted')}
+									>
+										Reposted
+									</button>
+									<button
+										type="button"
+										class:active={threadSortMode === 'quoted'}
+										onclick={() => setThreadSortMode('quoted')}
+									>
+										Quoted
+									</button>
+								{/if}
 							</div>
 						</div>
 						{#if renderMode === 'gallery'}

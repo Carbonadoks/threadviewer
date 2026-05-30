@@ -3,7 +3,13 @@ import type { ThreadPost } from '../types';
 export type RecordEmbed = NonNullable<NonNullable<ThreadPost['embed']>['record']>;
 
 export function hasRenderableRecordEmbedContent(record: RecordEmbed): boolean {
-	return record.text.trim().length > 0 || Boolean(record.images?.length) || Boolean(record.video?.playlist);
+	return (
+		record.text.trim().length > 0 ||
+		Boolean(record.images?.length) ||
+		Boolean(record.video?.playlist) ||
+		Boolean(record.external?.uri) ||
+		Boolean(record.record)
+	);
 }
 
 export function mergeRecordEmbed(base: RecordEmbed, incoming: RecordEmbed): RecordEmbed {
@@ -17,6 +23,8 @@ export function mergeRecordEmbed(base: RecordEmbed, incoming: RecordEmbed): Reco
 		text: incoming.text || base.text,
 		createdAt: incoming.createdAt || base.createdAt,
 		images: incoming.images?.length ? incoming.images : base.images,
-		video: incoming.video?.playlist ? incoming.video : base.video
+		video: incoming.video?.playlist ? incoming.video : base.video,
+		external: incoming.external?.uri ? incoming.external : base.external,
+		record: incoming.record ?? base.record
 	};
 }

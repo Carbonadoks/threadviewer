@@ -15,11 +15,13 @@
 	let {
 		post,
 		compact = false,
-		wide = false
+		wide = false,
+		eager = false
 	}: {
 		post: EmbedPreviewPost;
 		compact?: boolean;
 		wide?: boolean;
+		eager?: boolean;
 	} = $props();
 
 	let hydratedPost = $state<ThreadPost | null>(null);
@@ -75,6 +77,11 @@
 			return;
 		}
 
+		if (eager) {
+			shouldHydratePost = true;
+			return;
+		}
+
 		return observeElementOnceVisible(previewEl, () => {
 			shouldHydratePost = true;
 		});
@@ -123,7 +130,7 @@
 						type="button"
 						class="image-button"
 						onclick={() => {
-							openLightbox(img.fullsize);
+							openLightbox(img.fullsize, img.alt);
 						}}
 					>
 						<img src={wide ? img.fullsize : img.thumb} alt={img.alt} class="embed-image" />
@@ -167,7 +174,7 @@
 		{/if}
 
 		{#if displayPost.embed?.record}
-			<RecordEmbed record={displayPost.embed.record} dense />
+			<RecordEmbed record={displayPost.embed.record} dense {eager} />
 		{/if}
 
 		{#if showLinkedEmbeds}
@@ -176,6 +183,7 @@
 				externalUri={displayPost.embed?.external?.uri}
 				urls={displayPost.linkedUrls ?? []}
 				excludeUris={[displayPost.uri, displayPost.embed?.record?.uri ?? '']}
+				{eager}
 			/>
 		{/if}
 	</div>

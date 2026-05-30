@@ -134,8 +134,8 @@
 							<div class="card-images">
 								{#each post.embed.images as img}
 									<img src={img.thumb} alt={img.alt} class="card-img"
-									 onclick={(e) => { e.stopPropagation(); openLightbox(img.fullsize); }}
-									 onkeydown={(e) => { if (e.key === 'Enter') openLightbox(img.fullsize); }}
+									 onclick={(e) => { e.stopPropagation(); openLightbox(img.fullsize, img.alt); }}
+									 onkeydown={(e) => { if (e.key === 'Enter') openLightbox(img.fullsize, img.alt); }}
 									 role="button" tabindex="0" style="cursor: pointer;" />
 								{/each}
 							</div>

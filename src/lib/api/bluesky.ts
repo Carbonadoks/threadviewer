@@ -78,6 +78,12 @@ export interface FetchPostsProgress {
 	totalBatches: number;
 }
 
+export interface HydratePostEmbedsResult {
+	embeds: Map<string, ThreadPost['embed']>;
+	resolvedUris: Set<string>;
+	failedUris: Set<string>;
+}
+
 export interface ReplyParentVisibility {
 	parentUri: string;
 	visibility: 'visible' | 'blocked' | 'unavailable' | 'unknown';
@@ -495,7 +501,13 @@ function mapImages(images: any[] | undefined): NonNullable<NonNullable<ThreadPos
 	return images?.map((img: any) => ({
 		thumb: img.thumb,
 		fullsize: img.fullsize || img.thumb,
-		alt: img.alt || ''
+		alt: img.alt || '',
+		aspectRatio: img.aspectRatio
+			? {
+					width: Number(img.aspectRatio.width) || 1,
+					height: Number(img.aspectRatio.height) || 1
+				}
+			: undefined
 	}));
 }
 
@@ -516,14 +528,57 @@ function mapVideo(video: any | undefined): NonNullable<NonNullable<ThreadPost['e
 	};
 }
 
+function mapExternal(external: any | undefined): RecordEmbed['external'] {
+	if (!external?.uri) return undefined;
+	return {
+		uri: external.uri,
+		title: external.title || '',
+		description: external.description || '',
+		thumb: external.thumb
+	};
+}
+
 function extractImageEmbeds(embeds: any[] | undefined): RecordEmbed['images'] {
 	const imageView = embeds?.find((entry: any) => entry?.$type === 'app.bsky.embed.images#view');
-	return imageView ? mapImages(imageView.images) : undefined;
+	if (imageView) return mapImages(imageView.images);
+	const recordWithMedia = embeds?.find(
+		(entry: any) => entry?.$type === 'app.bsky.embed.recordWithMedia#view'
+	);
+	const media = recordWithMedia?.media;
+	return media?.$type === 'app.bsky.embed.images#view' ? mapImages(media.images) : undefined;
 }
 
 function extractVideoEmbed(embeds: any[] | undefined): RecordEmbed['video'] {
 	const videoView = embeds?.find((entry: any) => entry?.$type === 'app.bsky.embed.video#view');
-	return videoView ? mapVideo(videoView) : undefined;
+	if (videoView) return mapVideo(videoView);
+	const recordWithMedia = embeds?.find(
+		(entry: any) => entry?.$type === 'app.bsky.embed.recordWithMedia#view'
+	);
+	const media = recordWithMedia?.media;
+	return media?.$type === 'app.bsky.embed.video#view' ? mapVideo(media) : undefined;
+}
+
+function extractExternalEmbed(embeds: any[] | undefined): RecordEmbed['external'] {
+	const externalView = embeds?.find((entry: any) => entry?.$type === 'app.bsky.embed.external#view');
+	if (externalView) return mapExternal(externalView.external);
+	const recordWithMedia = embeds?.find(
+		(entry: any) => entry?.$type === 'app.bsky.embed.recordWithMedia#view'
+	);
+	const media = recordWithMedia?.media;
+	return media?.$type === 'app.bsky.embed.external#view' ? mapExternal(media.external) : undefined;
+}
+
+const MAX_NESTED_RECORD_DEPTH = 2;
+
+function extractNestedRecord(embeds: any[] | undefined, depth: number): RecordEmbed | undefined {
+	if (depth >= MAX_NESTED_RECORD_DEPTH) return undefined;
+	const recordView = embeds?.find((entry: any) => entry?.$type === 'app.bsky.embed.record#view');
+	if (recordView) return parseRecordEmbed(recordView.record, depth + 1);
+	const recordWithMedia = embeds?.find(
+		(entry: any) => entry?.$type === 'app.bsky.embed.recordWithMedia#view'
+	);
+	if (recordWithMedia) return parseRecordEmbed(recordWithMedia.record?.record, depth + 1);
+	return undefined;
 }
 
 function parseRecordEmbedPost(post: any): RecordEmbed | undefined {
@@ -539,11 +594,13 @@ function parseRecordEmbedPost(post: any): RecordEmbed | undefined {
 		text: post.record?.text || '',
 		createdAt: post.record?.createdAt || post.indexedAt || '',
 		images: embed?.images,
-		video: embed?.video
+		video: embed?.video,
+		external: embed?.external,
+		record: embed?.record
 	};
 }
 
-function parseRecordEmbed(record: any): RecordEmbed | undefined {
+function parseRecordEmbed(record: any, depth = 0): RecordEmbed | undefined {
 	if (!record || record.$type === 'app.bsky.embed.record#viewNotFound' || record.$type === 'app.bsky.embed.record#viewBlocked') {
 		return undefined;
 	}
@@ -558,7 +615,9 @@ function parseRecordEmbed(record: any): RecordEmbed | undefined {
 		text: val.text || '',
 		createdAt: val.createdAt || record.indexedAt || '',
 		images: extractImageEmbeds(record.embeds),
-		video: extractVideoEmbed(record.embeds)
+		video: extractVideoEmbed(record.embeds),
+		external: extractExternalEmbed(record.embeds),
+		record: extractNestedRecord(record.embeds, depth)
 	};
 }
 
@@ -1455,9 +1514,11 @@ async function hydrateThread(
  * Batch-fetch post views from the Bluesky API and return a map of URI -> parsed embed.
  * Uses app.bsky.feed.getPosts (max 25 URIs per call).
  */
-export async function hydratePostEmbeds(uris: string[]): Promise<Map<string, ThreadPost['embed']>> {
-	const result = new Map<string, ThreadPost['embed']>();
-	if (uris.length === 0) return result;
+export async function hydratePostEmbedsDetailed(uris: string[]): Promise<HydratePostEmbedsResult> {
+	const embeds = new Map<string, ThreadPost['embed']>();
+	const resolvedUris = new Set<string>();
+	const failedUris = new Set<string>();
+	if (uris.length === 0) return { embeds, resolvedUris, failedUris };
 
 	const unique = [...new Set(uris)];
 	const BATCH_SIZE = 25;
@@ -1466,16 +1527,22 @@ export async function hydratePostEmbeds(uris: string[]): Promise<Map<string, Thr
 		const batch = unique.slice(i, i + BATCH_SIZE);
 		try {
 			const res = await agent.getPosts({ uris: batch });
+			for (const uri of batch) resolvedUris.add(uri);
 			for (const post of res.data.posts ?? []) {
 				const embed = parseEmbed(post.embed);
-				if (embed) result.set(post.uri, embed);
+				if (embed) embeds.set(post.uri, embed);
 			}
 		} catch {
-			// Skip failed batches
+			for (const uri of batch) failedUris.add(uri);
 		}
 	}
 
-	return result;
+	return { embeds, resolvedUris, failedUris };
+}
+
+export async function hydratePostEmbeds(uris: string[]): Promise<Map<string, ThreadPost['embed']>> {
+	const result = await hydratePostEmbedsDetailed(uris);
+	return result.embeds;
 }
 
 export async function fetchPostsByUris(

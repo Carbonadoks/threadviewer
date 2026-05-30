@@ -6,11 +6,25 @@
 	const galleryHydratedEmbedCache: Record<string, CachedGalleryEmbed> = {};
 	const galleryRequestedEmbedUris = new Set<string>();
 	const galleryResolvedEmbedUris = new Set<string>();
+	const galleryEmbedRetryAfterByUri: Record<string, number> = {};
+	type MediaPreloadPriority = 'high' | 'low';
+	type MediaPreloadQueueItem = {
+		url: string;
+		priority: MediaPreloadPriority;
+	};
+
+	const galleryPreloadedMediaUrls = new Set<string>();
+	const galleryPreloadingMediaUrls = new Set<string>();
+	const galleryQueuedMediaPreloadUrls = new Map<string, MediaPreloadPriority>();
+	const galleryMediaPreloadQueue: MediaPreloadQueueItem[] = [];
+	const galleryActiveMediaPreloadImages = new Map<string, HTMLImageElement>();
+	let galleryActiveMediaPreloads = 0;
 </script>
 
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { hydratePostEmbeds } from '$lib/api/bluesky';
+	import { onDestroy } from 'svelte';
+	import { hydratePostEmbedsDetailed } from '$lib/api/bluesky';
 	import type { SelfReplyThread, ThreadPost } from '$lib/types';
 	import { openLightbox } from '$lib/stores/lightbox';
 	import { flattenThread, type FlatPost } from '$lib/utils/threadFlattener';
@@ -101,6 +115,16 @@
 		posts: GalleryPostItem[];
 	};
 
+	type GalleryPostCacheEntry = {
+		signature: string;
+		item: GalleryPostItem;
+	};
+
+	type GalleryTileCacheEntry = {
+		signature: string;
+		tile: GalleryTile;
+	};
+
 	type PositionedGalleryTile = {
 		tile: GalleryTile;
 		top: number;
@@ -147,8 +171,21 @@
 	const MIN_CARD_HEIGHT = 360;
 	const MAX_CARD_HEIGHT = 560;
 	const CARD_VIEWPORT_RATIO = 0.48;
-	const OVERSCAN_ROWS = 2;
+	const DEFAULT_OVERSCAN_ROWS = 2;
+	const MEDIA_RENDER_OVERSCAN_ROWS = 8;
+	const MEDIA_MASONRY_RENDER_OVERSCAN_VIEWPORTS = 4;
+	const MEDIA_PRELOAD_AHEAD_TILES = 240;
+	const MEDIA_PRELOAD_BEHIND_TILES = 40;
+	const MEDIA_PRELOAD_INITIAL_TILES = 180;
+	const MEDIA_PRELOAD_AHEAD_VIEWPORTS = 7;
+	const MEDIA_PRELOAD_BEHIND_VIEWPORTS = 2;
+	const MEDIA_THUMBNAIL_PRELOAD_CONCURRENCY = 16;
+	const MEDIA_THUMBNAIL_PRELOAD_URL_LIMIT = 320;
+	const MEDIA_VISIBLE_THUMBNAIL_PRELOAD_URL_LIMIT = 96;
 	const POST_HYDRATION_ENABLED = true;
+	const EMBED_HYDRATION_RETRY_DELAY_MS = 5000;
+	const EMBED_SWEEP_CONCURRENCY = 5;
+	const EMBED_SWEEP_BATCH_SIZE = 25;
 
 	let hydratedEmbeds = $state<Record<string, NonNullable<ThreadPost['embed']>>>({
 		...galleryHydratedEmbedCache
@@ -163,7 +200,241 @@
 	let metricsRafId: number | null = null;
 	let handledScrollTarget: string | null = $state(null);
 	let embedResolutionTick = $state(0);
+	let activatedVideos = $state<Set<string>>(new Set());
 	let mediaAspectRatios = $state<Record<string, number>>({});
+	let pendingMediaAspectRatios: Record<string, number> = {};
+	let embedRetryTimerId: number | null = null;
+	let mediaAspectRatioRafId: number | null = null;
+	let destroyed = false;
+	const flatThreadCache = new WeakMap<ThreadPost, FlatPost[]>();
+	const galleryPostItemCache = new Map<string, GalleryPostCacheEntry>();
+	const galleryTileCache = new Map<string, GalleryTileCacheEntry>();
+
+	onDestroy(() => {
+		destroyed = true;
+		if (browser && embedRetryTimerId !== null) {
+			window.clearTimeout(embedRetryTimerId);
+			embedRetryTimerId = null;
+		}
+		if (browser && mediaAspectRatioRafId !== null) {
+			window.cancelAnimationFrame(mediaAspectRatioRafId);
+			mediaAspectRatioRafId = null;
+		}
+	});
+
+	function scheduleEmbedHydrationRetry() {
+		if (!browser || destroyed || embedRetryTimerId !== null) return;
+		embedRetryTimerId = window.setTimeout(() => {
+			embedRetryTimerId = null;
+			if (!destroyed) embedResolutionTick += 1;
+		}, EMBED_HYDRATION_RETRY_DELAY_MS);
+	}
+
+	function promoteQueuedMediaPreload(url: string) {
+		const queuedPriority = galleryQueuedMediaPreloadUrls.get(url);
+		if (queuedPriority !== 'low') return;
+		const queuedItem = galleryMediaPreloadQueue.find((item) => item.url === url);
+		if (!queuedItem) return;
+		queuedItem.priority = 'high';
+		galleryQueuedMediaPreloadUrls.set(url, 'high');
+		galleryMediaPreloadQueue.sort((a, b) => {
+			if (a.priority === b.priority) return 0;
+			return a.priority === 'high' ? -1 : 1;
+		});
+	}
+
+	function pumpMediaThumbnailPreloadQueue() {
+		if (!browser) return;
+		while (
+			galleryActiveMediaPreloads < MEDIA_THUMBNAIL_PRELOAD_CONCURRENCY &&
+			galleryMediaPreloadQueue.length > 0
+		) {
+			const item = galleryMediaPreloadQueue.shift();
+			if (!item) return;
+			const { url, priority } = item;
+			galleryQueuedMediaPreloadUrls.delete(url);
+			if (galleryPreloadedMediaUrls.has(url) || galleryPreloadingMediaUrls.has(url)) continue;
+
+			galleryPreloadingMediaUrls.add(url);
+			galleryActiveMediaPreloads += 1;
+
+			const image = new Image();
+			image.decoding = 'async';
+			if ('fetchPriority' in image) {
+				(image as HTMLImageElement & { fetchPriority: 'high' | 'low' | 'auto' }).fetchPriority =
+					priority === 'high' ? 'high' : 'low';
+			}
+			galleryActiveMediaPreloadImages.set(url, image);
+
+			const finish = () => {
+				image.onload = null;
+				image.onerror = null;
+				galleryActiveMediaPreloadImages.delete(url);
+				galleryPreloadingMediaUrls.delete(url);
+				galleryPreloadedMediaUrls.add(url);
+				galleryActiveMediaPreloads = Math.max(0, galleryActiveMediaPreloads - 1);
+				pumpMediaThumbnailPreloadQueue();
+			};
+
+			image.onload = finish;
+			image.onerror = finish;
+			image.src = url;
+		}
+	}
+
+	function queueMediaThumbnailPreloads(urls: string[], priority: MediaPreloadPriority) {
+		if (!browser || urls.length === 0) return;
+		for (const url of urls) {
+			if (
+				!url ||
+				galleryPreloadedMediaUrls.has(url) ||
+				galleryPreloadingMediaUrls.has(url)
+			) {
+				continue;
+			}
+			if (galleryQueuedMediaPreloadUrls.has(url)) {
+				if (priority === 'high') promoteQueuedMediaPreload(url);
+				continue;
+			}
+
+			const item: MediaPreloadQueueItem = { url, priority };
+			if (priority === 'high') {
+				const firstLowIndex = galleryMediaPreloadQueue.findIndex(
+					(queued) => queued.priority === 'low'
+				);
+				if (firstLowIndex === -1) galleryMediaPreloadQueue.push(item);
+				else galleryMediaPreloadQueue.splice(firstLowIndex, 0, item);
+			} else {
+				galleryMediaPreloadQueue.push(item);
+			}
+			galleryQueuedMediaPreloadUrls.set(url, priority);
+		}
+		pumpMediaThumbnailPreloadQueue();
+	}
+
+	let embedSweepRunning = false;
+
+	function applyHydrationResult(
+		pendingUris: string[],
+		result: {
+			embeds: Map<string, NonNullable<ThreadPost['embed']> | undefined>;
+			resolvedUris: Set<string>;
+			failedUris: Set<string>;
+		}
+	) {
+		const { embeds, resolvedUris, failedUris } = result;
+		for (const uri of pendingUris) requestedEmbedUris.delete(uri);
+		for (const uri of resolvedUris) {
+			galleryResolvedEmbedUris.add(uri);
+			delete galleryEmbedRetryAfterByUri[uri];
+		}
+		for (const uri of failedUris) {
+			galleryEmbedRetryAfterByUri[uri] = Date.now() + EMBED_HYDRATION_RETRY_DELAY_MS;
+		}
+		if (failedUris.size > 0) scheduleEmbedHydrationRetry();
+
+		const nextEmbeds = destroyed ? null : { ...hydratedEmbeds };
+		let changed = false;
+		for (const [uri, embed] of embeds) {
+			if (!embed) continue;
+			galleryHydratedEmbedCache[uri] = embed;
+			galleryResolvedEmbedUris.add(uri);
+			delete galleryEmbedRetryAfterByUri[uri];
+			if (!nextEmbeds || nextEmbeds[uri]) continue;
+			nextEmbeds[uri] = embed;
+			changed = true;
+		}
+		if (nextEmbeds && changed) hydratedEmbeds = nextEmbeds;
+		if (!destroyed) embedResolutionTick += 1;
+	}
+
+	async function hydrateUriBatch(pendingUris: string[]) {
+		try {
+			const result = await hydratePostEmbedsDetailed(pendingUris);
+			applyHydrationResult(pendingUris, result);
+		} catch {
+			for (const uri of pendingUris) {
+				requestedEmbedUris.delete(uri);
+				galleryEmbedRetryAfterByUri[uri] = Date.now() + EMBED_HYDRATION_RETRY_DELAY_MS;
+			}
+			scheduleEmbedHydrationRetry();
+			if (!destroyed) embedResolutionTick += 1;
+		}
+	}
+
+	function collectHydrationQueue(includeBackground: boolean): string[] {
+		const visibleSet = new Set<string>();
+		for (const thread of visibleThreads) collectHydratablePostUris(thread, visibleSet);
+
+		if (!includeBackground) return [...visibleSet];
+
+		const all = new Set<string>();
+		for (const thread of threads) collectHydratablePostUris(thread, all);
+		if (all.size === 0) return [...visibleSet];
+
+		const visibleFirst: string[] = [];
+		const rest: string[] = [];
+		for (const uri of all) {
+			if (visibleSet.has(uri)) visibleFirst.push(uri);
+			else rest.push(uri);
+		}
+		return [...visibleFirst, ...rest];
+	}
+
+	async function pumpEmbedHydrationQueue() {
+		if (embedSweepRunning || !browser || destroyed || !POST_HYDRATION_ENABLED) {
+			return;
+		}
+		const backgroundQueue = collectHydrationQueue(mediaTileMode);
+		if (backgroundQueue.length === 0) return;
+
+		embedSweepRunning = true;
+		let backgroundCursor = 0;
+
+		const claimUri = (uri: string, batch: string[], now: number) => {
+			if (
+				requestedEmbedUris.has(uri) ||
+				galleryHydratedEmbedCache[uri] ||
+				galleryResolvedEmbedUris.has(uri) ||
+				(galleryEmbedRetryAfterByUri[uri] ?? 0) > now
+			) {
+				return;
+			}
+			requestedEmbedUris.add(uri);
+			batch.push(uri);
+		};
+
+		const claimBatch = (): string[] => {
+			const batch: string[] = [];
+			const now = Date.now();
+			for (const uri of collectHydrationQueue(false)) {
+				claimUri(uri, batch, now);
+				if (batch.length >= EMBED_SWEEP_BATCH_SIZE) return batch;
+			}
+			while (backgroundCursor < backgroundQueue.length && batch.length < EMBED_SWEEP_BATCH_SIZE) {
+				const uri = backgroundQueue[backgroundCursor];
+				backgroundCursor += 1;
+				claimUri(uri, batch, now);
+			}
+			return batch;
+		};
+
+		const worker = async () => {
+			while (!destroyed) {
+				const batch = claimBatch();
+				if (batch.length === 0) return;
+				await hydrateUriBatch(batch);
+			}
+		};
+
+		try {
+			await Promise.all(
+				Array.from({ length: EMBED_SWEEP_CONCURRENCY }, () => worker())
+			);
+		} finally {
+			embedSweepRunning = false;
+		}
+	}
 
 	function parseMatcher(query: string, mode: SearchMode): GalleryMatcher {
 		const trimmed = query.trim();
@@ -231,6 +502,15 @@
 		const url = buildBskyPostUrl(post.uri, post.author.handle);
 		if (!url) return;
 		window.open(url, '_blank', 'noopener,noreferrer');
+	}
+
+	function mediaPostMeta(item: GalleryPostItem, totalPosts: number): string {
+		return `${formatDate(item.post.createdAt)} | ${formatCount(item.post.likeCount ?? 0)} likes | ${item.postNumber}/${totalPosts}`;
+	}
+
+	function mediaPostSummary(item: GalleryPostItem, fallback = 'Media post'): string {
+		const text = item.post.text.trim();
+		return text || fallback;
 	}
 
 	function literalRanges(text: string, literal: string): HighlightRange[] {
@@ -324,6 +604,14 @@
 		return segments.filter((segment) => segment.text.length > 0);
 	}
 
+	function getFlatThread(thread: SelfReplyThread): FlatPost[] {
+		const cached = flatThreadCache.get(thread.rootPost);
+		if (cached) return cached;
+		const flat = flattenThread(thread.rootPost);
+		flatThreadCache.set(thread.rootPost, flat);
+		return flat;
+	}
+
 	function postHasGalleryImages(post: ThreadPost): boolean {
 		const embed = post.embed;
 		return Boolean(embed?.images?.length || embed?.record?.images?.length);
@@ -352,6 +640,45 @@
 			videos.push(video);
 		}
 		return videos;
+	}
+
+	function addMediaThumbnailUrlsForPost(
+		post: ThreadPost,
+		target: string[],
+		seen: Set<string>,
+		limit: number
+	) {
+		if (contentMode === 'media' || contentMode === 'images') {
+			for (const image of galleryImagesForPost(post)) {
+				const url = image.thumb || image.fullsize;
+				if (!url || seen.has(url)) continue;
+				seen.add(url);
+				target.push(url);
+				if (target.length >= limit) return;
+			}
+		}
+
+		if (contentMode === 'media' || contentMode === 'movies') {
+			for (const video of galleryVideosForPost(post)) {
+				const url = video.thumbnail;
+				if (!url || seen.has(url)) continue;
+				seen.add(url);
+				target.push(url);
+				if (target.length >= limit) return;
+			}
+		}
+	}
+
+	function mediaThumbnailUrlsForTiles(tiles: GalleryTile[], limit: number): string[] {
+		const urls: string[] = [];
+		const seen = new Set<string>();
+		for (const tile of tiles) {
+			for (const item of tile.posts) {
+				addMediaThumbnailUrlsForPost(item.post, urls, seen, limit);
+				if (urls.length >= limit) return urls;
+			}
+		}
+		return urls;
 	}
 
 	function isMediaTileMode(mode: GalleryContentMode): boolean {
@@ -418,6 +745,54 @@
 		};
 	}
 
+	function matcherCacheKey(value: GalleryMatcher): string {
+		if (value.mode === 'none') return 'none';
+		if (value.mode === 'literal') return `literal:${value.literal}`;
+		if (value.mode === 'fuzzy') return `fuzzy:${value.literal}`;
+		return `regex:${value.regex.source}/${value.regex.flags}`;
+	}
+
+	function postCacheSignature(
+		post: ThreadPost,
+		postNumber: number,
+		matcherKey: string,
+		embedMap: Record<string, NonNullable<ThreadPost['embed']>>
+	): string {
+		const hasHydratedEmbed = Boolean(embedMap[post.uri] ?? galleryHydratedEmbedCache[post.uri]);
+		const hasOwnEmbed = Boolean(post.embed);
+		const resolved = galleryResolvedEmbedUris.has(post.uri);
+		return [
+			post.uri,
+			postNumber,
+			matcherKey,
+			post.text,
+			post.likeCount ?? 0,
+			post.repostCount ?? 0,
+			post.replyCount ?? 0,
+			post.quoteCount ?? 0,
+			post.needsHydratedPostView ? 1 : 0,
+			hasOwnEmbed ? 1 : 0,
+			hasHydratedEmbed ? 1 : 0,
+			resolved ? 1 : 0
+		].join('\u001f');
+	}
+
+	function buildGalleryPostCached(
+		flatPost: FlatPost,
+		postNumber: number,
+		matcher: GalleryMatcher,
+		matcherKey: string,
+		embedMap: Record<string, NonNullable<ThreadPost['embed']>>
+	): GalleryPostItem {
+		const cacheKey = `${flatPost.post.uri}:${postNumber}`;
+		const signature = postCacheSignature(flatPost.post, postNumber, matcherKey, embedMap);
+		const cached = galleryPostItemCache.get(cacheKey);
+		if (cached?.signature === signature) return cached.item;
+		const item = buildGalleryPost(flatPost, postNumber, matcher, embedMap);
+		galleryPostItemCache.set(cacheKey, { signature, item });
+		return item;
+	}
+
 	function postMatchesContentMode(
 		post: GalleryPostItem,
 		mode: GalleryContentMode
@@ -439,10 +814,13 @@
 	function buildThreadTile(
 		thread: SelfReplyThread,
 		matcher: GalleryMatcher,
+		matcherKey: string,
 		embedMap: Record<string, NonNullable<ThreadPost['embed']>>
 	): GalleryTile {
-		const flat = flattenThread(thread.rootPost);
-		const allPosts = flat.map((flatPost, index) => buildGalleryPost(flatPost, index + 1, matcher, embedMap));
+		const flat = getFlatThread(thread);
+		const allPosts = flat.map((flatPost, index) =>
+			buildGalleryPostCached(flatPost, index + 1, matcher, matcherKey, embedMap)
+		);
 		const posts =
 			contentMode !== 'all'
 				? allPosts.filter((post) => postMatchesContentMode(post, contentMode))
@@ -481,7 +859,61 @@
 	function buildTile(entry: GalleryEntry): GalleryTile {
 		return entry.kind === 'post'
 			? buildPostTile(entry)
-			: buildThreadTile(entry.thread, matcher, hydratedEmbeds);
+			: buildThreadTile(entry.thread, matcher, activeMatcherCacheKey, hydratedEmbeds);
+	}
+
+	function threadTileSignature(
+		thread: SelfReplyThread,
+		matcherKey: string,
+		embedMap: Record<string, NonNullable<ThreadPost['embed']>>
+	): string {
+		const flat = getFlatThread(thread);
+		return [
+			'thread',
+			contentMode,
+			matcherKey,
+			thread.depth,
+			thread.rootPost.likeCount ?? 0,
+			thread.rootPost.repostCount ?? 0,
+			thread.rootPost.quoteCount ?? 0,
+			...flat.map((flatPost, index) =>
+				postCacheSignature(flatPost.post, index + 1, matcherKey, embedMap)
+			)
+		].join('\u001e');
+	}
+
+	function postTileSignature(entry: Extract<GalleryEntry, { kind: 'post' }>): string {
+		const post = entry.post.post;
+		return [
+			'post',
+			contentMode,
+			activeMatcherCacheKey,
+			entry.key,
+			entry.totalPosts,
+			entry.post.matched ? 1 : 0,
+			entry.post.pendingMedia ? 1 : 0,
+			entry.post.hasImages ? 1 : 0,
+			entry.post.hasMovies ? 1 : 0,
+			post.likeCount ?? 0,
+			post.repostCount ?? 0,
+			post.quoteCount ?? 0,
+			entry.thread.rootPost.likeCount ?? 0,
+			entry.thread.rootPost.repostCount ?? 0,
+			entry.thread.rootPost.quoteCount ?? 0
+		].join('\u001f');
+	}
+
+	function buildCachedTile(entry: GalleryEntry): GalleryTile {
+		const cacheKey = entry.kind === 'post' ? `post:${entry.key}` : `thread:${entry.thread.rootUri}`;
+		const signature =
+			entry.kind === 'post'
+				? postTileSignature(entry)
+				: threadTileSignature(entry.thread, activeMatcherCacheKey, hydratedEmbeds);
+		const cached = galleryTileCache.get(cacheKey);
+		if (cached?.signature === signature) return cached.tile;
+		const tile = buildTile(entry);
+		galleryTileCache.set(cacheKey, { signature, tile });
+		return tile;
 	}
 
 	function tileHasVisibleContent(tile: GalleryTile): boolean {
@@ -506,16 +938,38 @@
 		if (!image?.naturalWidth || !image.naturalHeight) return;
 		const ratio = clamp(image.naturalHeight / image.naturalWidth, 0.42, 2.8);
 		if (Math.abs((mediaAspectRatios[key] ?? 0) - ratio) < 0.01) return;
-		mediaAspectRatios = {
-			...mediaAspectRatios,
-			[key]: ratio
-		};
+		if (Math.abs((pendingMediaAspectRatios[key] ?? 0) - ratio) < 0.01) return;
+		pendingMediaAspectRatios[key] = ratio;
+		if (!browser) {
+			flushMediaAspectRatioUpdates();
+			return;
+		}
+		if (mediaAspectRatioRafId !== null) return;
+		mediaAspectRatioRafId = requestAnimationFrame(flushMediaAspectRatioUpdates);
+	}
+
+	function flushMediaAspectRatioUpdates() {
+		mediaAspectRatioRafId = null;
+		const entries = Object.entries(pendingMediaAspectRatios);
+		if (entries.length === 0) return;
+		pendingMediaAspectRatios = {};
+		const nextRatios = { ...mediaAspectRatios };
+		let changed = false;
+		for (const [key, ratio] of entries) {
+			if (Math.abs((nextRatios[key] ?? 0) - ratio) < 0.01) continue;
+			nextRatios[key] = ratio;
+			changed = true;
+		}
+		if (changed) mediaAspectRatios = nextRatios;
 	}
 
 	function estimatedImageHeightRatio(image: GalleryImage, fallbackKey: string): number {
 		const key = mediaImageKey(image, fallbackKey);
 		const measuredRatio = mediaAspectRatios[key];
 		if (Number.isFinite(measuredRatio) && measuredRatio > 0) return measuredRatio;
+		const width = image.aspectRatio?.width ?? 0;
+		const height = image.aspectRatio?.height ?? 0;
+		if (width > 0 && height > 0) return clamp(height / width, 0.42, 2.8);
 		const seed = hashString(key) % 1000;
 		return 0.72 + (seed / 1000) * 0.86;
 	}
@@ -540,6 +994,13 @@
 		return aspectRatioStyleFromHeightRatio(estimatedVideoHeightRatio(video));
 	}
 
+	function activateVideo(key: string) {
+		if (activatedVideos.has(key)) return;
+		const next = new Set(activatedVideos);
+		next.add(key);
+		activatedVideos = next;
+	}
+
 	function mediaHeightRatiosForPost(item: GalleryPostItem): number[] {
 		const ratios: number[] = [];
 		for (const [index, image] of galleryImagesForPost(item.post).entries()) {
@@ -560,18 +1021,23 @@
 		const averageRatio = ratios.reduce((total, ratio) => total + ratio, 0) / ratios.length;
 		const mediaCount = ratios.length;
 		if (mediaFit === 'fit') {
-			const stackedRatio =
-				ratios.reduce((total, ratio) => total + ratio, 0) +
-				(Math.max(0, mediaCount - 1) * GRID_GAP) / Math.max(width, 1);
+			// Match the rendered CSS exactly: each `.media-only-tile` is height:auto with
+			// `aspect-ratio: 1 / clamp(ratio, 0.36, 3)` (see aspectRatioStyleFromHeightRatio),
+			// stacked in a flex column with `gap: 6px`. Reserve precisely that height so the
+			// masonry packs with no blank space below short images.
+			const MEDIA_FIT_INNER_GAP = 6;
+			const stackedHeight =
+				ratios.reduce((total, ratio) => total + width * clamp(ratio, 0.36, 3), 0) +
+				Math.max(0, mediaCount - 1) * MEDIA_FIT_INNER_GAP;
 			const maximumHeight = Math.round(clamp(width * 2.85, 420, 1600));
-			return Math.round(clamp(width * stackedRatio, minimumHeight, maximumHeight));
+			return Math.round(clamp(stackedHeight, minimumHeight, maximumHeight));
 		}
 		const heightRatio =
 			mediaCount === 1
 				? clamp(averageRatio * 0.92, 0.5, 2.15)
 				: mediaCount === 2
 					? clamp(averageRatio * 0.72, 0.58, 1.2)
-					: clamp(0.84 + Math.min(mediaCount, 8) * 0.1, 1.02, 1.78);
+					: clamp(averageRatio * 0.6 + Math.min(mediaCount, 8) * 0.08, 1.02, 1.85);
 		return Math.round(clamp(width * heightRatio, minimumHeight, cardMaxHeight));
 	}
 
@@ -615,12 +1081,15 @@
 	function buildPostEntries(
 		sourceThreads: SelfReplyThread[],
 		matcher: GalleryMatcher,
+		matcherKey: string,
 		embedMap: Record<string, NonNullable<ThreadPost['embed']>>
 	): GalleryEntry[] {
 		const entries: GalleryEntry[] = [];
 		for (const thread of sourceThreads) {
-			const flat = flattenThread(thread.rootPost);
-			const allPosts = flat.map((flatPost, index) => buildGalleryPost(flatPost, index + 1, matcher, embedMap));
+			const flat = getFlatThread(thread);
+			const allPosts = flat.map((flatPost, index) =>
+				buildGalleryPostCached(flatPost, index + 1, matcher, matcherKey, embedMap)
+			);
 			const posts =
 				contentMode !== 'all'
 					? allPosts.filter((post) => postMatchesContentMode(post, contentMode))
@@ -662,13 +1131,15 @@
 	}
 
 	function collectHydratablePostUris(thread: SelfReplyThread, target: Set<string>) {
+		const now = Date.now();
 		for (const { post } of flattenThread(thread.rootPost)) {
 			if (
 				!post.needsHydratedPostView ||
 				post.embed ||
 				hydratedEmbeds[post.uri] ||
 				galleryHydratedEmbedCache[post.uri] ||
-				requestedEmbedUris.has(post.uri)
+				requestedEmbedUris.has(post.uri) ||
+				(galleryEmbedRetryAfterByUri[post.uri] ?? 0) > now
 			) {
 				continue;
 			}
@@ -741,9 +1212,13 @@
 	}
 
 	const matcher = $derived(parseMatcher(searchQuery, searchMode));
+	const activeMatcherCacheKey = $derived(matcherCacheKey(matcher));
 	const gridZoomFactor = $derived(clamp(gridZoom, 55, 160) / 100);
 	const mediaTileMode = $derived(isMediaTileMode(contentMode));
 	const masonryEnabled = $derived(mediaTileMode && mediaLayout === 'masonry');
+	const activeOverscanRows = $derived(
+		mediaTileMode ? MEDIA_RENDER_OVERSCAN_ROWS : DEFAULT_OVERSCAN_ROWS
+	);
 	const cardMinWidth = $derived(
 		Math.round((mediaTileMode ? 220 : 260) * gridZoomFactor)
 	);
@@ -763,32 +1238,46 @@
 	const columnCount = $derived(
 		Math.max(1, Math.floor(((gridWidth || cardMinWidth) + GRID_GAP) / (cardMinWidth + GRID_GAP)))
 	);
-	const galleryEntries = $derived.by(() => {
-		embedResolutionTick;
-		if (groupMode === 'posts') {
-			return buildPostEntries(threads, matcher, hydratedEmbeds);
-		}
-		return threads.map((thread) => ({
+	const threadGalleryEntries = $derived(
+		threads.map((thread) => ({
 			kind: 'thread' as const,
 			key: thread.rootUri,
 			thread
-		}));
+		}))
+	);
+	const postGalleryEntries = $derived.by(() => {
+		embedResolutionTick;
+		return buildPostEntries(threads, matcher, activeMatcherCacheKey, hydratedEmbeds);
+	});
+	const galleryEntries = $derived.by(() => {
+		if (groupMode === 'posts') {
+			return postGalleryEntries;
+		}
+		return threadGalleryEntries;
 	});
 	const visibleTop = $derived(Math.max(0, windowScrollY - gridPageTop));
 	const visibleBottom = $derived(Math.max(0, windowScrollY + viewportHeight - gridPageTop));
 	const allMasonryTiles = $derived.by(() => {
 		if (!masonryEnabled) return [];
 		embedResolutionTick;
-		return galleryEntries.map(buildTile).filter(tileHasVisibleContent);
+		return galleryEntries.map(buildCachedTile).filter(tileHasVisibleContent);
 	});
 	const masonryLayout = $derived.by(() => {
 		if (!masonryEnabled) return { tiles: [], height: 0, columnCount };
 		mediaAspectRatios;
-		return buildMasonryLayout(allMasonryTiles, gridWidth, cardMinWidth, cardMinHeight);
+		// In fit mode the card body renders at its true aspect-ratio height, so flooring at
+		// cardMinHeight (~300px) would over-reserve space and create gaps. estimateMasonryTileHeight
+		// already applies the small fit-mode minimum; only cover mode wants the cardMinHeight floor.
+		const masonryMinHeight =
+			mediaFit === 'fit' ? Math.round(clamp(88 * gridZoomFactor, 58, 160)) : cardMinHeight;
+		return buildMasonryLayout(allMasonryTiles, gridWidth, cardMinWidth, masonryMinHeight);
 	});
 	const masonryVisibleTiles = $derived.by(() => {
 		if (!masonryEnabled) return [];
-		const overscan = Math.max(estimatedCardHeight, viewportHeight * 0.9);
+		const overscan = Math.max(
+			estimatedCardHeight,
+			viewportHeight * MEDIA_MASONRY_RENDER_OVERSCAN_VIEWPORTS
+		);
 		const top = Math.max(0, visibleTop - overscan);
 		const bottom = visibleBottom + overscan;
 		return masonryLayout.tiles.filter(
@@ -802,7 +1291,7 @@
 			? 0
 			: Math.min(
 					maxRow,
-					Math.max(0, Math.floor(visibleTop / estimatedRowHeight) - OVERSCAN_ROWS)
+					Math.max(0, Math.floor(visibleTop / estimatedRowHeight) - activeOverscanRows)
 			  )
 	);
 	const endRow = $derived(
@@ -810,7 +1299,7 @@
 			? 0
 			: Math.max(
 					startRow,
-					Math.min(maxRow, Math.ceil(visibleBottom / estimatedRowHeight) + OVERSCAN_ROWS)
+					Math.min(maxRow, Math.ceil(visibleBottom / estimatedRowHeight) + activeOverscanRows)
 			  )
 	);
 	const startIndex = $derived(Math.min(galleryEntries.length, startRow * columnCount));
@@ -839,7 +1328,34 @@
 	const tiles = $derived.by(() => {
 		embedResolutionTick;
 		return visibleEntries
-			.map(buildTile)
+			.map(buildCachedTile)
+			.filter(tileHasVisibleContent);
+	});
+	const renderedMediaTiles = $derived.by(() => {
+		if (!mediaTileMode) return [];
+		return masonryEnabled ? masonryVisibleTiles.map((item) => item.tile) : tiles;
+	});
+	const mediaPreloadTiles = $derived.by(() => {
+		if (!mediaTileMode) return [];
+		embedResolutionTick;
+		if (masonryEnabled) {
+			const behind = viewportHeight * MEDIA_PRELOAD_BEHIND_VIEWPORTS;
+			const ahead = viewportHeight * MEDIA_PRELOAD_AHEAD_VIEWPORTS;
+			const top = Math.max(0, visibleTop - behind);
+			const bottom = Math.max(visibleBottom + ahead, viewportHeight * MEDIA_PRELOAD_AHEAD_VIEWPORTS);
+			return masonryLayout.tiles
+				.filter((item) => item.top + item.height >= top && item.top <= bottom)
+				.map((item) => item.tile);
+		}
+
+		const preloadStart = Math.max(0, startIndex - MEDIA_PRELOAD_BEHIND_TILES);
+		const preloadEnd = Math.min(
+			galleryEntries.length,
+			Math.max(endIndex + MEDIA_PRELOAD_AHEAD_TILES, MEDIA_PRELOAD_INITIAL_TILES)
+		);
+		return galleryEntries
+			.slice(preloadStart, preloadEnd)
+			.map(buildCachedTile)
 			.filter(tileHasVisibleContent);
 	});
 
@@ -926,38 +1442,32 @@
 		};
 	});
 
+	// One visible-first queue handles both the immediate viewport fill and the
+	// media-mode background sweep, avoiding duplicate full-list scans per tick.
 	$effect(() => {
-		if (!POST_HYDRATION_ENABLED || !browser || visibleThreads.length === 0) return;
+		threads;
+		mediaTileMode;
+		visibleThreads;
+		embedResolutionTick;
+		if (!POST_HYDRATION_ENABLED || !browser) return;
+		void pumpEmbedHydrationQueue();
+	});
 
-		const pending = new Set<string>();
-		for (const thread of visibleThreads) {
-			collectHydratablePostUris(thread, pending);
-		}
-		if (pending.size === 0) return;
+	$effect(() => {
+		if (!browser || !mediaTileMode) return;
 
-		for (const uri of pending) requestedEmbedUris.add(uri);
-		const pendingUris = [...pending];
+		const visibleUrls = mediaThumbnailUrlsForTiles(
+			renderedMediaTiles,
+			MEDIA_VISIBLE_THUMBNAIL_PRELOAD_URL_LIMIT
+		);
+		queueMediaThumbnailPreloads(visibleUrls, 'high');
 
-		let cancelled = false;
-		void hydratePostEmbeds(pendingUris).then((embedMap) => {
-			for (const uri of pendingUris) galleryResolvedEmbedUris.add(uri);
-
-			const nextEmbeds = cancelled ? null : { ...hydratedEmbeds };
-			let changed = false;
-			for (const [uri, embed] of embedMap) {
-				if (!embed) continue;
-				galleryHydratedEmbedCache[uri] = embed;
-				if (!nextEmbeds || nextEmbeds[uri]) continue;
-				nextEmbeds[uri] = embed;
-				changed = true;
-			}
-			if (nextEmbeds && changed) hydratedEmbeds = nextEmbeds;
-			if (!cancelled) embedResolutionTick += 1;
-		});
-
-		return () => {
-			cancelled = true;
-		};
+		const preloadUrls = mediaThumbnailUrlsForTiles(
+			mediaPreloadTiles,
+			MEDIA_THUMBNAIL_PRELOAD_URL_LIMIT
+		);
+		const priority = visibleTop <= viewportHeight * 0.5 ? 'high' : 'low';
+		queueMediaThumbnailPreloads(preloadUrls, priority);
 	});
 </script>
 
@@ -967,53 +1477,114 @@
 		class="gallery-card"
 		class:post-card={tile.displayMode === 'posts'}
 		class:media-card={mediaTileMode}
-		class:media-fit={mediaFit === 'fit'}
+		class:media-fit={mediaTileMode && mediaFit === 'fit'}
 		class:media-masonry={masonryEnabled}
 		class:thread-highlight={highlightedThread === tile.thread.rootUri}
 		data-thread-uri={tile.thread.rootUri}
 		style={cardStyle}
 	>
-			{#if mediaTileMode}
-				<div class="media-only-grid">
-					{#each tile.posts as item (item.post.uri)}
-						{#if item.pendingMedia}
-							<div class="media-placeholder media-only-placeholder">Loading media...</div>
-						{/if}
-						{#if contentMode === 'media' || contentMode === 'images'}
-							{#each galleryImagesForPost(item.post) as img, imageIndex (`${item.post.uri}:image:${imageIndex}:${img.fullsize || img.thumb}`)}
-								{@const imageKey = mediaImageKey(img, `${item.post.uri}:image:${imageIndex}`)}
-								{@const imageFallbackKey = `${item.post.uri}:image:${imageIndex}`}
+		{#if mediaTileMode}
+			<div class="media-only-grid">
+				{#each tile.posts as item (item.post.uri)}
+					{#if item.pendingMedia}
+						<div class="media-placeholder media-only-placeholder">Loading media...</div>
+					{/if}
+					{#if contentMode === 'media' || contentMode === 'images'}
+						{#each galleryImagesForPost(item.post) as img, imageIndex (`${item.post.uri}:image:${imageIndex}:${img.fullsize || img.thumb}`)}
+							{@const imageKey = mediaImageKey(img, `${item.post.uri}:image:${imageIndex}`)}
+							{@const imageFallbackKey = `${item.post.uri}:image:${imageIndex}`}
+							<div class="media-only-tile" style={imageTileStyle(img, imageFallbackKey)}>
 								<button
 									type="button"
-									class="media-only-tile"
-									style={imageTileStyle(img, imageFallbackKey)}
+									class="media-preview-button"
 									onclick={(event) => {
 										event.stopPropagation();
-										openLightbox(img.fullsize);
+										openLightbox(img.fullsize, img.alt);
 									}}
 								>
-									<img src={img.thumb} alt={img.alt} onload={(event) => updateMediaAspectRatio(imageKey, event)} />
+									<img
+										src={img.thumb}
+										alt={img.alt}
+										loading="eager"
+										decoding="async"
+										fetchpriority="high"
+										onload={(event) => updateMediaAspectRatio(imageKey, event)}
+									/>
 								</button>
-							{/each}
-						{/if}
-						{#if contentMode === 'media' || contentMode === 'movies'}
-							{#each galleryVideosForPost(item.post) as video, videoIndex (`${item.post.uri}:video:${videoIndex}:${video.playlist || video.cid}`)}
-								<div class="media-only-tile media-only-video" style={videoTileStyle(video)}>
+								<button
+									type="button"
+									class="media-post-overlay"
+									onclick={(event) => {
+										event.stopPropagation();
+										openPost(item.post);
+									}}
+									aria-label={`Open post from ${formatDate(item.post.createdAt)}`}
+								>
+									<span class="media-overlay-meta">{mediaPostMeta(item, tile.totalPosts)}</span>
+									<span class="media-overlay-text">{mediaPostSummary(item, img.alt || 'Image post')}</span>
+									<span class="media-overlay-action">Open post</span>
+								</button>
+							</div>
+						{/each}
+					{/if}
+					{#if contentMode === 'media' || contentMode === 'movies'}
+						{#each galleryVideosForPost(item.post) as video, videoIndex (`${item.post.uri}:video:${videoIndex}:${video.playlist || video.cid}`)}
+							{@const videoKey = `${item.post.uri}:video:${videoIndex}:${video.playlist || video.cid}`}
+							<div class="media-only-tile media-only-video" style={videoTileStyle(video)}>
+								{#if activatedVideos.has(videoKey)}
 									<!-- svelte-ignore a11y_media_has_caption -->
 									<video
 										controls
-										preload="none"
+										autoplay
+										preload="auto"
 										poster={video.thumbnail}
 										style={video.aspectRatio ? `aspect-ratio: ${video.aspectRatio.width} / ${video.aspectRatio.height}` : ''}
 									>
 										<source src={video.playlist} type="application/x-mpegURL" />
 									</video>
-								</div>
-							{/each}
-						{/if}
-					{/each}
-				</div>
-			{:else}
+								{:else}
+									<button
+										type="button"
+										class="media-video-poster"
+										style={video.aspectRatio ? `aspect-ratio: ${video.aspectRatio.width} / ${video.aspectRatio.height}` : ''}
+										onclick={(event) => {
+											event.stopPropagation();
+											activateVideo(videoKey);
+										}}
+										aria-label={`Play video${video.alt ? `: ${video.alt}` : ''}`}
+									>
+										{#if video.thumbnail}
+											<img
+												src={video.thumbnail}
+												alt={video.alt || ''}
+												loading="eager"
+												decoding="async"
+												fetchpriority="high"
+												onload={(event) => updateMediaAspectRatio(videoKey, event)}
+											/>
+										{/if}
+										<span class="media-play-glyph" aria-hidden="true">▶</span>
+									</button>
+								{/if}
+								<button
+									type="button"
+									class="media-post-overlay"
+									onclick={(event) => {
+										event.stopPropagation();
+										openPost(item.post);
+									}}
+									aria-label={`Open post from ${formatDate(item.post.createdAt)}`}
+								>
+									<span class="media-overlay-meta">{mediaPostMeta(item, tile.totalPosts)}</span>
+									<span class="media-overlay-text">{mediaPostSummary(item, video.alt || 'Video post')}</span>
+									<span class="media-overlay-action">Open post</span>
+								</button>
+							</div>
+						{/each}
+					{/if}
+				{/each}
+			</div>
+		{:else}
 			<div class="gallery-card-header">
 				<div class="thread-metrics">
 					{#if tile.displayMode === 'posts'}
@@ -1105,7 +1676,7 @@
 										class="post-image"
 										onclick={(event) => {
 											event.stopPropagation();
-											openLightbox(img.fullsize);
+											openLightbox(img.fullsize, img.alt);
 										}}
 									>
 										<img src={img.thumb} alt={img.alt} />
@@ -1114,16 +1685,40 @@
 							</div>
 						{/if}
 						{#if item.post.embed?.video}
+							{@const postVideoKey = `${item.post.uri}:postvideo:${item.post.embed.video.playlist || item.post.embed.video.cid}`}
 							<div class="post-video">
-								<!-- svelte-ignore a11y_media_has_caption -->
-								<video
-									controls
-									preload="none"
-									poster={item.post.embed.video.thumbnail}
-									style={item.post.embed.video.aspectRatio ? `aspect-ratio: ${item.post.embed.video.aspectRatio.width} / ${item.post.embed.video.aspectRatio.height}` : ''}
-								>
-									<source src={item.post.embed.video.playlist} type="application/x-mpegURL" />
-								</video>
+								{#if activatedVideos.has(postVideoKey)}
+									<!-- svelte-ignore a11y_media_has_caption -->
+									<video
+										controls
+										autoplay
+										preload="auto"
+										poster={item.post.embed.video.thumbnail}
+										style={item.post.embed.video.aspectRatio ? `aspect-ratio: ${item.post.embed.video.aspectRatio.width} / ${item.post.embed.video.aspectRatio.height}` : ''}
+									>
+										<source src={item.post.embed.video.playlist} type="application/x-mpegURL" />
+									</video>
+								{:else}
+									<button
+										type="button"
+										class="post-video-poster"
+										onclick={(event) => {
+											event.stopPropagation();
+											activateVideo(postVideoKey);
+										}}
+										aria-label={`Play video${item.post.embed.video.alt ? `: ${item.post.embed.video.alt}` : ''}`}
+									>
+										{#if item.post.embed.video.thumbnail}
+											<img
+												src={item.post.embed.video.thumbnail}
+												alt={item.post.embed.video.alt || ''}
+												loading="lazy"
+												decoding="async"
+											/>
+										{/if}
+										<span class="media-play-glyph" aria-hidden="true">▶</span>
+									</button>
+								{/if}
 								{#if item.post.embed.video.alt}
 									<p class="video-alt">{item.post.embed.video.alt}</p>
 								{/if}
@@ -1232,7 +1827,11 @@
 
 	.gallery-masonry .gallery-card {
 		position: absolute;
-		will-change: transform;
+		/* Bound repaints per card without promoting every (virtualized) card to its own
+		   compositor layer. Blanket `will-change: transform` here exceeded Chrome's layer
+		   budget over the tall scroll area, leaving offscreen tiles unpainted until a hover
+		   repaint — the "hover empty space to reveal the image" bug. */
+		contain: layout paint;
 	}
 
 	.gallery-card {
@@ -1276,7 +1875,7 @@
 	}
 
 	.gallery-card.media-fit.media-masonry {
-		overflow: visible;
+		overflow: hidden;
 	}
 
 	.gallery-card.media-fit.media-masonry .media-only-grid {
@@ -1289,6 +1888,7 @@
 	}
 
 	.media-only-tile {
+		position: relative;
 		display: block;
 		width: 100%;
 		height: 100%;
@@ -1297,6 +1897,20 @@
 		border: 0;
 		border-radius: 8px;
 		background: color-mix(in srgb, var(--card-bg) 82%, #000 18%);
+		overflow: hidden;
+		cursor: default;
+	}
+
+	.media-preview-button {
+		display: block;
+		width: 100%;
+		height: 100%;
+		padding: 0;
+		border: 0;
+		border-radius: inherit;
+		background: transparent;
+		color: inherit;
+		font: inherit;
 		overflow: hidden;
 		cursor: pointer;
 	}
@@ -1312,7 +1926,8 @@
 		background: transparent;
 	}
 
-	.media-only-tile img,
+	.media-preview-button img,
+	.media-video-poster img,
 	.media-only-tile video {
 		display: block;
 		width: 100%;
@@ -1320,15 +1935,111 @@
 		object-fit: cover;
 	}
 
-	.gallery-card.media-fit .media-only-tile img,
+	.gallery-card.media-fit .media-preview-button img,
+	.gallery-card.media-fit .media-video-poster img,
 	.gallery-card.media-fit .media-only-tile video {
 		object-fit: contain;
 	}
 
-	.gallery-card.media-fit.media-masonry .media-only-tile img,
+	.media-video-poster {
+		position: relative;
+		display: block;
+		width: 100%;
+		height: 100%;
+		padding: 0;
+		border: 0;
+		background: #111;
+		cursor: pointer;
+	}
+
+	.media-play-glyph {
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		z-index: 1;
+		display: grid;
+		width: 48px;
+		height: 48px;
+		transform: translate(-50%, -50%);
+		place-items: center;
+		border-radius: 50%;
+		background: color-mix(in srgb, #111 64%, transparent);
+		color: white;
+		font-size: 1.1rem;
+		padding-left: 3px;
+		box-shadow: 0 6px 16px color-mix(in srgb, #000 40%, transparent);
+		pointer-events: none;
+	}
+
 	.gallery-card.media-fit.media-masonry .media-only-tile video {
-		height: auto;
 		border-radius: 8px;
+	}
+
+	.media-post-overlay {
+		position: absolute;
+		right: 8px;
+		bottom: 8px;
+		left: 8px;
+		z-index: 2;
+		display: flex;
+		max-height: calc(100% - 16px);
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 1px;
+		padding: 5px 7px;
+		border: 1px solid color-mix(in srgb, white 24%, transparent);
+		border-radius: 7px;
+		background: color-mix(in srgb, #111 82%, transparent);
+		color: white;
+		font: inherit;
+		text-align: left;
+		box-shadow: 0 10px 22px color-mix(in srgb, #000 34%, transparent);
+		opacity: 0;
+		transform: translateY(6px);
+		transition: opacity 140ms ease, transform 140ms ease;
+		cursor: pointer;
+	}
+
+	.media-only-tile:hover .media-post-overlay,
+	.media-only-tile:focus-within .media-post-overlay {
+		opacity: 1;
+		transform: translateY(0);
+	}
+
+	.media-only-video .media-post-overlay {
+		top: 8px;
+		bottom: auto;
+	}
+
+	.media-overlay-meta {
+		font-size: 0.6rem;
+		line-height: 1.15;
+		opacity: 0.82;
+	}
+
+	.media-overlay-text {
+		display: -webkit-box;
+		overflow: hidden;
+		max-width: 100%;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		font-size: 0.66rem;
+		line-height: 1.2;
+	}
+
+	.media-overlay-action {
+		margin-top: 1px;
+		font-size: 0.6rem;
+		font-weight: 700;
+		line-height: 1.1;
+	}
+
+	@media (hover: none) {
+		.media-post-overlay {
+			opacity: 1;
+			transform: translateY(0);
+		}
 	}
 
 	.media-only-video {
@@ -1551,6 +2262,26 @@
 		max-height: 220px;
 		border-radius: 8px;
 		background: #111;
+	}
+
+	.post-video-poster {
+		position: relative;
+		display: block;
+		width: 100%;
+		max-height: 220px;
+		padding: 0;
+		border: 0;
+		border-radius: 8px;
+		background: #111;
+		overflow: hidden;
+		cursor: pointer;
+	}
+
+	.post-video-poster img {
+		display: block;
+		width: 100%;
+		max-height: 220px;
+		object-fit: cover;
 	}
 
 	.video-alt {

@@ -8,8 +8,13 @@
 		mergeRecordEmbed,
 		type RecordEmbed as RecordEmbedValue
 	} from '$lib/utils/recordEmbed';
+	import RecordEmbed from '$lib/components/RecordEmbed.svelte';
 
-	let { record, dense = false }: { record: RecordEmbedValue; dense?: boolean } = $props();
+	let {
+		record,
+		dense = false,
+		eager = false
+	}: { record: RecordEmbedValue; dense?: boolean; eager?: boolean } = $props();
 	let hydratedRecord = $state<RecordEmbedValue | null>(null);
 	let isHydrating = $state(false);
 	let isUnavailable = $state(false);
@@ -35,7 +40,7 @@
 		}
 
 		const cached = peekCachedRecordEmbedByUri(record.uri);
-		if (cached !== undefined) {
+		if (cached !== undefined || eager) {
 			shouldHydrate = true;
 			return;
 		}
@@ -124,10 +129,10 @@
 					class="record-image"
 					onclick={(e) => {
 						e.stopPropagation();
-						openLightbox(img.fullsize);
+						openLightbox(img.fullsize, img.alt);
 					}}
 					onkeydown={(e) => {
-						if (e.key === 'Enter') openLightbox(img.fullsize);
+						if (e.key === 'Enter') openLightbox(img.fullsize, img.alt);
 					}}
 					role="button"
 					tabindex="0"
@@ -135,6 +140,42 @@
 				/>
 			{/each}
 		</div>
+	{/if}
+
+	{#if displayRecord.video}
+		<div class="record-video">
+			<!-- svelte-ignore a11y_media_has_caption -->
+			<video
+				controls
+				preload="none"
+				poster={displayRecord.video.thumbnail}
+				style={displayRecord.video.aspectRatio ? `aspect-ratio: ${displayRecord.video.aspectRatio.width} / ${displayRecord.video.aspectRatio.height}` : ''}
+			>
+				<source src={displayRecord.video.playlist} type="application/x-mpegURL" />
+			</video>
+		</div>
+	{/if}
+
+	{#if displayRecord.external}
+		<a
+			href={displayRecord.external.uri}
+			target="_blank"
+			rel="noopener noreferrer"
+			class="record-external"
+			onclick={(e) => e.stopPropagation()}
+		>
+			{#if displayRecord.external.thumb}
+				<img src={displayRecord.external.thumb} alt="" class="record-external-thumb" />
+			{/if}
+			<span class="record-external-copy">
+				<strong>{displayRecord.external.title}</strong>
+				<span>{displayRecord.external.description}</span>
+			</span>
+		</a>
+	{/if}
+
+	{#if displayRecord.record}
+		<RecordEmbed record={displayRecord.record} dense {eager} />
 	{/if}
 </div>
 
@@ -214,5 +255,59 @@
 		max-height: 120px;
 		border-radius: 8px;
 		object-fit: cover;
+	}
+
+	.record-video {
+		margin-top: 8px;
+	}
+
+	.record-video video {
+		display: block;
+		width: 100%;
+		max-height: 320px;
+		border-radius: 8px;
+		background: #111;
+	}
+
+	.record-external {
+		display: flex;
+		gap: 8px;
+		margin-top: 8px;
+		padding: 8px;
+		border: 1px solid color-mix(in srgb, var(--control-border) 70%, transparent);
+		border-radius: 8px;
+		color: inherit;
+		text-decoration: none;
+		background: color-mix(in srgb, var(--card-bg) 84%, white 16%);
+	}
+
+	.record-external:hover {
+		border-color: var(--accent);
+	}
+
+	.record-external-thumb {
+		width: 52px;
+		height: 52px;
+		flex: 0 0 auto;
+		border-radius: 6px;
+		object-fit: cover;
+	}
+
+	.record-external-copy {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: 2px;
+		font-size: 0.8rem;
+		line-height: 1.3;
+	}
+
+	.record-external-copy strong,
+	.record-external-copy span {
+		overflow-wrap: anywhere;
+	}
+
+	.record-external-copy span {
+		color: var(--muted);
 	}
 </style>

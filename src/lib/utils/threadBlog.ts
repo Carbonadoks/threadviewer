@@ -21,8 +21,7 @@ export function collectSelfReplyChainPosts(root: ThreadPost): ThreadPost[] {
 		seen.add(node.uri);
 		posts.push(node);
 
-		const children = [...node.children].sort(comparePostsByCreatedAt);
-		for (const child of children) {
+		for (const child of node.children) {
 			if (child.author.did !== authorDid) continue;
 			if (child.parentUri && child.parentUri !== node.uri) continue;
 			walk(child);

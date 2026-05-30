@@ -1,11 +1,17 @@
 import type { ThreadPost, SelfReplyThread, DiscoverProgress, DiscoverResult, DiscoverCallbacks } from '$lib/types';
 import { extractBskyPostUrlsFromFacets } from '$lib/utils/viewerLinks';
 
-function mapImages(images: any[]): Array<{ thumb: string; fullsize: string; alt: string }> {
+function mapImages(images: any[]): NonNullable<NonNullable<ThreadPost['embed']>['images']> {
 	return (images ?? []).map((img: any) => ({
 		thumb: img.thumb,
 		fullsize: img.fullsize || img.thumb,
-		alt: img.alt || ''
+		alt: img.alt || '',
+		aspectRatio: img.aspectRatio
+			? {
+					width: Number(img.aspectRatio.width) || 1,
+					height: Number(img.aspectRatio.height) || 1
+				}
+			: undefined
 	}));
 }
 
@@ -33,13 +39,25 @@ function mapExternal(ext: any): NonNullable<ThreadPost['embed']>['external'] {
 	};
 }
 
-function parseRecordEmbed(record: any): NonNullable<ThreadPost['embed']>['record'] {
+const MAX_NESTED_RECORD_DEPTH = 2;
+
+function extractNestedRecord(embeds: any[] | undefined, depth: number): NonNullable<ThreadPost['embed']>['record'] {
+	if (depth >= MAX_NESTED_RECORD_DEPTH) return undefined;
+	const recordView = embeds?.find((e: any) => e?.$type === 'app.bsky.embed.record#view');
+	if (recordView) return parseRecordEmbed(recordView.record, depth + 1);
+	const recordWithMedia = embeds?.find((e: any) => e?.$type === 'app.bsky.embed.recordWithMedia#view');
+	if (recordWithMedia) return parseRecordEmbed(recordWithMedia.record?.record, depth + 1);
+	return undefined;
+}
+
+function parseRecordEmbed(record: any, depth = 0): NonNullable<ThreadPost['embed']>['record'] {
 	if (!record || record.$type === 'app.bsky.embed.record#viewNotFound' || record.$type === 'app.bsky.embed.record#viewBlocked') {
 		return undefined;
 	}
 	const val = record.value || record.record || {};
 	const imageView = record.embeds?.find((e: any) => e?.$type === 'app.bsky.embed.images#view');
 	const videoView = record.embeds?.find((e: any) => e?.$type === 'app.bsky.embed.video#view');
+	const externalView = record.embeds?.find((e: any) => e?.$type === 'app.bsky.embed.external#view');
 	return {
 		uri: record.uri || '',
 		author: {
@@ -50,7 +68,9 @@ function parseRecordEmbed(record: any): NonNullable<ThreadPost['embed']>['record
 		text: val.text || '',
 		createdAt: val.createdAt || record.indexedAt || '',
 		images: imageView ? mapImages(imageView.images) : undefined,
-		video: videoView ? mapVideo(videoView) : undefined
+		video: videoView ? mapVideo(videoView) : undefined,
+		external: externalView ? mapExternal(externalView.external) : undefined,
+		record: extractNestedRecord(record.embeds, depth)
 	};
 }
 
