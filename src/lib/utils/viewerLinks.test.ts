@@ -106,6 +106,10 @@ test('buildViewerHref preserves canonical url state across viewer pages', () => 
 		'/viewer2?handle=example.bsky.social'
 	);
 	assert.equal(
+		buildViewerHref('viewer2db', { url: threadUrl }),
+		'/viewer2db?handle=example.bsky.social'
+	);
+	assert.equal(
 		buildViewerHref('clock', { url: threadUrl }),
 		'/clock?handle=example.bsky.social'
 	);
@@ -135,6 +139,10 @@ test('buildViewerHref falls back to handle-only home links when no thread url ex
 	assert.equal(
 		buildViewerHref('viewer2', { handle: '@example.bsky.social' }),
 		'/viewer2?handle=example.bsky.social'
+	);
+	assert.equal(
+		buildViewerHref('viewer2db', { handle: '@example.bsky.social' }),
+		'/viewer2db?handle=example.bsky.social'
 	);
 	assert.equal(
 		buildViewerHref('clock', { handle: '@example.bsky.social' }),

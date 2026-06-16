@@ -7,6 +7,7 @@
 		| 'home'
 		| 'threadviewer'
 		| 'viewer2'
+		| 'viewer2db'
 		| 'twitterarchiveviewer'
 		| 'semantic'
 		| 'summary'
@@ -64,6 +65,7 @@
 		{ id: 'landing', href: '/', label: 'Landing', compactLabel: 'Start' },
 		{ id: 'frontpage', href: '/frontpage', label: 'Frontpage', compactLabel: 'Front' },
 		{ id: 'viewer2', href: '/viewer2', label: 'Repo Viewer', compactLabel: 'Repo' },
+		{ id: 'viewer2db', href: '/viewer2db', label: 'Repo DB', compactLabel: 'Repo DB' },
 		{ id: 'twitterarchiveviewer', href: '/twitterarchiveviewer', label: 'Twitter Archive', compactLabel: 'X Archive' },
 		{ id: 'semantic', href: '/semantic', label: 'Semantic', compactLabel: 'Semantic' },
 		{ id: 'summary2', href: '/summary2', label: 'Repo Summary', compactLabel: 'Repo Sum' },
@@ -102,6 +104,7 @@
 			item.id === 'home' ||
 			item.id === 'threadviewer' ||
 			item.id === 'viewer2' ||
+			item.id === 'viewer2db' ||
 			item.id === 'chat' ||
 			item.id === 'board' ||
 			item.id === 'blog' ||

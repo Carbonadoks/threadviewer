@@ -2,6 +2,7 @@ export type ViewerPage =
 	| 'home'
 	| 'threadviewer'
 	| 'viewer2'
+	| 'viewer2db'
 	| 'chat'
 	| 'board'
 	| 'blog'
@@ -145,7 +146,7 @@ export function buildViewerHref(
 		return pathname;
 	}
 
-	if (page === 'viewer2' || page === 'clock') {
+	if (page === 'viewer2' || page === 'viewer2db' || page === 'clock') {
 		const handle = cleanActor(options.handle) || (options.url ? parseBskyPostUrl(options.url)?.handle : '') || '';
 		if (handle) {
 			return `${pathname}?handle=${encodeURIComponent(handle)}`;
