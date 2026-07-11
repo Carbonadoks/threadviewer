@@ -4,6 +4,10 @@
 	type CachedGalleryEmbed = NonNullable<CachedThreadPost['embed']>;
 
 	const galleryHydratedEmbedCache: Record<string, CachedGalleryEmbed> = {};
+
+	export function getGalleryHydratedEmbed(uri: string): CachedGalleryEmbed | undefined {
+		return galleryHydratedEmbedCache[uri];
+	}
 	const galleryRequestedEmbedUris = new Set<string>();
 	const galleryResolvedEmbedUris = new Set<string>();
 	const galleryEmbedRetryAfterByUri: Record<string, number> = {};
@@ -37,6 +41,40 @@
 	import { buildBskyPostUrl } from '$lib/utils/viewerLinks';
 	import LinkedPostEmbeds from '$lib/components/LinkedPostEmbeds.svelte';
 	import RecordEmbed from '$lib/components/RecordEmbed.svelte';
+	import { parentPostsByUri, fullThreadByPostUri } from '$lib/stores/parentPosts';
+
+	// Flatten a full conversation tree into a pre-order list with depth, so we can
+	// render every participant's post (not just the loaded handle's).
+	function flattenFullThread(root: ThreadPost): { post: ThreadPost; depth: number }[] {
+		const out: { post: ThreadPost; depth: number }[] = [];
+		const walk = (post: ThreadPost, depth: number) => {
+			out.push({ post, depth });
+			for (const child of post.children) walk(child, depth + 1);
+		};
+		walk(root, 0);
+		return out;
+	}
+
+	function parentPostUrl(uri: string, handle: string): string {
+		return buildBskyPostUrl(uri, handle) ?? '#';
+	}
+
+	// Resolved ancestor chain for a post (outermost ancestor first).
+	function buildAncestorChain(
+		post: ThreadPost,
+		map: Record<string, ThreadPost>
+	): ThreadPost[] {
+		const chain: ThreadPost[] = [];
+		const seen = new Set<string>();
+		let uri = post.parentUri;
+		while (uri && map[uri] && !seen.has(uri)) {
+			seen.add(uri);
+			const parent = map[uri];
+			chain.push(parent);
+			uri = parent.parentUri;
+		}
+		return chain.reverse();
+	}
 
 	type HighlightRange = {
 		start: number;
@@ -143,6 +181,7 @@
 		searchQuery = '',
 		searchMode = 'fuzzy',
 		highlightedThread = null,
+		showAuthor = false,
 		onexpand,
 		onblog,
 		onshare,
@@ -159,6 +198,7 @@
 		searchQuery?: string;
 		searchMode?: SearchMode;
 		highlightedThread?: string | null;
+		showAuthor?: boolean;
 		onexpand?: (rootUri: string) => void;
 		onblog?: (rootUri: string) => void;
 		onshare?: (rootUri: string) => void;
@@ -502,6 +542,10 @@
 		const url = buildBskyPostUrl(post.uri, post.author.handle);
 		if (!url) return;
 		window.open(url, '_blank', 'noopener,noreferrer');
+	}
+
+	function authorName(post: ThreadPost): string {
+		return post.author.displayName?.trim() || post.author.handle;
 	}
 
 	function mediaPostMeta(item: GalleryPostItem, totalPosts: number): string {
@@ -1471,6 +1515,74 @@
 	});
 </script>
 
+{#snippet parentThread(post: ThreadPost)}
+	{@const fullRoot = $fullThreadByPostUri[post.uri]}
+	{#if fullRoot}
+		<div class="gallery-full-thread">
+			<span class="gallery-parent-label">Full thread</span>
+			{#each flattenFullThread(fullRoot) as node (node.post.uri)}
+				<a
+					class="gallery-parent"
+					class:current-thread-post={node.post.uri === post.uri}
+					href={parentPostUrl(node.post.uri, node.post.author.handle)}
+					target="_blank"
+					rel="noopener noreferrer"
+					style={`margin-left: ${Math.min(node.depth, 6) * 12}px`}
+				>
+					<span class="gallery-parent-author">
+						{#if node.post.author.avatar}
+							<img src={node.post.author.avatar} alt="" class="gallery-parent-avatar" />
+						{/if}
+						<span class="gallery-parent-handle">@{node.post.author.handle}</span>
+					</span>
+					{#if node.post.text}
+						<span class="gallery-parent-text">{node.post.text}</span>
+					{/if}
+					{#if node.post.embed?.images?.length}
+						<span class="gallery-parent-images">
+							{#each node.post.embed.images.slice(0, 3) as img}
+								<img src={img.thumb} alt={img.alt} class="gallery-parent-thumb" />
+							{/each}
+						</span>
+					{/if}
+				</a>
+			{/each}
+		</div>
+	{:else}
+	{@const chain = buildAncestorChain(post, $parentPostsByUri)}
+	{#if post.parentUri && chain.length > 0}
+		<div class="gallery-parent-thread">
+			{#each chain as parent (parent.uri)}
+				<a
+					class="gallery-parent"
+					href={parentPostUrl(parent.uri, parent.author.handle)}
+					target="_blank"
+					rel="noopener noreferrer"
+				>
+					<span class="gallery-parent-label">↳ in reply to</span>
+					<span class="gallery-parent-author">
+						{#if parent.author.avatar}
+							<img src={parent.author.avatar} alt="" class="gallery-parent-avatar" />
+						{/if}
+						<span class="gallery-parent-handle">@{parent.author.handle}</span>
+					</span>
+					{#if parent.text}
+						<span class="gallery-parent-text">{parent.text}</span>
+					{/if}
+					{#if parent.embed?.images?.length}
+						<span class="gallery-parent-images">
+							{#each parent.embed.images.slice(0, 3) as img}
+								<img src={img.thumb} alt={img.alt} class="gallery-parent-thumb" />
+							{/each}
+						</span>
+					{/if}
+				</a>
+			{/each}
+		</div>
+	{/if}
+	{/if}
+{/snippet}
+
 {#snippet renderGalleryCard(tile: GalleryTile, cardStyle: string)}
 	{@const activeMatchPostUri = getActiveMatchPostUri(tile)}
 	<article
@@ -1484,6 +1596,11 @@
 		style={cardStyle}
 	>
 		{#if mediaTileMode}
+			{#if tile.displayMode === 'posts'}
+				{#each tile.posts as item (item.post.uri)}
+					{@render parentThread(item.post)}
+				{/each}
+			{/if}
 			<div class="media-only-grid">
 				{#each tile.posts as item (item.post.uri)}
 					{#if item.pendingMedia}
@@ -1520,6 +1637,15 @@
 									}}
 									aria-label={`Open post from ${formatDate(item.post.createdAt)}`}
 								>
+									{#if showAuthor}
+										<span class="media-overlay-author">
+											{#if item.post.author.avatar}
+												<img src={item.post.author.avatar} alt="" class="media-overlay-avatar" />
+											{/if}
+											<span class="media-overlay-name">{authorName(item.post)}</span>
+											<span class="media-overlay-handle">@{item.post.author.handle}</span>
+										</span>
+									{/if}
 									<span class="media-overlay-meta">{mediaPostMeta(item, tile.totalPosts)}</span>
 									<span class="media-overlay-text">{mediaPostSummary(item, img.alt || 'Image post')}</span>
 									<span class="media-overlay-action">Open post</span>
@@ -1575,6 +1701,15 @@
 									}}
 									aria-label={`Open post from ${formatDate(item.post.createdAt)}`}
 								>
+									{#if showAuthor}
+										<span class="media-overlay-author">
+											{#if item.post.author.avatar}
+												<img src={item.post.author.avatar} alt="" class="media-overlay-avatar" />
+											{/if}
+											<span class="media-overlay-name">{authorName(item.post)}</span>
+											<span class="media-overlay-handle">@{item.post.author.handle}</span>
+										</span>
+									{/if}
 									<span class="media-overlay-meta">{mediaPostMeta(item, tile.totalPosts)}</span>
 									<span class="media-overlay-text">{mediaPostSummary(item, video.alt || 'Video post')}</span>
 									<span class="media-overlay-action">Open post</span>
@@ -1610,6 +1745,21 @@
 				<span class="thread-date">{formatDate(tile.thread.rootPost.createdAt)}</span>
 			</div>
 
+			{#if showAuthor}
+				<a
+					class="gallery-author"
+					href={buildBskyPostUrl(tile.thread.rootPost.uri, tile.thread.rootPost.author.handle) ?? '#'}
+					target="_blank"
+					rel="noopener noreferrer"
+				>
+					{#if tile.thread.rootPost.author.avatar}
+						<img src={tile.thread.rootPost.author.avatar} alt="" class="gallery-author-avatar" />
+					{/if}
+					<span class="gallery-author-name">{authorName(tile.thread.rootPost)}</span>
+					<span class="gallery-author-handle">@{tile.thread.rootPost.author.handle}</span>
+				</a>
+			{/if}
+
 			{#if searchQuery.trim() && tile.matchCount > 0}
 				<div class="match-nav" aria-label="Thread search matches">
 					<span>{getMatchCursor(tile) + 1} / {tile.matchCount}</span>
@@ -1644,6 +1794,7 @@
 						class:current-match={activeMatchPostUri === item.post.uri}
 						data-post-uri={item.post.uri}
 					>
+						{@render parentThread(item.post)}
 						<div class="post-meta">
 							<button type="button" class="post-open" onclick={() => openPost(item.post)}>Open</button>
 						</div>
@@ -2011,6 +2162,38 @@
 		bottom: auto;
 	}
 
+	.media-overlay-author {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		margin-bottom: 1px;
+		max-width: 100%;
+	}
+
+	.media-overlay-avatar {
+		width: 15px;
+		height: 15px;
+		border-radius: 50%;
+		object-fit: cover;
+		flex: 0 0 auto;
+	}
+
+	.media-overlay-name {
+		font-size: 0.64rem;
+		font-weight: 700;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.media-overlay-handle {
+		font-size: 0.58rem;
+		opacity: 0.75;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
 	.media-overlay-meta {
 		font-size: 0.6rem;
 		line-height: 1.15;
@@ -2094,6 +2277,47 @@
 		white-space: nowrap;
 	}
 
+	.gallery-author {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		margin: 2px 0 6px;
+		padding: 3px 8px 3px 4px;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--accent, #3b82f6) 10%, transparent);
+		text-decoration: none;
+		color: inherit;
+		max-width: 100%;
+	}
+
+	.gallery-author-avatar {
+		width: 22px;
+		height: 22px;
+		border-radius: 50%;
+		object-fit: cover;
+		flex: 0 0 auto;
+	}
+
+	.gallery-author-name {
+		font-size: 0.84rem;
+		font-weight: 600;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.gallery-author-handle {
+		font-size: 0.78rem;
+		color: var(--muted, #888);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.gallery-author:hover .gallery-author-name {
+		color: var(--accent, #3b82f6);
+	}
+
 	.thread-scroll {
 		position: relative;
 		flex: 1 1 auto;
@@ -2109,6 +2333,83 @@
 		margin: 0 0 14px;
 		padding: 0;
 		border-radius: 6px;
+	}
+
+	.gallery-parent-thread,
+	.gallery-full-thread {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		margin-bottom: 8px;
+	}
+
+	.gallery-full-thread > .gallery-parent-label {
+		font-weight: 600;
+		color: var(--accent, #3b82f6);
+	}
+
+	.gallery-parent.current-thread-post {
+		border-left-color: var(--accent, #3b82f6);
+		background: color-mix(in srgb, var(--accent, #3b82f6) 12%, transparent);
+	}
+
+	.gallery-parent {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 7px 9px;
+		border-left: 2px solid var(--accent, #3b82f6);
+		background: color-mix(in srgb, var(--card-bg, #fff) 55%, transparent);
+		border-radius: 6px;
+		text-decoration: none;
+		color: inherit;
+	}
+
+	.gallery-parent-label {
+		font-size: 0.72rem;
+		color: var(--muted, #888);
+	}
+
+	.gallery-parent-author {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+	}
+
+	.gallery-parent-avatar {
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		object-fit: cover;
+	}
+
+	.gallery-parent-handle {
+		font-size: 0.8rem;
+		font-weight: 600;
+	}
+
+	.gallery-parent-text {
+		font-size: 0.85rem;
+		white-space: pre-wrap;
+		word-break: break-word;
+		display: -webkit-box;
+		-webkit-line-clamp: 4;
+		line-clamp: 4;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+	}
+
+	.gallery-parent-images {
+		display: flex;
+		gap: 5px;
+		flex-wrap: wrap;
+	}
+
+	.gallery-parent-thumb {
+		max-width: 84px;
+		max-height: 84px;
+		border-radius: 5px;
+		object-fit: cover;
 	}
 
 	.gallery-post:last-child {

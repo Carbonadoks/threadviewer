@@ -15,6 +15,7 @@
 		| 'blocked'
 		| 'followinteraction'
 		| 'followsearch'
+		| 'mentions'
 		| 'warg'
 		| 'dialogue'
 		| 'dialogue2'
@@ -23,6 +24,8 @@
 		| 'blog'
 		| 'clock'
 		| 'treeviewer'
+		| 'xtreeviewer'
+		| 'carousel'
 		| 'town'
 		| 'parallelboard'
 		| 'band'
@@ -72,6 +75,7 @@
 		{ id: 'blocked', href: '/blocked', label: 'Blocked', compactLabel: 'Blocked' },
 		{ id: 'followinteraction', href: '/followinteraction', label: 'Follow Interaction', compactLabel: 'Follow Int' },
 		{ id: 'followsearch', href: '/followsearch', label: 'Follow Search', compactLabel: 'Follow' },
+		{ id: 'mentions', href: '/mentions', label: 'Mentions', compactLabel: 'Mentions' },
 		{ id: 'warg', href: '/warg', label: 'Warg' },
 		{ id: 'dialogue2', href: '/dialogue2', label: 'Dialogue', compactLabel: 'Repo Dlg' },
 		{ id: 'chat', href: '/chat', label: 'Chat' },
@@ -79,6 +83,8 @@
 		{ id: 'blog', href: '/blog', label: 'Blog' },
 		{ id: 'clock', href: '/clock', label: 'Clock' },
 		{ id: 'treeviewer', href: '/treeviewer', label: 'Treeviewer', compactLabel: 'Tree' },
+		{ id: 'xtreeviewer', href: '/xtreeviewer', label: 'X Treeviewer', compactLabel: 'X Tree' },
+		{ id: 'carousel', href: '/carousel', label: 'Carousel', compactLabel: 'Carousel' },
 		{ id: 'parallelboard', href: '/parallelboard', label: 'Parallel Board', compactLabel: 'Parallel' },
 		{ id: 'band', href: '/band', label: 'Band' },
 		{ id: 'loom', href: '/loom', label: 'Loom' },
@@ -110,6 +116,7 @@
 			item.id === 'blog' ||
 			item.id === 'clock' ||
 			item.id === 'treeviewer' ||
+			item.id === 'carousel' ||
 			item.id === 'parallelboard' ||
 			item.id === 'band' ||
 			item.id === 'bisk2bisk' ||
@@ -146,6 +153,7 @@
 				item.id === 'blocked' ||
 				item.id === 'followinteraction' ||
 				item.id === 'followsearch' ||
+				item.id === 'mentions' ||
 				item.id === 'warg' ||
 				item.id === 'wordcloud' ||
 				item.id === 'loom' ||

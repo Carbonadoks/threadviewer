@@ -576,6 +576,65 @@ export async function parseRepoFeedItemsFromCar(
 	};
 }
 
+function applyEngagementCountsToFeedItems(
+	feedItems: any[],
+	countsByUri: Map<string, EngagementCounts>
+): Set<string> {
+	const hydratedUris = new Set<string>();
+	for (const item of feedItems) {
+		const uri = item?.post?.uri;
+		if (typeof uri !== 'string') continue;
+		const counts = countsByUri.get(uri);
+		if (!counts || !item.post) continue;
+
+		item.post.likeCount = counts.likeCount;
+		item.post.repostCount = counts.repostCount;
+		item.post.replyCount = counts.replyCount;
+		item.post.quoteCount = counts.quoteCount;
+		if (counts.indexedAt) {
+			item.post.indexedAt = counts.indexedAt;
+		}
+		hydratedUris.add(uri);
+	}
+	return hydratedUris;
+}
+
+/**
+ * Thread-first engagement pass over the full feed: one getPostThread call can
+ * return counts for an entire thread (up to depth 1000), versus 25 posts per
+ * getPosts call. Run this once over all pending items before the batched
+ * getPosts fallback.
+ */
+export async function hydrateFeedItemsThreadEngagement(
+	feedItems: any[],
+	options: {
+		signal?: AbortSignal;
+		threadConcurrency?: number;
+		minThreadFetchPosts?: number;
+		onProgress?: (progress: PostEngagementProgress) => void;
+	} = {}
+): Promise<{ hydratedUris: Set<string> }> {
+	const {
+		signal,
+		threadConcurrency = 4,
+		minThreadFetchPosts = MIN_THREAD_FETCH_POSTS,
+		onProgress
+	} = options;
+	const candidates = buildThreadFetchCandidates(feedItems, minThreadFetchPosts);
+	if (candidates.length === 0) return { hydratedUris: new Set() };
+
+	const totalUris = candidates.reduce((sum, candidate) => sum + candidate.targetUris.size, 0);
+	const countsByUri = await fetchThreadCandidateCounts(candidates, {
+		signal,
+		threadConcurrency,
+		onProgress,
+		totalUris
+	});
+	throwIfAborted(signal);
+
+	return { hydratedUris: applyEngagementCountsToFeedItems(feedItems, countsByUri) };
+}
+
 export async function hydrateFeedItemsEngagement(
 	feedItems: any[],
 	options: {
@@ -632,28 +691,10 @@ export async function hydrateFeedItemsEngagement(
 	}
 	throwIfAborted(signal);
 
-	let hydratedCount = 0;
-	for (const item of feedItems) {
-		const uri = item?.post?.uri;
-		if (typeof uri !== 'string') continue;
-		const counts = countsByUri.get(uri);
-		if (!counts) continue;
-
-		if (item.post) {
-			item.post.likeCount = counts.likeCount;
-			item.post.repostCount = counts.repostCount;
-			item.post.replyCount = counts.replyCount;
-			item.post.quoteCount = counts.quoteCount;
-			if (counts.indexedAt) {
-				item.post.indexedAt = counts.indexedAt;
-			}
-		}
-
-		hydratedCount += 1;
-	}
+	const hydratedUris = applyEngagementCountsToFeedItems(feedItems, countsByUri);
 
 	return {
-		hydratedCount,
+		hydratedCount: hydratedUris.size,
 		missingCount: Math.max(0, uris.length - countsByUri.size)
 	};
 }

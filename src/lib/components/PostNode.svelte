@@ -15,16 +15,41 @@
 	import type { ThreadPost } from '$lib/types';
 	import LinkedPostEmbeds from './LinkedPostEmbeds.svelte';
 	import PostNode from './PostNode.svelte';
+	import { parentPostsByUri } from '$lib/stores/parentPosts';
 
 	let {
 		post,
 		level = 0,
-		highlightedPostUri = null
+		highlightedPostUri = null,
+		showParents = true
 	}: {
 		post: ThreadPost;
 		level?: number;
 		highlightedPostUri?: string | null;
+		showParents?: boolean;
 	} = $props();
+
+	// Only the top-level post in a thread can have a parent that lives outside the
+	// thread (a reply/mention to another user). Self-reply children already render
+	// their parent as the post directly above them.
+	const canShowParents = $derived(showParents && level === 0);
+
+	// Resolved ancestor chain, outermost ancestor first.
+	const parentChain = $derived.by(() => {
+		if (!canShowParents) return [] as ThreadPost[];
+		const map = $parentPostsByUri;
+		const chain: ThreadPost[] = [];
+		const seen = new Set<string>();
+		let uri = displayPost.parentUri;
+		while (uri && map[uri] && !seen.has(uri)) {
+			seen.add(uri);
+			const parent = map[uri];
+			chain.push(parent);
+			uri = parent.parentUri;
+		}
+		return chain.reverse();
+	});
+
 	const MAX_VISIBLE_DEPTH = 5;
 	const POST_HYDRATION_ENABLED = true;
 	let hydratedPost = $state<ThreadPost | null>(null);
@@ -194,6 +219,51 @@
 </script>
 
 <div class="post-node">
+	{#if canShowParents && parentChain.length > 0}
+		<div class="parent-chain">
+			{#each parentChain as parent (parent.uri)}
+				<div class="parent-post">
+					<div class="parent-rail" aria-hidden="true">↳</div>
+					<div class="parent-body">
+						<div class="parent-header">
+							{#if parent.author.avatar}
+								<img src={parent.author.avatar} alt="" class="parent-avatar" />
+							{/if}
+							<a
+								href={postUrl(parent.uri, parent.author.handle)}
+								target="_blank"
+								rel="noopener"
+								class="parent-author-link"
+							>
+								<span class="parent-author">{parent.author.displayName || parent.author.handle}</span>
+								<span class="parent-handle">@{parent.author.handle}</span>
+								<span class="parent-date">{formatDate(parent.createdAt)}</span>
+							</a>
+						</div>
+						{#if parent.text}
+							<p class="parent-text">{parent.text}</p>
+						{/if}
+						{#if parent.embed?.images}
+							<div class="parent-images">
+								{#each parent.embed.images as img}
+									<img
+										src={img.thumb}
+										alt={img.alt}
+										class="parent-thumb"
+										onclick={(e) => { e.stopPropagation(); openLightbox(img.fullsize, img.alt); }}
+										onkeydown={(e) => { if (e.key === 'Enter') openLightbox(img.fullsize, img.alt); }}
+										role="button"
+										tabindex="0"
+										style="cursor: pointer;"
+									/>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				</div>
+			{/each}
+		</div>
+	{/if}
 	<div class="post-content" class:similarity-highlight={isSimilarityMatch} bind:this={postContentEl}>
 		<div class="post-header">
 			{#if displayPost.author.avatar}
@@ -304,6 +374,92 @@
 	.post-node {
 		position: relative;
 		margin-bottom: 8px;
+	}
+
+	.parent-chain {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		margin-bottom: 8px;
+	}
+
+	.parent-post {
+		display: flex;
+		gap: 8px;
+		padding: 8px 10px;
+		border-left: 2px solid var(--border-ink, #ccc);
+		background: color-mix(in srgb, var(--card-bg, #fff) 60%, transparent);
+		border-radius: 8px;
+		opacity: 0.92;
+	}
+
+	.parent-rail {
+		flex-shrink: 0;
+		color: var(--muted, #888);
+		font-size: 0.9rem;
+		line-height: 1.4;
+	}
+
+	.parent-body {
+		min-width: 0;
+		flex: 1;
+	}
+
+	.parent-header {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-bottom: 4px;
+	}
+
+	.parent-avatar {
+		width: 22px;
+		height: 22px;
+		border-radius: 50%;
+		object-fit: cover;
+		flex-shrink: 0;
+	}
+
+	.parent-author-link {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 6px;
+		text-decoration: none;
+		color: inherit;
+		min-width: 0;
+		flex-wrap: wrap;
+	}
+
+	.parent-author {
+		font-weight: 600;
+		font-size: 0.85rem;
+	}
+
+	.parent-handle,
+	.parent-date {
+		font-size: 0.75rem;
+		color: var(--muted, #888);
+	}
+
+	.parent-text {
+		margin: 0;
+		font-size: 0.9rem;
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+
+	.parent-images {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-top: 6px;
+	}
+
+	.parent-thumb {
+		max-width: 120px;
+		max-height: 120px;
+		border-radius: 6px;
+		object-fit: cover;
 	}
 
 	.post-children {

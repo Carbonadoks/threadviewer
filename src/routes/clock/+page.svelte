@@ -32,12 +32,6 @@
 		threads: SelfReplyThread[];
 		totalPosts: number;
 		style: string;
-		inRange: boolean;
-	};
-	type ClockHandKind = 'start' | 'end';
-	type HandDragState = {
-		kind: ClockHandKind;
-		pointerId: number;
 	};
 	type ThreadDetail = {
 		post: ThreadPost;
@@ -93,12 +87,13 @@
 	let selectedDate = $state('');
 	let selectedHour = $state<number | null>(null);
 	let selectedPostUri = $state<string | null>(null);
-	let rangeStartIndex = $state(0);
-	let rangeEndIndex = $state(3);
 	let pageByHour = $state<Record<number, number>>({});
 	let abortController = $state<AbortController | null>(null);
-	let clockFaceEl = $state<HTMLDivElement | null>(null);
-	let handDragState = $state<HandDragState | null>(null);
+	let clockZoom = $state(0.55);
+
+	const MIN_CLOCK_ZOOM = 0.3;
+	const MAX_CLOCK_ZOOM = 1.2;
+	const CLOCK_ZOOM_STEP = 0.1;
 
 	const sortedThreads = $derived([...allThreads].sort(compareThreadsByTime));
 	const dateFilteredThreads = $derived(
@@ -120,13 +115,7 @@
 	const selectedDateCount = $derived(
 		selectedDate ? (availableDates.find((entry) => entry.value === selectedDate)?.count ?? 0) : sortedThreads.length
 	);
-	const rangeStartHour24 = $derived(period === 'am' ? rangeStartIndex : rangeStartIndex + 12);
-	const rangeEndHour24 = $derived(period === 'am' ? rangeEndIndex : rangeEndIndex + 12);
-	const rangeLabel = $derived(`${hourLabel(rangeStartHour24)} to ${hourLabel(rangeEndHour24)}`);
-	const rangeFilteredThreads = $derived(
-		dateFilteredThreads.filter((thread) => isThreadInSelectedRange(thread))
-	);
-	const clockSlots = $derived.by(() => buildClockSlots(rangeFilteredThreads, period));
+	const clockSlots = $derived.by(() => buildClockSlots(dateFilteredThreads, period));
 	const visibleThreadCount = $derived(
 		clockSlots.reduce((total, slot) => total + slot.threads.length, 0)
 	);
@@ -151,9 +140,6 @@
 		if (!selectedPostUri) return selectedThreadDetails[0];
 		return selectedThreadDetails.find((detail) => detail.post.uri === selectedPostUri) ?? selectedThreadDetails[0];
 	});
-	const startHandAngle = $derived((rangeStartIndex * 30).toFixed(2));
-	const endHandAngle = $derived((rangeEndIndex * 30).toFixed(2));
-
 	function normalizeHandle(handle: string | null | undefined): string {
 		return (handle ?? '').replace(/^@/, '').trim();
 	}
@@ -198,22 +184,6 @@
 		return `${hourLabel(hour24)} to ${hourLabel((hour24 + 1) % 24)}`;
 	}
 
-	function isHourIndexInRange(index: number): boolean {
-		const start = rangeStartIndex;
-		const end = rangeEndIndex;
-		if (start === end) return true;
-		if (start < end) return index >= start && index < end;
-		return index >= start || index < end;
-	}
-
-	function isThreadInSelectedRange(thread: SelfReplyThread): boolean {
-		const hour = hourForThread(thread);
-		if (hour === null) return false;
-		if (period === 'am' && hour >= 12) return false;
-		if (period === 'pm' && hour < 12) return false;
-		return isHourIndexInRange(hour % 12);
-	}
-
 	function defaultSlotPosition(index: number): { x: number; y: number } {
 		const angle = (index * 30 - 90) * (Math.PI / 180);
 		return {
@@ -242,7 +212,6 @@
 		return Array.from({ length: 12 }, (_, index) => {
 			const hour24 = nextPeriod === 'am' ? index : index + 12;
 			const threadsForHour = threadsByHour.get(hour24) ?? [];
-			const inRange = isHourIndexInRange(index);
 			return {
 				key: `${nextPeriod}-${hour24}`,
 				index,
@@ -251,8 +220,7 @@
 				rangeLabel: hourRangeLabel(hour24),
 				threads: threadsForHour,
 				totalPosts: threadsForHour.reduce((total, thread) => total + countThreadPosts(thread.rootPost), 0),
-				style: slotPositionStyle(index),
-				inRange
+				style: slotPositionStyle(index)
 			};
 		});
 	}
@@ -315,76 +283,9 @@
 		selectedPostUri = postUri;
 	}
 
-	function setRangeHandIndex(kind: ClockHandKind, index: number) {
-		const normalizedIndex = ((index % 12) + 12) % 12;
-		if (kind === 'start') {
-			rangeStartIndex = normalizedIndex;
-		} else {
-			rangeEndIndex = normalizedIndex;
-		}
-		pageByHour = {};
-		selectedHour = period === 'am' ? normalizedIndex : normalizedIndex + 12;
-		selectedPostUri = null;
-	}
-
-	function pointerAngleDegrees(event: PointerEvent): number | null {
-		if (!clockFaceEl) return null;
-		const rect = clockFaceEl.getBoundingClientRect();
-		const centerX = rect.left + rect.width / 2;
-		const centerY = rect.top + rect.height / 2;
-		const dx = event.clientX - centerX;
-		const dy = event.clientY - centerY;
-		if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return null;
-		return (Math.atan2(dy, dx) * 180 / Math.PI + 90 + 360) % 360;
-	}
-
-	function updateHandFromPointer(event: PointerEvent, kind: ClockHandKind) {
-		const angle = pointerAngleDegrees(event);
-		if (angle === null) return;
-		setRangeHandIndex(kind, Math.round(angle / 30) % 12);
-	}
-
-	function startHandDrag(event: PointerEvent, kind: ClockHandKind) {
-		event.preventDefault();
-		handDragState = { kind, pointerId: event.pointerId };
-		try {
-			(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
-		} catch {}
-		updateHandFromPointer(event, kind);
-	}
-
-	function handleHandDrag(event: PointerEvent) {
-		if (!handDragState || handDragState.pointerId !== event.pointerId) return;
-		updateHandFromPointer(event, handDragState.kind);
-	}
-
-	function finishHandDrag(event: PointerEvent) {
-		if (!handDragState || handDragState.pointerId !== event.pointerId) return;
-		try {
-			(event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
-		} catch {}
-		handDragState = null;
-	}
-
-	function handleHandKeydown(event: KeyboardEvent, kind: ClockHandKind) {
-		if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
-			event.preventDefault();
-			setRangeHandIndex(kind, (kind === 'start' ? rangeStartIndex : rangeEndIndex) - 1);
-		} else if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
-			event.preventDefault();
-			setRangeHandIndex(kind, (kind === 'start' ? rangeStartIndex : rangeEndIndex) + 1);
-		} else if (event.key === 'Home') {
-			event.preventDefault();
-			resetHandRange();
-		}
-	}
-
-	function resetHandRange() {
-		rangeStartIndex = 0;
-		rangeEndIndex = 3;
-		pageByHour = {};
-		selectedPostUri = null;
-		chooseInitialHour(allThreads);
+	function adjustClockZoom(delta: number) {
+		const next = Math.round((clockZoom + delta) * 100) / 100;
+		clockZoom = Math.min(Math.max(next, MIN_CLOCK_ZOOM), MAX_CLOCK_ZOOM);
 	}
 
 	function cleanText(text: string): string {
@@ -481,8 +382,6 @@
 		pageByHour = {};
 		selectedHour = null;
 		selectedPostUri = null;
-		rangeStartIndex = 0;
-		rangeEndIndex = 3;
 		stats = { postsScanned: 0, chainStarts: 0, threadsWithSelfReplies: 0 };
 		repoStats = { totalPosts: 0, elapsedMs: 0, downloadedBytes: 0, source: null };
 		error = null;
@@ -844,53 +743,36 @@
 					{visibleThreadCount.toLocaleString()} thread root{visibleThreadCount !== 1 ? 's' : ''}
 					/ {visiblePostCount.toLocaleString()} post{visiblePostCount !== 1 ? 's' : ''}
 				</p>
-				<div class="hand-status">
-					<strong>Range</strong>
-					<span>{rangeLabel}</span>
+				<div class="zoom-control" aria-label="Clock zoom">
+					<button
+						type="button"
+						class="mini-action"
+						onclick={() => adjustClockZoom(-CLOCK_ZOOM_STEP)}
+						disabled={clockZoom <= MIN_CLOCK_ZOOM}
+						aria-label="Zoom out"
+					>
+						&minus;
+					</button>
+					<span class="zoom-value">{Math.round(clockZoom * 100)}%</span>
+					<button
+						type="button"
+						class="mini-action"
+						onclick={() => adjustClockZoom(CLOCK_ZOOM_STEP)}
+						disabled={clockZoom >= MAX_CLOCK_ZOOM}
+						aria-label="Zoom in"
+					>
+						+
+					</button>
 				</div>
-				<button type="button" class="mini-action reset-digits" onclick={resetHandRange}>
-					Reset hands
-				</button>
 			</div>
 
 			<div class="clock-scroll">
 				<div
 					class="clock-face"
-					style={`--max-slot-count: ${Math.max(maxSlotCount, 1)}`}
-					bind:this={clockFaceEl}
+					style={`--max-slot-count: ${Math.max(maxSlotCount, 1)}; zoom: ${clockZoom}`}
 				>
 					<div class="clock-ring one"></div>
 					<div class="clock-ring two"></div>
-					<button
-						class="clock-hand-control start"
-						class:dragging={handDragState?.kind === 'start'}
-						type="button"
-						style={`--hand-angle: ${startHandAngle}deg`}
-						aria-label={`Start hand set to ${hourLabel(rangeStartHour24)}`}
-						onpointerdown={(event) => startHandDrag(event, 'start')}
-						onpointermove={handleHandDrag}
-						onpointerup={finishHandDrag}
-						onpointercancel={finishHandDrag}
-						onkeydown={(event) => handleHandKeydown(event, 'start')}
-					>
-						<span class="hand-line"></span>
-						<span class="hand-tip"></span>
-					</button>
-					<button
-						class="clock-hand-control end"
-						class:dragging={handDragState?.kind === 'end'}
-						type="button"
-						style={`--hand-angle: ${endHandAngle}deg`}
-						aria-label={`End hand set to ${hourLabel(rangeEndHour24)}`}
-						onpointerdown={(event) => startHandDrag(event, 'end')}
-						onpointermove={handleHandDrag}
-						onpointerup={finishHandDrag}
-						onpointercancel={finishHandDrag}
-						onkeydown={(event) => handleHandKeydown(event, 'end')}
-					>
-						<span class="hand-line"></span>
-						<span class="hand-tip"></span>
-					</button>
 					<div class="clock-pin"></div>
 
 					<section class="clock-core" aria-live="polite">
@@ -898,7 +780,7 @@
 							{@const selectedIndex = getPageIndex(selectedSlot.hour24, selectedSlot.threads.length)}
 							{@const selectedUrl = buildThreadUrl(selectedThread)}
 							<p class="core-kicker">
-								{rangeLabel} / {selectedSlot.rangeLabel} / page {selectedIndex + 1} of {selectedSlot.threads.length}
+								{selectedSlot.rangeLabel} / page {selectedIndex + 1} of {selectedSlot.threads.length}
 								/ post {foregroundPostDetail.index} of {selectedThreadDetails.length}
 							</p>
 							<h3>{formatPostTime(foregroundPostDetail.post)}</h3>
@@ -939,7 +821,7 @@
 							<p class="core-kicker">No posts</p>
 							<h3>{period.toUpperCase()}</h3>
 							<p class="core-text">
-								No thread roots match this date and hand range. Try widening the hands or clearing the date.
+								No thread roots match this date. Try clearing the date filter.
 							</p>
 						{/if}
 					</section>
@@ -952,7 +834,6 @@
 						<article
 							class="hour-stack"
 							class:empty={slot.threads.length === 0}
-							class:outside={!slot.inRange}
 							class:selected={selectedSlot?.hour24 === slot.hour24}
 							style={slot.style}
 						>
@@ -1036,7 +917,7 @@
 								</div>
 							{:else}
 								<div class="empty-page">
-									<span>{slot.inRange ? 'No posts' : 'Outside range'}</span>
+									<span>No posts</span>
 								</div>
 							{/if}
 						</article>
@@ -1323,36 +1204,19 @@
 		text-align: right;
 	}
 
-	.hand-status {
-		display: grid;
-		gap: 2px;
-		min-width: 112px;
-		padding: 8px 12px;
-		border: 1px solid var(--control-border);
-		border-radius: 8px;
-		background: color-mix(in srgb, var(--card-bg) 82%, transparent);
-		box-shadow: var(--shadow-soft);
-	}
-
-	.hand-status strong,
-	.hand-status span {
-		display: block;
-		white-space: nowrap;
-	}
-
-	.hand-status strong {
-		color: var(--muted);
-		font-size: 0.72rem;
-		text-transform: uppercase;
-	}
-
-	.hand-status span {
-		font-size: 1.02rem;
-		font-weight: 950;
-	}
-
-	.reset-digits {
+	.zoom-control {
+		display: flex;
+		align-items: center;
+		gap: 6px;
 		flex: 0 0 auto;
+	}
+
+	.zoom-value {
+		min-width: 46px;
+		color: var(--muted);
+		font-size: 0.86rem;
+		font-weight: 900;
+		text-align: center;
 	}
 
 	.clock-scroll {
@@ -1413,82 +1277,6 @@
 		inset: 28.8%;
 		border-style: solid;
 		border-color: color-mix(in srgb, var(--accent) 20%, transparent);
-	}
-
-	.clock-hand-control {
-		position: absolute;
-		z-index: 7;
-		left: 50%;
-		top: 50%;
-		width: 48px;
-		height: var(--hand-length);
-		padding: 0;
-		border: 0;
-		border-radius: 999px;
-		background: transparent;
-		color: var(--text-ink);
-		cursor: pointer;
-		touch-action: manipulation;
-		transform: translate(-50%, -100%) rotate(var(--hand-angle));
-		transform-origin: 50% 100%;
-	}
-
-	.clock-hand-control:active,
-	.clock-hand-control.dragging {
-		cursor: grabbing;
-	}
-
-	.hand-line {
-		position: absolute;
-		left: 50%;
-		bottom: 0;
-		width: var(--hand-width);
-		height: 100%;
-		border: 2px solid color-mix(in srgb, var(--border-color) 55%, transparent);
-		border-radius: 999px;
-		background: var(--hand-color);
-		box-shadow:
-			0 10px 22px rgba(26, 35, 44, 0.28),
-			inset 0 0 0 2px color-mix(in srgb, white 20%, transparent);
-		transform: translateX(-50%);
-	}
-
-	.hand-tip {
-		position: absolute;
-		left: 50%;
-		top: -8px;
-		width: 22px;
-		height: 22px;
-		border: 3px solid color-mix(in srgb, var(--border-color) 72%, transparent);
-		border-radius: 50%;
-		background: var(--hand-color);
-		box-shadow: 0 8px 16px rgba(26, 35, 44, 0.24);
-		transform: translateX(-50%);
-	}
-
-	.clock-hand-control:hover .hand-line,
-	.clock-hand-control:focus-visible .hand-line,
-	.clock-hand-control.dragging .hand-line {
-		border-color: var(--accent);
-		box-shadow:
-			0 14px 30px rgba(26, 35, 44, 0.32),
-			0 0 0 7px color-mix(in srgb, var(--accent) 12%, transparent);
-	}
-
-	.clock-hand-control:focus-visible {
-		outline: none;
-	}
-
-	.clock-hand-control.start {
-		--hand-length: 22%;
-		--hand-width: 13px;
-		--hand-color: color-mix(in srgb, #245e91 72%, var(--card-bg));
-	}
-
-	.clock-hand-control.end {
-		--hand-length: 31%;
-		--hand-width: 8px;
-		--hand-color: color-mix(in srgb, #b64f4c 72%, var(--card-bg));
 	}
 
 	.clock-pin {
@@ -1842,10 +1630,6 @@
 
 	.hour-stack.empty {
 		opacity: 0.72;
-	}
-
-	.hour-stack.outside {
-		opacity: 0.46;
 	}
 
 	.hour-stack.empty .slot-heading {

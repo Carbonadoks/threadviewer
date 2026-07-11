@@ -63,6 +63,34 @@ Production deploy (assuming production branch is `main` in Pages settings):
 npx wrangler pages deploy .svelte-kit/cloudflare --project-name thread-viewer --branch main
 ```
 
+## xtreeviewer (X.com threads in the treeviewer)
+
+Lets a logged-in user view an X.com thread in the existing `/treeviewer` UI.
+Because browsers forbid reading x.com from our origin (frame-ancestors CSP, opaque
+cross-origin windows, cookies never cross-site), capture must run on x.com itself.
+
+- `static/xtreeviewer.user.js`: Tampermonkey grabber (served at
+  `threadviewer.app/xtreeviewer.user.js`). Runs at `document-start`, hooks
+  `fetch`/`XHR` to record the app's own live `TweetDetail` request (URL = queryId +
+  features, plus its real headers incl. `x-client-transaction-id`), then replays it
+  with different `variables` (focal id + cursor) to walk the whole conversation
+  breadth-first (bounded ~40 req, 450ms spacing, stops on 429 → `partial`). Floating
+  🌳 button on any `/status/` page; auto-scrolls to prime if no request seen yet.
+  Delivers via `postMessage` to `VIEWER_ORIGIN`, clipboard-JSON fallback.
+- `src/routes/xtreeviewer/+page.svelte` (`ssr=false`): receives the payload
+  (origin-checked to x.com/twitter.com, or pasted), converts, hydrates quotes,
+  writes to `threadContentCache` (IndexedDB), redirects to `/treeviewer?url=`.
+- `src/lib/utils/xTreeThread.ts`: validates the versioned capture
+  (`xtreeviewer:thread` v1), converts tweets → `ThreadPost`/`SelfReplyThread` keyed
+  on canonical `https://x.com/{handle}/status/{id}` URLs. Quotes are hydrated via
+  `hydrateXQuotesWithFxtwitter()` → server `GET /api/x/embed?url=` (fxtwitter proxy),
+  mapped into `embed.record` (`fixupTweetToRecordEmbed`).
+- `/treeviewer` change: URLs matching `parseXStatusUrl` load cache-only (no live
+  revalidation path) — see `loadXThread` in `src/routes/treeviewer/+page.svelte`.
+
+Nothing is sent to our server except the fxtwitter quote lookups; capture stays in
+the user's browser.
+
 ## 3) Current Architecture
 
 ## Core pages
@@ -264,6 +292,8 @@ Prioritized list for next iterations.
 5. Add CI workflow (`check`, `build`, targeted tests, deploy guardrails).
 
 ## 10) Agent Operating Rules for This Repo
+
+Never run browser-automation testing (Playwright/Puppeteer or similar) or otherwise drive the running app to verify changes. Validation is limited to `npm run check`, `npm run build`, and existing unit tests.
 
 When making changes:
 1. Read relevant route + utility code first; do not rely on stale docs.

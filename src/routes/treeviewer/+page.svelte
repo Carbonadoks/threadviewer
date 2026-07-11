@@ -6,18 +6,21 @@
 	import FontPicker from '$lib/components/FontPicker.svelte';
 	import GroupChat from '$lib/components/GroupChat.svelte';
 	import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
+	import PostEmbedPreview from '$lib/components/PostEmbedPreview.svelte';
+	import RoughBorder from '$lib/components/RoughBorder.svelte';
 	import RouteNav from '$lib/components/RouteNav.svelte';
 	import ThreadExportButton from '$lib/components/ThreadExportButton.svelte';
 	import { openLightbox } from '$lib/stores/lightbox';
 	import type { SelfReplyThread, ThreadPost } from '$lib/types';
 	import { flattenThreadForChat, type ChatFlatPost } from '$lib/utils/threadFlattener';
 	import {
-		getAdjacentRecentThreads,
 		readRecentThreads,
 		rememberRecentThread,
 		type RecentThreadEntry
 	} from '$lib/utils/recentThreads';
+	import { pruneThreadCache, readCachedThread, writeCachedThread } from '$lib/utils/threadContentCache';
 	import { buildAtUri, buildBskyPostUrl, normalizeBskyPostUrl, parseBskyPostUrl } from '$lib/utils/viewerLinks';
+	import { parseXStatusUrl } from '$lib/api/x';
 
 	const fontFamilies: Record<string, string> = {
 		virgil: "'Virgil', cursive",
@@ -169,11 +172,17 @@
 		error?: string;
 	};
 
-	type TextPanelMode = 'chat' | 'forum';
+	type TextPanelMode = 'chat' | 'forum' | 'carousel';
 
 	type ForumPostGroup = {
 		key: string;
 		items: ChatFlatPost[];
+	};
+
+	type CarouselLevel = {
+		key: string;
+		items: ThreadPost[];
+		selectedIndex: number;
 	};
 
 	const MAIN_LANE_ID = '__main__';
@@ -217,6 +226,7 @@
 	let chatScrollNonce = 0;
 	let chatScrollRequest = $state<ChatScrollRequest | null>(null);
 	let forumScrollElement = $state<HTMLDivElement | null>(null);
+	let carouselScrollElement = $state<HTMLDivElement | null>(null);
 	let openForumBranchMenus = $state<Set<string>>(new Set());
 	let openForumQuoteMenus = $state<Set<string>>(new Set());
 	let activeForumPostUri: string | null = null;
@@ -259,6 +269,44 @@
 			: selectedPath.map(pathPostToChatFlatPost)
 	);
 	let forumPostGroups = $derived(buildForumPostGroups(forumFlatPosts));
+	let carouselLevels = $derived.by<CarouselLevel[]>(() => {
+		if (!activeLane) return [];
+
+		const root = activeLane.thread.rootPost;
+
+		// Path only: one card per level, just the selected path. All replies:
+		// full sibling strips so cards can steer the path.
+		if (!allRepliesMode) {
+			const path = selectedPath.length > 0 ? selectedPath : [root];
+			return path.map((post, index) => ({
+				key: index === 0 ? 'root' : path[index - 1].uri,
+				items: [post],
+				selectedIndex: 0
+			}));
+		}
+
+		const longestChainByUri = buildLongestChainLengthMap(root);
+		const rows: CarouselLevel[] = [];
+		let parent: ThreadPost | null = null;
+		let items: ThreadPost[] = [root];
+		let depth = 0;
+
+		while (items.length > 0) {
+			const pathPost = selectedPath[depth];
+			const pathIndex = pathPost ? items.findIndex((item) => item.uri === pathPost.uri) : -1;
+			const selectedIndex = pathIndex >= 0 ? pathIndex : 0;
+			rows.push({
+				key: parent?.uri ?? 'root',
+				items,
+				selectedIndex
+			});
+			parent = items[selectedIndex];
+			items = orderedChildren(parent, longestChainByUri);
+			depth += 1;
+		}
+
+		return rows;
+	});
 	let selectedSummary = $derived(
 		allRepliesMode && allReplyPosts.length > 0
 			? `${allReplyPosts.length} post${allReplyPosts.length === 1 ? '' : 's'}`
@@ -268,7 +316,6 @@
 	);
 	let treeZoomPercent = $derived(Math.round(treeZoom * 100));
 	let chatFontPercent = $derived(Math.round(chatFontScale * 100));
-	let recentNavigation = $derived(getAdjacentRecentThreads(recentThreads, urlInput));
 	let chatFontStyle = $derived(
 		`--chat-author-name-size: ${(0.78 * chatFontScale).toFixed(3)}rem; ` +
 			`--chat-author-handle-size: ${(0.66 * chatFontScale).toFixed(3)}rem; ` +
@@ -1357,6 +1404,8 @@
 	}
 
 	function forumPostUrl(post: ThreadPost): string | null {
+		// X/Twitter posts already carry a full https permalink as their uri.
+		if (/^https?:\/\//i.test(post.uri)) return post.uri;
 		return buildBskyPostUrl(post.uri, post.author.handle);
 	}
 
@@ -1394,6 +1443,25 @@
 			behavior: 'smooth',
 			block: 'center'
 		});
+	}
+
+	function scrollCarouselPostIntoView(uri: string) {
+		if (!carouselScrollElement) return;
+		const card = Array.from(
+			carouselScrollElement.querySelectorAll<HTMLElement>('[data-carousel-post-uri]')
+		).find((candidate) => candidate.dataset.carouselPostUri === uri);
+		if (!card) return;
+
+		// Scroll only the panel's vertical axis; the strip's own
+		// centerWhenSelected action handles horizontal centering.
+		const containerRect = carouselScrollElement.getBoundingClientRect();
+		const cardRect = card.getBoundingClientRect();
+		const top =
+			cardRect.top -
+			containerRect.top +
+			carouselScrollElement.scrollTop -
+			(carouselScrollElement.clientHeight - cardRect.height) / 2;
+		carouselScrollElement.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
 	}
 
 	function updateActiveForumPostFromScroll() {
@@ -1441,6 +1509,53 @@
 		expandAncestorsForUri(leafUri);
 		updateLaneSelection(activeLaneId, leafUri, leafUri);
 		void tick().then(() => centerTreeNode(leafUri, activeLaneId));
+	}
+
+	function selectCarouselCard(post: ThreadPost) {
+		const laneId = activeLaneId;
+		// Route the selected path through the clicked card, ending at its
+		// longest leaf, and focus the card's node in the tree minimap. Keeps
+		// the lane's path/all-replies mode so steering stays available.
+		updateLaneSelection(laneId, longestLeafUriFrom(post), post.uri);
+		void tick().then(() => centerTreeNode(post.uri, laneId));
+	}
+
+	function formatCardDate(createdAt: string): string {
+		const ms = Date.parse(createdAt);
+		if (!Number.isFinite(ms)) return '';
+		const date = new Date(ms);
+		const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+		const day = date.toLocaleDateString(undefined, {
+			month: 'short',
+			day: 'numeric',
+			year: 'numeric'
+		});
+		return `${time} · ${day}`;
+	}
+
+	function centerWhenSelected(node: HTMLElement, selected: boolean) {
+		// Scroll only the strip's own horizontal axis; scrollIntoView would also
+		// scroll the panel vertically, and every re-mounted row below a click
+		// would fight over the viewport.
+		function center(isSelected: boolean, behavior: ScrollBehavior) {
+			if (!isSelected) return;
+			const strip = node.closest('.level-strip');
+			if (!(strip instanceof HTMLElement)) return;
+			const stripRect = strip.getBoundingClientRect();
+			const nodeRect = node.getBoundingClientRect();
+			const left =
+				nodeRect.left - stripRect.left + strip.scrollLeft - (strip.clientWidth - nodeRect.width) / 2;
+			strip.scrollTo({ left: Math.max(0, left), behavior });
+		}
+
+		// Rows that (re)mount after a click center instantly; only a selection
+		// change within an existing row animates.
+		center(selected, 'auto');
+		return {
+			update(isSelected: boolean) {
+				center(isSelected, 'smooth');
+			}
+		};
 	}
 
 	function focusTreePostFromChat(uri: string) {
@@ -1496,6 +1611,14 @@
 
 	async function openQuoteLane(sourceUri: string, quoteUri: string, quotedHandle: string, options: { focus?: boolean } = {}) {
 		const { focus = true } = options;
+
+		// X/Twitter quotes have no local thread to open as a lane — open on x.com.
+		const xQuote = parseXStatusUrl(quoteUri);
+		if (xQuote) {
+			if (browser) window.open(xQuote.canonicalUrl, '_blank', 'noopener,noreferrer');
+			return;
+		}
+
 		const existingLane = quoteLanes.find((lane) => lane.id === quoteUri);
 		if (existingLane) {
 			if (focus) {
@@ -1618,7 +1741,83 @@
 		return `hsl(${hue} 48% 46%)`;
 	}
 
+	function threadContainsUri(root: ThreadPost, uri: string): boolean {
+		if (root.uri === uri) return true;
+		return root.children.some((child) => threadContainsUri(child, uri));
+	}
+
+	function applyLoadedThread(
+		normalizedUrl: string,
+		loadedThread: SelfReplyThread & { isTruncated?: boolean },
+		preserveSelection = false
+	) {
+		const previousSelectedUri = selectedUri;
+		const previousFocusedUri = focusedTreeUri;
+		thread = loadedThread;
+		rememberLoadedThread(normalizedUrl, loadedThread);
+
+		if (
+			preserveSelection &&
+			previousSelectedUri &&
+			threadContainsUri(loadedThread.rootPost, previousSelectedUri)
+		) {
+			selectedUri = previousSelectedUri;
+			focusedTreeUri =
+				previousFocusedUri && threadContainsUri(loadedThread.rootPost, previousFocusedUri)
+					? previousFocusedUri
+					: loadedThread.rootPost.uri;
+			return;
+		}
+
+		const paths = collectLeafPaths(loadedThread.rootPost);
+		const defaultLeafUri = paths[0]?.[paths[0].length - 1]?.uri ?? loadedThread.rootPost.uri;
+		selectedUri = defaultLeafUri;
+		focusedTreeUri = loadedThread.rootPost.uri;
+	}
+
+	let loadRequestId = 0;
+
+	// X.com threads are captured client-side by the xtreeviewer grabber and stored in
+	// the same IndexedDB cache. There is no live revalidation path, so load cache-only.
+	async function loadXThread(canonicalUrl: string) {
+		const requestId = ++loadRequestId;
+		loading = true;
+		error = null;
+		thread = null;
+		selectedUri = null;
+		focusedTreeUri = null;
+		activeLaneId = MAIN_LANE_ID;
+		quoteLanes = [];
+		expandedLaneIds = new Set([MAIN_LANE_ID]);
+		allReplyLaneIds = new Set();
+		quoteFeeds = {};
+		quoteLaneLoads = {};
+		urlInput = canonicalUrl;
+		updateQueryParam(canonicalUrl);
+
+		const cached = await readCachedThread(canonicalUrl);
+		if (requestId !== loadRequestId) return;
+		if (cached) {
+			applyLoadedThread(canonicalUrl, {
+				rootPost: cached.rootPost,
+				rootUri: cached.rootUri,
+				depth: cached.depth,
+				isTruncated: cached.isTruncated
+			});
+		} else {
+			error =
+				'This X thread has not been captured yet. Use the xtreeviewer grabber to import it.';
+		}
+		loading = false;
+	}
+
 	async function loadThread(bskyUrl: string) {
+		const xStatus = parseXStatusUrl(bskyUrl);
+		if (xStatus) {
+			await loadXThread(xStatus.canonicalUrl);
+			return;
+		}
+
 		const normalizedUrl = normalizeBskyPostUrl(bskyUrl);
 		const parsed = normalizedUrl ? parseBskyPostUrl(normalizedUrl) : null;
 		if (!normalizedUrl || !parsed) {
@@ -1626,6 +1825,7 @@
 			return;
 		}
 
+		const requestId = ++loadRequestId;
 		loading = true;
 		error = null;
 		thread = null;
@@ -1640,29 +1840,46 @@
 		urlInput = normalizedUrl;
 		updateQueryParam(normalizedUrl);
 
+		// Serve the cached copy immediately, then revalidate from the network below.
+		const cached = await readCachedThread(normalizedUrl);
+		if (requestId !== loadRequestId) return;
+		if (cached) {
+			applyLoadedThread(normalizedUrl, {
+				rootPost: cached.rootPost,
+				rootUri: cached.rootUri,
+				depth: cached.depth,
+				isTruncated: cached.isTruncated
+			});
+			loading = false;
+		}
+
 		try {
 			const profile = await getProfile(parsed.handle);
 			const atUri = buildAtUri(profile.did, parsed.rkey);
 			if (!atUri) {
-				error = 'Could not build an AT URI for this thread.';
+				if (!cached) error = 'Could not build an AT URI for this thread.';
 				return;
 			}
 
 			const loadedThread = await getFullThread(atUri);
-			thread = loadedThread;
-			rememberLoadedThread(normalizedUrl, loadedThread);
-			const paths = collectLeafPaths(loadedThread.rootPost);
-			const defaultLeafUri = paths[0]?.[paths[0].length - 1]?.uri ?? loadedThread.rootPost.uri;
-			selectedUri = defaultLeafUri;
-			focusedTreeUri = loadedThread.rootPost.uri;
+			if (requestId !== loadRequestId) return;
+			applyLoadedThread(normalizedUrl, loadedThread, Boolean(cached));
+			void writeCachedThread({
+				url: normalizedUrl,
+				rootPost: loadedThread.rootPost,
+				rootUri: loadedThread.rootUri,
+				depth: loadedThread.depth,
+				isTruncated: loadedThread.isTruncated
+			}).then(() => pruneThreadCache(readRecentThreads(localStorage).map((entry) => entry.url)));
 		} catch (e: any) {
+			if (requestId !== loadRequestId || cached) return;
 			if (e?.message?.includes('resolve')) {
 				error = `Could not find handle "${parsed.handle}".`;
 			} else {
 				error = e?.message || 'Failed to load thread.';
 			}
 		} finally {
-			loading = false;
+			if (requestId === loadRequestId) loading = false;
 		}
 	}
 
@@ -1724,7 +1941,11 @@
 
 		setTreeCollapsed(nextTreeCollapsed);
 		setChatCollapsed(nextChatCollapsed);
-		if (data.textPanelMode === 'chat' || data.textPanelMode === 'forum') {
+		if (
+			data.textPanelMode === 'chat' ||
+			data.textPanelMode === 'forum' ||
+			data.textPanelMode === 'carousel'
+		) {
 			setTextPanelMode(data.textPanelMode);
 		}
 		if (typeof data.uiCollapsed === 'boolean') {
@@ -1846,7 +2067,11 @@
 			if (Number.isFinite(savedChatFontScale)) setChatFontScale(savedChatFontScale);
 
 			const savedTextPanelMode = localStorage.getItem('treeviewer-text-panel-mode');
-			if (savedTextPanelMode === 'chat' || savedTextPanelMode === 'forum') {
+			if (
+				savedTextPanelMode === 'chat' ||
+				savedTextPanelMode === 'forum' ||
+				savedTextPanelMode === 'carousel'
+			) {
 				textPanelMode = savedTextPanelMode;
 			}
 
@@ -1864,7 +2089,7 @@
 		const params = new URLSearchParams(window.location.search);
 		embeddedSection = params.get('embed') === 'thread-section';
 		const viewParam = params.get('view');
-		if (viewParam === 'chat' || viewParam === 'forum') {
+		if (viewParam === 'chat' || viewParam === 'forum' || viewParam === 'carousel') {
 			textPanelMode = viewParam;
 		}
 		if (embeddedSection) {
@@ -1906,6 +2131,12 @@
 		const request = chatScrollRequest;
 		if (textPanelMode !== 'forum' || !request?.uri) return;
 		void tick().then(() => scrollForumPostIntoView(request.uri));
+	});
+
+	$effect(() => {
+		const request = chatScrollRequest;
+		if (textPanelMode !== 'carousel' || !request?.uri) return;
+		void tick().then(() => scrollCarouselPostIntoView(request.uri));
 	});
 
 	$effect(() => {
@@ -1954,45 +2185,6 @@
 			</button>
 		</form>
 
-		{#if recentThreads.length > 0}
-			<nav class="recent-thread-nav" aria-label="Recent Treeviewer threads">
-				<a
-					class:disabled={!recentNavigation.previous}
-					href={recentNavigation.previous ? `?url=${encodeURIComponent(recentNavigation.previous.url)}` : undefined}
-					onclick={(event) => {
-						if (!recentNavigation.previous) {
-							event.preventDefault();
-							return;
-						}
-						event.preventDefault();
-						void loadThread(recentNavigation.previous.url);
-					}}
-				>
-					Previous
-				</a>
-				<span>
-					{#if recentNavigation.index >= 0}
-						{recentNavigation.index + 1} / {recentThreads.length}
-					{:else}
-						{recentThreads.length} cached
-					{/if}
-				</span>
-				<a
-					class:disabled={!recentNavigation.next}
-					href={recentNavigation.next ? `?url=${encodeURIComponent(recentNavigation.next.url)}` : undefined}
-					onclick={(event) => {
-						if (!recentNavigation.next) {
-							event.preventDefault();
-							return;
-						}
-						event.preventDefault();
-						void loadThread(recentNavigation.next.url);
-					}}
-				>
-					Next
-				</a>
-			</nav>
-		{/if}
 	{/if}
 
 	{#if error && !embeddedSection}
@@ -2462,6 +2654,14 @@
 								>
 									Forum
 								</button>
+								<button
+									type="button"
+									class:active={textPanelMode === 'carousel'}
+									aria-pressed={textPanelMode === 'carousel'}
+									onclick={() => setTextPanelMode('carousel')}
+								>
+									Carousel
+								</button>
 							</div>
 							<button type="button" class="chat-tree-btn" onclick={toggleActiveLaneTree}>
 								{allRepliesMode ? 'Path only' : 'Show all replies'} T
@@ -2769,6 +2969,88 @@
 							{/each}
 						</div>
 					{/if}
+					{#if textPanelMode === 'carousel' && activeLane}
+						<div bind:this={carouselScrollElement} class="carousel-thread">
+							{#each carouselLevels as level, depth (level.key)}
+								<section class="carousel-level" aria-label={`Reply depth ${depth}`}>
+									{#if level.items.length > 1}
+										<div class="level-label">
+											{level.selectedIndex + 1} of {level.items.length} replies
+										</div>
+									{/if}
+									<div class="level-strip" class:single={level.items.length === 1}>
+										{#each level.items as post, index (post.uri)}
+											{@const selected = index === level.selectedIndex}
+											{@const bskyPostUrl = forumPostUrl(post)}
+											<div
+												class="card-slot"
+												class:selected
+												class:focused={activeLane?.focusedUri === post.uri}
+												class:steerable={level.items.length > 1}
+												data-carousel-post-uri={post.uri}
+												use:centerWhenSelected={selected}
+											>
+												<button
+													type="button"
+													class="card-hit"
+													aria-pressed={selected}
+													aria-label={`Select reply by ${authorLabel(post)}`}
+													onclick={() => selectCarouselCard(post)}
+												>
+													<RoughBorder
+														stroke={selected && level.items.length > 1 ? '--accent' : '#333'}
+														strokeWidth={selected && level.items.length > 1 ? 2.2 : 1.3}
+														padding={14}
+													>
+														<div class="card-head">
+															{#if post.author.avatar}
+																<img src={post.author.avatar} alt="" class="card-avatar" />
+															{:else}
+																<div class="card-avatar card-avatar--empty" aria-hidden="true"></div>
+															{/if}
+															<div class="card-author">
+																<span class="card-name">{authorLabel(post)}</span>
+																<span class="card-handle">@{post.author.handle}</span>
+															</div>
+															{#if bskyPostUrl}
+																<a
+																	class="card-open"
+																	href={bskyPostUrl}
+																	target="_blank"
+																	rel="noopener noreferrer"
+																	title="Open on Bluesky"
+																	onclick={(event) => event.stopPropagation()}
+																>
+																	↗
+																</a>
+															{/if}
+														</div>
+
+														{#if post.text}
+															<p class="card-text">{post.text}</p>
+														{/if}
+
+														<div class="card-embed">
+															<PostEmbedPreview {post} eager />
+														</div>
+
+														<div class="card-footer">
+															<div class="card-stats">
+																<span>♥ {(post.likeCount ?? 0).toLocaleString()}</span>
+																<span>💬 {(post.replyCount ?? 0).toLocaleString()}</span>
+																<span>🔁 {(post.repostCount ?? 0).toLocaleString()}</span>
+															</div>
+															<span class="card-date">{formatCardDate(post.createdAt)}</span>
+														</div>
+													</RoughBorder>
+												</button>
+											</div>
+										{/each}
+									</div>
+								</section>
+							{/each}
+						</div>
+					{/if}
 				</div>
 			{/if}
 		</section>
@@ -2869,40 +3151,6 @@
 	.load-btn:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
-	}
-
-	.recent-thread-nav {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 10px;
-		max-width: 680px;
-		margin: -10px auto 24px;
-		color: var(--muted);
-		font-size: 0.9rem;
-	}
-
-	.recent-thread-nav a {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		min-width: 88px;
-		padding: 7px 12px;
-		border: 1px solid var(--control-border);
-		border-radius: 6px;
-		background: var(--control-bg);
-		color: var(--text-ink);
-		font-weight: 750;
-		text-decoration: none;
-	}
-
-	.recent-thread-nav a:hover:not(.disabled) {
-		background: var(--control-bg-hover);
-	}
-
-	.recent-thread-nav a.disabled {
-		opacity: 0.45;
-		pointer-events: none;
 	}
 
 	.error-banner {
@@ -3706,7 +3954,7 @@
 
 	.text-mode-toggle {
 		display: inline-grid;
-		grid-template-columns: 1fr 1fr;
+		grid-template-columns: 1fr 1fr 1fr;
 		gap: 2px;
 		padding: 2px;
 		border: 1px solid var(--tv-border);
@@ -3779,6 +4027,173 @@
 		background: var(--tv-panel-bg);
 		padding: 6px;
 		box-sizing: border-box;
+	}
+
+	.carousel-thread {
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow-y: auto;
+		border: 1px solid var(--tv-border);
+		border-radius: 8px;
+		background: var(--tv-panel-bg);
+		padding: 12px 8px 20px;
+		box-sizing: border-box;
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+	}
+
+	.level-label {
+		text-align: center;
+		font-family: Inter, system-ui, sans-serif;
+		font-size: 0.7rem;
+		letter-spacing: 0.04em;
+		color: var(--muted);
+		margin-bottom: 6px;
+	}
+
+	.level-strip {
+		display: flex;
+		align-items: flex-start;
+		gap: 12px;
+		overflow-x: auto;
+		padding: 4px 4px 10px;
+		scroll-snap-type: x proximity;
+		-webkit-overflow-scrolling: touch;
+	}
+
+	.level-strip.single {
+		justify-content: center;
+	}
+
+	.card-slot {
+		flex: 0 0 min(320px, 82%);
+		max-width: min(320px, 82%);
+		scroll-snap-align: center;
+		opacity: 0.65;
+		transition: opacity 0.16s ease, transform 0.16s ease;
+	}
+
+	.card-slot:hover,
+	.card-slot.selected {
+		opacity: 1;
+	}
+
+	.card-slot.selected.steerable {
+		transform: translateY(-2px);
+	}
+
+	.card-slot.focused .card-hit {
+		background: var(--tv-active-bg);
+	}
+
+	.level-strip.single .card-slot {
+		opacity: 1;
+	}
+
+	.card-hit {
+		display: block;
+		width: 100%;
+		border: 0;
+		background: transparent;
+		padding: 0;
+		text-align: left;
+		font-family: inherit;
+		color: var(--text-ink);
+		cursor: pointer;
+	}
+
+	.card-head {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.card-avatar {
+		width: 32px;
+		height: 32px;
+		border-radius: 50%;
+		object-fit: cover;
+		flex-shrink: 0;
+	}
+
+	.card-avatar--empty {
+		background: var(--control-border, #d9d2c2);
+	}
+
+	.card-author {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+
+	.card-name {
+		font-family: Inter, system-ui, sans-serif;
+		font-size: 0.82rem;
+		font-weight: 700;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.card-handle {
+		font-family: Inter, system-ui, sans-serif;
+		font-size: 0.7rem;
+		color: var(--muted);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.card-open {
+		margin-left: auto;
+		flex-shrink: 0;
+		color: var(--muted);
+		text-decoration: none;
+		font-size: 0.9rem;
+	}
+
+	.card-open:hover {
+		color: var(--accent);
+	}
+
+	.card-text {
+		margin: 10px 0 0;
+		font-size: 0.92rem;
+		line-height: 1.5;
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+
+	.card-embed:not(:empty) {
+		margin-top: 10px;
+	}
+
+	.card-embed :global(.post-embed-preview) {
+		width: 100%;
+	}
+
+	.card-footer {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+		margin-top: 12px;
+		font-family: Inter, system-ui, sans-serif;
+	}
+
+	.card-stats {
+		display: flex;
+		gap: 10px;
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: var(--muted);
+	}
+
+	.card-date {
+		font-size: 0.64rem;
+		color: var(--muted);
+		white-space: nowrap;
 	}
 
 	.forum-post {

@@ -810,33 +810,10 @@ async function writeViewer2DbSnapshot(snapshot: Viewer2DbAccountSnapshot): Promi
 }
 
 async function importDuckDbBundle() {
-	const [duckdb, mvpModule, mvpWorker, ehModule, ehWorker, coiModule, coiWorker, coiPthreadWorker] =
-		await Promise.all([
-			import('@duckdb/duckdb-wasm'),
-			import('@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url') as Promise<{ default: string }>,
-			import('@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url') as Promise<{ default: string }>,
-			import('@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url') as Promise<{ default: string }>,
-			import('@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url') as Promise<{ default: string }>,
-			import('@duckdb/duckdb-wasm/dist/duckdb-coi.wasm?url') as Promise<{ default: string }>,
-			import('@duckdb/duckdb-wasm/dist/duckdb-browser-coi.worker.js?url') as Promise<{ default: string }>,
-			import('@duckdb/duckdb-wasm/dist/duckdb-browser-coi.pthread.worker.js?url') as Promise<{ default: string }>
-		]);
-	const bundles: import('@duckdb/duckdb-wasm').DuckDBBundles = {
-		mvp: {
-			mainModule: mvpModule.default,
-			mainWorker: mvpWorker.default
-		},
-		eh: {
-			mainModule: ehModule.default,
-			mainWorker: ehWorker.default
-		},
-		coi: {
-			mainModule: coiModule.default,
-			mainWorker: coiWorker.default,
-			pthreadWorker: coiPthreadWorker.default
-		}
-	};
-	return { duckdb, bundle: await duckdb.selectBundle(bundles) };
+	// Load wasm/worker bundles from jsDelivr instead of bundling them: the wasm
+	// binaries are 34-39 MiB each and Cloudflare Pages rejects files over 25 MiB.
+	const duckdb = await import('@duckdb/duckdb-wasm');
+	return { duckdb, bundle: await duckdb.selectBundle(duckdb.getJsDelivrBundles()) };
 }
 
 function createDuckDbWorker(workerUrl: string): Worker {

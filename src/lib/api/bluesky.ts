@@ -1648,6 +1648,33 @@ export async function fetchPostsByUris(
 	return result;
 }
 
+const GET_POSTS_MAX_RETRIES = 3;
+
+/**
+ * getPosts with retry on rate-limit (429) and server (5xx) errors so large
+ * hydration runs degrade to slower instead of silently dropping batches.
+ */
+async function getPostsWithRetry(uris: string[], signal?: AbortSignal) {
+	for (let attempt = 0; ; attempt += 1) {
+		throwIfAborted(signal);
+		try {
+			return await agent.getPosts({ uris });
+		} catch (err: any) {
+			if (err?.name === 'AbortError') throw err;
+			const status = Number(err?.status);
+			const retryable = status === 429 || status >= 500 || !Number.isFinite(status);
+			if (!retryable || attempt >= GET_POSTS_MAX_RETRIES) throw err;
+
+			const retryAfterSeconds = Number(err?.headers?.['retry-after']);
+			const delayMs =
+				Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+					? Math.min(30_000, retryAfterSeconds * 1000)
+					: Math.min(8000, 500 * 2 ** attempt) + Math.random() * 250;
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+		}
+	}
+}
+
 /**
  * Batch-fetch engagement counts for post URIs.
  * Uses app.bsky.feed.getPosts (max 25 URIs per call) with bounded concurrency.
@@ -1686,7 +1713,7 @@ export async function fetchPostEngagementCounts(
 			const batch = batches[batchIndex];
 
 			try {
-				const res = await agent.getPosts({ uris: batch });
+				const res = await getPostsWithRetry(batch, signal);
 				for (const post of res.data.posts ?? []) {
 					result.set(post.uri, {
 						uri: post.uri,

@@ -1,31 +1,50 @@
 <script lang="ts">
-	import type { SelfReplyThread } from '$lib/types';
+	import type { SelfReplyThread, ThreadPost } from '$lib/types';
 	import PostEmbedPreview from '$lib/components/PostEmbedPreview.svelte';
 	import {
 		buildBlogTitle,
 		collectSelfReplyChainPosts,
 		splitPostIntoBlogParagraphs
 	} from '$lib/utils/threadBlog';
+	import { flattenThreadForChat } from '$lib/utils/threadFlattener';
 	import { buildBskyPostUrl } from '$lib/utils/viewerLinks';
 
-	let { thread }: { thread: SelfReplyThread } = $props();
+	export type BlogArticleMode = 'chain' | 'thread';
+
+	let { thread, mode = 'chain' }: { thread: SelfReplyThread; mode?: BlogArticleMode } = $props();
+
+	type ArticleItem = { post: ThreadPost; showAuthor: boolean };
 
 	let hiddenUris = $state<Set<string>>(new Set());
-	let currentRootUri = $state('');
+	let currentArticleKey = $state('');
 
-	const chainPosts = $derived(collectSelfReplyChainPosts(thread.rootPost));
+	const articleItems = $derived<ArticleItem[]>(
+		mode === 'thread'
+			? flattenThreadForChat(thread.rootPost).map(({ post, showAuthorHeader }) => ({
+					post,
+					showAuthor: showAuthorHeader
+				}))
+			: collectSelfReplyChainPosts(thread.rootPost).map((post) => ({ post, showAuthor: false }))
+	);
+	const chainPosts = $derived(articleItems.map((item) => item.post));
 	const visiblePosts = $derived(chainPosts.filter((post) => !hiddenUris.has(post.uri)));
 	const hiddenPosts = $derived(chainPosts.filter((post) => hiddenUris.has(post.uri)));
 	const articleTitle = $derived(buildBlogTitle(chainPosts[0]?.text ?? thread.rootPost.text));
 	const authorName = $derived(
 		thread.rootPost.author.displayName?.trim() || `@${thread.rootPost.author.handle}`
 	);
+	const authorCount = $derived(new Set(chainPosts.map((post) => post.author.did)).size);
 
 	$effect(() => {
-		if (currentRootUri === thread.rootUri) return;
-		currentRootUri = thread.rootUri;
+		const key = `${thread.rootUri}|${mode}`;
+		if (currentArticleKey === key) return;
+		currentArticleKey = key;
 		hiddenUris = new Set();
 	});
+
+	function postAuthorName(post: ThreadPost): string {
+		return post.author.displayName?.trim() || `@${post.author.handle}`;
+	}
 
 	function hidePost(uri: string) {
 		if (uri === thread.rootPost.uri) return;
@@ -60,6 +79,9 @@
 				{authorName}
 				<span class="meta-detail">
 					{visiblePosts.length} of {chainPosts.length} post{chainPosts.length === 1 ? '' : 's'}
+					{#if mode === 'thread' && authorCount > 1}
+						· {authorCount} authors
+					{/if}
 				</span>
 			</span>
 		</div>
@@ -75,10 +97,18 @@
 	{/if}
 
 	<div class="article-body">
-		{#each chainPosts as post, index (post.uri)}
+		{#each articleItems as { post, showAuthor }, index (post.uri)}
 			{@const hidden = hiddenUris.has(post.uri)}
 			{#if !hidden}
 				<section class="article-post" aria-label={`Thread post ${index + 1}`}>
+					{#if mode === 'thread' && showAuthor && index > 0}
+						<div class="speaker-label">
+							{#if post.author.avatar}
+								<img src={post.author.avatar} alt="" class="speaker-avatar" />
+							{/if}
+							{postAuthorName(post)}
+						</div>
+					{/if}
 					<div class="post-actions">
 						<button
 							type="button"
@@ -202,6 +232,24 @@
 
 	.article-post + .article-post {
 		margin-top: 1.78em;
+	}
+
+	.speaker-label {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 0.6em;
+		font-family: Inter, system-ui, sans-serif;
+		font-size: 0.82rem;
+		font-weight: 700;
+		color: var(--muted);
+	}
+
+	.speaker-avatar {
+		width: 22px;
+		height: 22px;
+		border-radius: 50%;
+		object-fit: cover;
 	}
 
 	.article-post p {

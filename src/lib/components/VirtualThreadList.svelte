@@ -25,6 +25,7 @@
 		searchQuery = '',
 		searchMode = 'fuzzy',
 		highlightedThread = null,
+		showAuthor = false,
 		highlightedPostByRootUri = {},
 		shattering = false,
 		appearing = false,
@@ -49,6 +50,7 @@
 		searchQuery?: string;
 		searchMode?: SearchMode;
 		highlightedThread?: string | null;
+		showAuthor?: boolean;
 		highlightedPostByRootUri?: Record<string, string>;
 		shattering?: boolean;
 		appearing?: boolean;
@@ -336,6 +338,7 @@
 				{searchQuery}
 				{searchMode}
 				{highlightedThread}
+				{showAuthor}
 				onexpand={onexpand}
 				onblog={onblog}
 				onshare={onshare}

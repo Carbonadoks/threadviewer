@@ -107,7 +107,7 @@ export function parsePostViewEmbed(embed: any): ThreadPost['embed'] | undefined 
 	return undefined;
 }
 
-function feedItemToPost(item: any): ThreadPost | null {
+export function feedItemToPost(item: any): ThreadPost | null {
 	const post = item.post;
 	if (!post) return null;
 
@@ -122,6 +122,10 @@ function feedItemToPost(item: any): ThreadPost | null {
 		},
 		text: post.record?.text || '',
 		createdAt: post.record?.createdAt || post.indexedAt,
+		parentUri:
+			typeof post.record?.reply?.parent?.uri === 'string'
+				? post.record.reply.parent.uri
+				: undefined,
 		linkedUrls: extractBskyPostUrlsFromFacets(post.record?.facets),
 		needsHydratedPostView: Boolean(post.record?.embed) && !post.embed,
 		likeCount: post.likeCount || 0,

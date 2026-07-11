@@ -81,10 +81,14 @@
 	import { browser } from '$app/environment';
 	import '../../app.css';
 	import SearchBar from '$lib/components/SearchBar.svelte';
-	import SearchOptions from '$lib/components/SearchOptions.svelte';
 	import ThresholdControl from '$lib/components/ThresholdControl.svelte';
 	import ModePicker from '$lib/components/ModePicker.svelte';
 	import VirtualThreadList from '$lib/components/VirtualThreadList.svelte';
+	import TimelineViewer from '$lib/components/TimelineViewer.svelte';
+	import { getGalleryHydratedEmbed } from '$lib/components/modes/GalleryThreads.svelte';
+	import WholeThreadReader, {
+		type WholeThreadReaderItem
+	} from '$lib/components/WholeThreadReader.svelte';
 	import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
 	import ErrorBanner from '$lib/components/ErrorBanner.svelte';
 	import RouteNav from '$lib/components/RouteNav.svelte';
@@ -93,11 +97,19 @@
 	import { getFollowsPage, getProfile, getFullThread } from '$lib/api/bluesky';
 	import {
 		hydrateFeedItemsEngagement,
+		hydrateFeedItemsThreadEngagement,
 		loadRepoFeedItems,
 		type RepoDownloadProgress,
 		type RepoFeedLoadResult
 	} from '$lib/utils/repoHydration';
+	import { loadRepoReposts } from '$lib/utils/repoReposts';
 	import { buildThreadsFromFeed } from '$lib/utils/threadWalker';
+	import {
+		fetchParentPosts,
+		collectParentUris,
+		resetParentPosts,
+		parentPostsByUri
+	} from '$lib/stores/parentPosts';
 	import { toastError, toastSuccess, toastInfo } from '$lib/utils/toasts';
 	import {
 		buildFuzzyTextMatcher,
@@ -128,8 +140,13 @@
 		system: "system-ui, -apple-system, sans-serif"
 	};
 
-	const ENGAGEMENT_HYDRATION_CHUNK_SIZE = 250;
+	const ENGAGEMENT_HYDRATION_CHUNK_SIZE = 500;
+	const ENGAGEMENT_HYDRATION_CONCURRENCY = 16;
+	const ENGAGEMENT_THREAD_CONCURRENCY = 8;
 	const POST_HYDRATION_ENABLED = true;
+	// Hidden for now — the "Fetch parents / whole threads" controls aren't behaving as
+	// wanted. Flip to true to bring the row back.
+	const SHOW_FETCH_BUTTONS = false;
 	const GALLERY_GRID_ZOOM_MIN = 55;
 	const GALLERY_GRID_ZOOM_MAX = 160;
 	const VIEWER2_MEMORY_CACHE_SAVE_DELAY_MS = 450;
@@ -272,6 +289,148 @@
 	let engagementHydrationState = $state<EngagementHydrationState>('idle');
 	let engagementHydrationProgress = $state({ current: 0, total: 0 });
 
+	type BlastMedia = {
+		src: string;
+		aspectRatio: string;
+	};
+
+	type BlastItem = {
+		text: string;
+		media: BlastMedia[];
+	};
+
+	type BlastCard = BlastItem & {
+		id: number;
+		style: string;
+	};
+
+	let blastMode = $state(false);
+	let blastCards = $state<BlastCard[]>([]);
+	let blastCardId = 0;
+	let blastItems: BlastItem[] = [];
+	let blastRate = $state(3); // bursts per second
+	let blastBurstSize = $state(4);
+	let blastFlyMs = $state(1500);
+	let blastSizePct = $state(100);
+	const blastIntervalMs = $derived(Math.round(1000 / blastRate));
+	const maxBlastCards = $derived(Math.max(60, blastBurstSize * 15));
+
+	function blastRatioOf(aspectRatio?: { width: number; height: number }): string {
+		return aspectRatio && aspectRatio.width > 0 && aspectRatio.height > 0
+			? `${aspectRatio.width} / ${aspectRatio.height}`
+			: '4 / 3';
+	}
+
+	function blastMediaFor(post: ThreadPost, mode: GalleryContentMode): BlastMedia[] {
+		const media: BlastMedia[] = [];
+		// Repo-loaded posts keep hydrated embeds in the gallery's cache, not on the post itself.
+		const embed = post.embed ?? getGalleryHydratedEmbed(post.uri);
+		if (mode !== 'movies') {
+			for (const image of [...(embed?.images ?? []), ...(embed?.record?.images ?? [])]) {
+				const src = image.thumb || image.fullsize;
+				if (src) media.push({ src, aspectRatio: blastRatioOf(image.aspectRatio) });
+			}
+		}
+		if (mode !== 'images') {
+			for (const video of [embed?.video, embed?.record?.video]) {
+				if (video?.thumbnail) {
+					media.push({ src: video.thumbnail, aspectRatio: blastRatioOf(video.aspectRatio) });
+				}
+			}
+		}
+		return media.slice(0, 2);
+	}
+
+	function collectBlastItems(): BlastItem[] {
+		const mode = renderMode === 'gallery' ? galleryContentMode : 'all';
+		const mediaOnly = mode !== 'all';
+		const items: BlastItem[] = [];
+		const walk = (post: ThreadPost) => {
+			const media = blastMediaFor(post, mode);
+			if (mediaOnly) {
+				// Media tabs blast pure media cards, like the hashtag gallery blast mode.
+				if (media.length > 0) items.push({ text: '', media });
+			} else {
+				const text = post.text.trim();
+				if (text.length > 0 || media.length > 0) items.push({ text, media });
+			}
+			for (const child of post.children) walk(child);
+		};
+		for (const thread of displayedThreads) walk(thread.rootPost);
+		return items;
+	}
+
+	// Keep the blast pool in sync with the active tab/filters while blasting.
+	$effect(() => {
+		if (!blastMode) return;
+		blastItems = collectBlastItems();
+	});
+
+	function blastCardStyle(stagger: number): string {
+		const vw = window.innerWidth;
+		const vh = window.innerHeight;
+		// Spawn near the middle of the screen with some spray
+		const ox = vw / 2 + (Math.random() - 0.5) * vw * 0.3;
+		const oy = vh / 2 + (Math.random() - 0.5) * vh * 0.3;
+		// Blast outward in a random direction, well past the screen edge
+		const angle = Math.random() * Math.PI * 2;
+		const dist = Math.hypot(vw, vh) * (0.6 + Math.random() * 0.6);
+		const tx = Math.cos(angle) * dist;
+		const ty = Math.sin(angle) * dist;
+		const scale = (1.6 + Math.random() * 2.2) * (blastSizePct / 100);
+		const rot = (Math.random() - 0.5) * 90;
+		const dur = blastFlyMs * (0.75 + Math.random() * 0.5);
+		const delay = stagger * 90 + Math.random() * 80;
+		return (
+			`left: ${ox.toFixed(0)}px; top: ${oy.toFixed(0)}px; ` +
+			`--tx: ${tx.toFixed(0)}px; --ty: ${ty.toFixed(0)}px; ` +
+			`--sc: ${scale.toFixed(2)}; --rot: ${rot.toFixed(1)}deg; ` +
+			`--dur: ${dur.toFixed(0)}ms; --delay: ${delay.toFixed(0)}ms;`
+		);
+	}
+
+	function spawnBlastBurst() {
+		if (!browser) return;
+		// The hydrated embed cache fills in over time, so keep retrying until media shows up.
+		if (blastItems.length === 0) blastItems = collectBlastItems();
+		if (blastItems.length === 0) return;
+		const fresh: BlastCard[] = [];
+		for (let i = 0; i < blastBurstSize; i++) {
+			const item = blastItems[Math.floor(Math.random() * blastItems.length)];
+			fresh.push({ ...item, id: blastCardId++, style: blastCardStyle(i) });
+		}
+		const next = [...blastCards, ...fresh];
+		blastCards = next.length > maxBlastCards ? next.slice(next.length - maxBlastCards) : next;
+	}
+
+	// The interval restarts automatically when the rate slider changes.
+	$effect(() => {
+		if (!blastMode) return;
+		const timer = setInterval(spawnBlastBurst, blastIntervalMs);
+		return () => clearInterval(timer);
+	});
+
+	function stopBlastMode() {
+		blastMode = false;
+		blastCards = [];
+		blastItems = [];
+	}
+
+	function toggleBlastMode() {
+		if (blastMode) {
+			stopBlastMode();
+			return;
+		}
+		if (!browser || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+		blastItems = collectBlastItems();
+		blastMode = true;
+		spawnBlastBurst();
+	}
+
+	function removeBlastCard(id: number) {
+		blastCards = blastCards.filter((card) => card.id !== id);
+	}
+
 	function formatBytes(bytes: number): string {
 		if (bytes < 1024) return `${bytes} B`;
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -347,7 +506,7 @@
 	let engagementHydratedCount = 0;
 	let engagementCountsByUri = $state<Record<string, CachedPostEngagementCounts>>({});
 	let engagementTargetPostCount = 0;
-	let cachedRepoFeedItems: any[] | null = null;
+	let cachedRepoFeedItems: any[] | null = $state(null);
 	let cachedHydrationFeedItems: any[] | null = null;
 	let cachedEngagementDid: string | null = null;
 	let viewer2MemoryCacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -361,7 +520,33 @@
 	let blogLoadingFullThread = $state(false);
 	let activeBlogJob = 0;
 	let showBlogReader = $state(false);
-	const detailIsOpen = $derived(showExpanded || showBlogReader);
+
+	// Whole-thread reader: a flat, scrollable feed of every post (all participants)
+	// across the fetched conversations of the filtered/all thread list.
+	let wholeThreadFetching = $state(false);
+	let wholeThreadProgress = $state({ current: 0, total: 0 });
+	let wholeThreadController: AbortController | null = null;
+	let wholeThreadItems = $state<WholeThreadReaderItem[]>([]);
+	let wholeThreadTruncated = $state(false);
+	let wholeThreadSourceLabel = $state('');
+	let showWholeThreadReader = $state(false);
+	let wholeThreadSavedScrollY = 0;
+
+	// Reposts as a gallery source: reposts are first-class records in the repo CAR.
+	// We parse app.bsky.feed.repost records locally, hydrate the referenced posts, and
+	// present each reposted post as a single-post thread so the gallery's content-mode
+	// (all/media/images/movies), search, and date filters all apply unchanged.
+	type ViewSource = 'threads' | 'reposts' | 'both';
+	let viewSource = $state<ViewSource>('threads');
+	let repostThreads = $state<SelfReplyThread[]>([]);
+	let repostsLoaded = $state(false);
+	let repostsMissingCount = $state(0);
+	let repostsFetching = $state(false);
+	let repostsPhase = $state<'idle' | 'downloading' | 'parsing' | 'hydrating'>('idle');
+	let repostsProgress = $state({ current: 0, total: 0 });
+	let repostsController: AbortController | null = null;
+
+	const detailIsOpen = $derived(showExpanded || showBlogReader || showWholeThreadReader);
 
 	// Highlight state
 	let highlightedThread: string | null = $state(null);
@@ -518,12 +703,19 @@
 		return true;
 	}
 
-	function rootPostEngagement(thread: SelfReplyThread): ThreadEngagementTotals {
-		return {
-			likeCount: thread.rootPost.likeCount ?? 0,
-			repostCount: thread.rootPost.repostCount ?? 0,
-			quoteCount: thread.rootPost.quoteCount ?? 0
-		};
+	// Peak engagement = the single highest-engagement post in the thread (NOT a sum).
+	// Used for sorting so a thread containing a viral reply surfaces to the top.
+	function accumulateMaxEngagement(post: ThreadPost, acc: ThreadEngagementTotals) {
+		acc.likeCount = Math.max(acc.likeCount, post.likeCount ?? 0);
+		acc.repostCount = Math.max(acc.repostCount, post.repostCount ?? 0);
+		acc.quoteCount = Math.max(acc.quoteCount, post.quoteCount ?? 0);
+		for (const child of post.children) accumulateMaxEngagement(child, acc);
+	}
+
+	function peakThreadEngagement(thread: SelfReplyThread): ThreadEngagementTotals {
+		const acc: ThreadEngagementTotals = { likeCount: 0, repostCount: 0, quoteCount: 0 };
+		accumulateMaxEngagement(thread.rootPost, acc);
+		return acc;
 	}
 
 	function timestamp(value: string): number {
@@ -545,18 +737,32 @@
 					: threadSortMode === 'reposted'
 						? 'repostCount'
 						: 'quoteCount';
-			const aTotal = rootPostEngagement(a)[metric] ?? 0;
-			const bTotal = rootPostEngagement(b)[metric] ?? 0;
+			const aTotal = peakThreadEngagement(a)[metric] ?? 0;
+			const bTotal = peakThreadEngagement(b)[metric] ?? 0;
 			if (aTotal !== bTotal) return bTotal - aTotal;
 		}
 
 		return b.depth - a.depth || timestamp(b.rootPost.createdAt) - timestamp(a.rootPost.createdAt);
 	}
 
-	const sortedThreads = $derived([...allThreads].sort(compareThreadValues));
+	// The active gallery source. Reposts are flat single-post threads, so the depth
+	// threshold is meaningless for them and is pinned to 1 so every repost shows; the
+	// threshold only applies to the pure Threads view.
+	const activeThreads = $derived.by(() => {
+		if (viewSource === 'reposts') return repostThreads;
+		if (viewSource !== 'both') return allThreads;
+		// Dedupe by rootUri so a self-repost doesn't collide with an owned thread.
+		const threadUris = new Set(allThreads.map((thread) => thread.rootUri));
+		return [...allThreads, ...repostThreads.filter((thread) => !threadUris.has(thread.rootUri))];
+	});
+	const effectiveThreshold = $derived(viewSource === 'threads' ? threshold : 1);
+	const contentNoun = $derived(
+		viewSource === 'reposts' ? 'repost' : viewSource === 'both' ? 'post' : 'thread'
+	);
+	const sortedThreads = $derived([...activeThreads].sort(compareThreadValues));
 
 	const maxDepth = $derived(
-		allThreads.length > 0 ? Math.max(...allThreads.map((t) => t.depth)) : 2
+		activeThreads.length > 0 ? Math.max(...activeThreads.map((t) => t.depth)) : 2
 	);
 	const loadedRepoDids = $derived.by(() => new Set(repoAccounts.map((account) => account.did)));
 	const activeFollows = $derived.by(() => follows.filter((follow) => !excludedFollowDids.has(follow.did)));
@@ -1044,7 +1250,7 @@
 			.sort(compareThreadValues)
 			.filter(
 				(thread) =>
-					thread.depth >= threshold &&
+					thread.depth >= effectiveThreshold &&
 					isInDateRange(thread.rootPost.createdAt, dateFrom, dateTo) &&
 					threadMatchesGalleryContentCandidate(thread, galleryMode) &&
 					matchesSearch(thread, matcher, { galleryContentMode: galleryMode })
@@ -1057,7 +1263,7 @@
 
 	$effect(() => {
 		scheduleThreadFilter(sortedThreads, searchMatcher, {
-			threshold,
+			threshold: effectiveThreshold,
 			dateFrom,
 			dateTo,
 			query: searchQuery,
@@ -1149,6 +1355,16 @@
 
 	function cancelFetch() {
 		abortController?.abort();
+		timelineHydrationController?.abort();
+		timelineHydrationController = null;
+		timelineHydrating = false;
+		wholeThreadController?.abort();
+		wholeThreadController = null;
+		wholeThreadFetching = false;
+		repostsController?.abort();
+		repostsController = null;
+		repostsFetching = false;
+		repostsPhase = 'idle';
 		engagementHydrationController?.abort();
 		engagementHydrationController = null;
 		engagementHydrationContext = null;
@@ -1786,6 +2002,420 @@
 		void runEngagementHydration();
 	}
 
+	// --- Parent post fetching (replies/mentions to other users) ---
+	// The loaded repo only contains the account's own posts. When a thread root is a
+	// reply to *someone else* (e.g. a mention), its parent isn't in the repo. These
+	// helpers fetch those parents on demand so they render inline in the reader.
+	let parentFetchState = $state<'idle' | 'running'>('idle');
+	let parentFetchProgress = $state({ current: 0, total: 0 });
+	let parentFetchController: AbortController | null = null;
+
+	const fetchedParentCount = $derived(Object.keys($parentPostsByUri).length);
+
+	// Parent URIs that point to posts NOT in the loaded repo (i.e. by other users).
+	function externalParentUris(threads: SelfReplyThread[]): string[] {
+		const ownUris = new Set<string>();
+		for (const thread of threads) collectThreadPostUris(thread.rootPost, ownUris);
+		// Also exclude posts owned by any loaded account so self-replies aren't refetched.
+		return collectParentUris(threads.map((thread) => thread.rootPost)).filter(
+			(uri) => !ownUris.has(uri)
+		);
+	}
+
+	const filteredParentCandidateCount = $derived(externalParentUris(displayedThreads).length);
+
+	async function runParentFetch(threads: SelfReplyThread[], label: string) {
+		if (parentFetchState === 'running') return;
+		const uris = externalParentUris(threads);
+		if (uris.length === 0) {
+			toastInfo('No external parent posts to fetch here.');
+			return;
+		}
+
+		parentFetchController?.abort();
+		const controller = new AbortController();
+		parentFetchController = controller;
+		parentFetchState = 'running';
+		parentFetchProgress = { current: 0, total: uris.length };
+
+		try {
+			const resolved = await fetchParentPosts(uris, {
+				signal: controller.signal,
+				onProgress: (completed, total) => {
+					if (controller.signal.aborted) return;
+					parentFetchProgress = { current: completed, total: total || uris.length };
+				}
+			});
+			if (!controller.signal.aborted) {
+				toastSuccess(
+					`Fetched ${resolved.toLocaleString()} parent post${resolved === 1 ? '' : 's'} (${label}).`
+				);
+			}
+		} catch (err: any) {
+			if (err?.name !== 'AbortError' && !controller.signal.aborted) {
+				toastError(err?.message || 'Failed to fetch parent posts.');
+			}
+		} finally {
+			if (parentFetchController === controller) parentFetchController = null;
+			parentFetchState = 'idle';
+		}
+	}
+
+	function fetchParentsForFiltered() {
+		void runParentFetch(displayedThreads, 'filtered');
+	}
+
+	function fetchParentsForAll() {
+		void runParentFetch(allThreads, 'all');
+	}
+
+	// Flatten a fetched conversation tree (all participants) into pre-order reading order.
+	function flattenConversation(root: ThreadPost): ThreadPost[] {
+		const out: ThreadPost[] = [];
+		const walk = (post: ThreadPost) => {
+			out.push(post);
+			for (const child of post.children) walk(child);
+		};
+		walk(root);
+		return out;
+	}
+
+	// Short label shown as a divider above each source thread's posts in the reader.
+	function threadGroupLabel(thread: SelfReplyThread): string {
+		const handle = thread.rootPost.author.handle;
+		const text = (thread.rootPost.text || '').replace(/\s+/g, ' ').trim();
+		const snippet = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+		return snippet ? `@${handle} · ${snippet}` : `@${handle}`;
+	}
+
+	function openWholeThreadReader() {
+		if (browser) wholeThreadSavedScrollY = window.scrollY;
+		showWholeThreadReader = true;
+		showExpanded = false;
+		showBlogReader = false;
+		if (browser) requestAnimationFrame(() => window.scrollTo(0, 0));
+	}
+
+	function closeWholeThreadReader() {
+		showWholeThreadReader = false;
+		if (browser) requestAnimationFrame(() => window.scrollTo(0, wholeThreadSavedScrollY));
+	}
+
+	// Fetch the complete conversation for every thread in the list, then present every
+	// post (all participants) as a flat, scrollable feed in the whole-thread reader.
+	async function runWholeThreadFetch(threads: SelfReplyThread[], label: string) {
+		if (wholeThreadFetching) return;
+		if (threads.length === 0) {
+			toastInfo('No threads to fetch here.');
+			return;
+		}
+
+		wholeThreadController?.abort();
+		const controller = new AbortController();
+		wholeThreadController = controller;
+		wholeThreadFetching = true;
+		wholeThreadProgress = { current: 0, total: threads.length };
+
+		const results: ({ root: ThreadPost; truncated: boolean } | null)[] = new Array(
+			threads.length
+		).fill(null);
+		let completed = 0;
+		let cursor = 0;
+		const CONCURRENCY = 3;
+
+		const worker = async () => {
+			while (cursor < threads.length && !controller.signal.aborted) {
+				const index = cursor++;
+				try {
+					const full = await getFullThread(threads[index].rootPost.uri);
+					if (controller.signal.aborted) return;
+					results[index] = { root: full.rootPost, truncated: full.isTruncated };
+				} catch (err: any) {
+					if (err?.name === 'AbortError' || controller.signal.aborted) return;
+				} finally {
+					completed += 1;
+					if (!controller.signal.aborted) {
+						wholeThreadProgress = { current: completed, total: threads.length };
+					}
+				}
+			}
+		};
+
+		try {
+			await Promise.all(Array.from({ length: Math.min(CONCURRENCY, threads.length) }, worker));
+			if (controller.signal.aborted) return;
+
+			// Assemble a flat, deduped list grouped by source thread (display order),
+			// each thread's posts in conversation reading order.
+			const items: WholeThreadReaderItem[] = [];
+			const seen = new Set<string>();
+			let truncatedAny = false;
+			for (let i = 0; i < threads.length; i++) {
+				const result = results[i];
+				if (!result) continue;
+				if (result.truncated) truncatedAny = true;
+				let firstOfGroup = true;
+				for (const post of flattenConversation(result.root)) {
+					if (seen.has(post.uri)) continue;
+					seen.add(post.uri);
+					items.push({
+						post,
+						threadStart: firstOfGroup,
+						threadLabel: firstOfGroup ? threadGroupLabel(threads[i]) : undefined
+					});
+					firstOfGroup = false;
+				}
+			}
+
+			if (items.length === 0) {
+				toastInfo('Could not fetch any posts for these threads.');
+				return;
+			}
+
+			wholeThreadItems = items;
+			wholeThreadTruncated = truncatedAny;
+			wholeThreadSourceLabel = label;
+			openWholeThreadReader();
+			toastSuccess(
+				`Loaded ${items.length.toLocaleString()} post${items.length === 1 ? '' : 's'} from ${threads.length.toLocaleString()} thread${threads.length === 1 ? '' : 's'} (${label}).`
+			);
+		} catch (err: any) {
+			if (err?.name !== 'AbortError' && !controller.signal.aborted) {
+				toastError(err?.message || 'Failed to fetch whole threads.');
+			}
+		} finally {
+			if (wholeThreadController === controller) wholeThreadController = null;
+			wholeThreadFetching = false;
+		}
+	}
+
+	function fetchWholeThreadsForFiltered() {
+		void runWholeThreadFetch(displayedThreads, 'filtered');
+	}
+
+	function fetchWholeThreadsForAll() {
+		void runWholeThreadFetch(sortedThreads, 'all');
+	}
+
+	// Switch the gallery source. The first time reposts (or Both) are requested we fetch
+	// them; once loaded, toggling is instant.
+	function setViewSource(next: ViewSource) {
+		if (next === viewSource) return;
+		if ((next === 'reposts' || next === 'both') && !repostsLoaded) {
+			void fetchReposts(next);
+			return;
+		}
+		viewSource = next;
+	}
+
+	// Download each loaded account's repo CAR, extract its reposts, hydrate the reposted
+	// posts, and turn each into a single-post thread so the gallery can render them.
+	async function fetchReposts(target: ViewSource = 'reposts') {
+		if (repostsFetching) return;
+		const accounts =
+			repoAccounts.length > 0
+				? repoAccounts.map((account) => ({ did: account.did, handle: account.handle }))
+				: author
+					? [{ did: author.did, handle: author.handle }]
+					: [];
+		if (accounts.length === 0) {
+			toastInfo('Load an account first.');
+			return;
+		}
+
+		repostsController?.abort();
+		const controller = new AbortController();
+		repostsController = controller;
+		repostsFetching = true;
+		repostsPhase = 'downloading';
+		repostsProgress = { current: 0, total: 0 };
+
+		const threads: SelfReplyThread[] = [];
+		const seen = new Set<string>();
+		let missingCount = 0;
+
+		try {
+			for (const account of accounts) {
+				if (controller.signal.aborted) return;
+				const result = await loadRepoReposts(account.did, {
+					signal: controller.signal,
+					onDownloadProgress: () => {
+						repostsPhase = 'downloading';
+					},
+					onParseProgress: (count) => {
+						repostsPhase = 'parsing';
+						repostsProgress = { current: 0, total: count };
+					},
+					onHydrateProgress: ({ completed, total }) => {
+						repostsPhase = 'hydrating';
+						repostsProgress = { current: completed, total };
+					}
+				});
+				if (controller.signal.aborted) return;
+
+				for (const repost of result.reposts) {
+					const post = result.posts.get(repost.subjectUri);
+					if (!post) {
+						missingCount += 1;
+						continue;
+					}
+					if (seen.has(post.uri)) continue;
+					seen.add(post.uri);
+					threads.push({ rootPost: post, depth: 1, rootUri: post.uri });
+				}
+			}
+
+			if (controller.signal.aborted) return;
+
+			repostThreads = threads;
+			repostsMissingCount = missingCount;
+			repostsLoaded = true;
+
+			if (threads.length === 0) {
+				toastInfo(
+					missingCount > 0
+						? 'Found reposts, but none of the reposted posts could be loaded.'
+						: 'No reposts found in this repo.'
+				);
+				// "Both" can still show the thread list even with no reposts.
+				if (target === 'both') viewSource = 'both';
+				return;
+			}
+
+			viewSource = target;
+			toastSuccess(
+				`Loaded ${threads.length.toLocaleString()} repost${threads.length === 1 ? '' : 's'}${missingCount > 0 ? ` (${missingCount.toLocaleString()} unavailable)` : ''}.`
+			);
+		} catch (err: any) {
+			if (err?.name !== 'AbortError' && !controller.signal.aborted) {
+				toastError(err?.message || 'Failed to fetch reposts.');
+			}
+		} finally {
+			if (repostsController === controller) repostsController = null;
+			repostsFetching = false;
+			repostsPhase = 'idle';
+			repostsProgress = { current: 0, total: 0 };
+		}
+	}
+
+	const repostsProgressLabel = $derived.by(() => {
+		if (repostsPhase === 'downloading') return 'Downloading repo…';
+		if (repostsPhase === 'parsing') return 'Reading reposts…';
+		if (repostsProgress.total > 0) {
+			return `Hydrating reposts ${repostsProgress.current.toLocaleString()}/${repostsProgress.total.toLocaleString()}…`;
+		}
+		return 'Fetching reposts…';
+	});
+
+	// --- Timeline viewer (date-range selector + selective hydration) ---
+	let timelineHydrating = $state(false);
+	let timelineHydrationProgress = $state({ current: 0, total: 0 });
+	let timelineHydrationController: AbortController | null = null;
+	let showTimeline = $state(true);
+
+	function msToDateInput(ms: number): string {
+		const d = new Date(ms);
+		const y = d.getFullYear();
+		const m = String(d.getMonth() + 1).padStart(2, '0');
+		const day = String(d.getDate()).padStart(2, '0');
+		return `${y}-${m}-${day}`;
+	}
+
+	// Clicking a point on the timeline opens that post: expand its thread in-app if we
+	// have it, otherwise open it on Bluesky.
+	function handleTimelineOpenPost(uri: string, handle: string) {
+		const thread = findThreadForUri(uri);
+		if (thread) {
+			flashHighlightedThread(thread.rootUri);
+			void handleExpand(thread.rootUri);
+			return;
+		}
+		const url = buildBskyPostUrl(uri, handle);
+		if (browser && url) window.open(url, '_blank', 'noopener');
+	}
+
+	// Selecting a range on the timeline drives the existing date filter.
+	function handleTimelineSelect(fromMs: number | null, toMs: number | null) {
+		if (fromMs == null || toMs == null) {
+			dateFrom = '';
+			dateTo = '';
+			return;
+		}
+		dateFrom = msToDateInput(fromMs);
+		dateTo = msToDateInput(toMs);
+	}
+
+	function feedItemCreatedMs(item: any): number {
+		const raw = item?.post?.record?.createdAt ?? item?.post?.indexedAt ?? '';
+		const parsed = Date.parse(raw);
+		return Number.isFinite(parsed) ? parsed : NaN;
+	}
+
+	async function hydrateTimelineRange(fromMs: number, toMs: number) {
+		if (timelineHydrating) return;
+		const source = cachedRepoFeedItems ?? [];
+		if (source.length === 0) {
+			toastInfo('No posts available to hydrate yet.');
+			return;
+		}
+		const items = source.filter((item) => {
+			const uri = feedItemUri(item);
+			if (!uri || engagementCountsByUri[uri]) return false;
+			const created = feedItemCreatedMs(item);
+			return Number.isFinite(created) && created >= fromMs && created <= toMs;
+		});
+		if (items.length === 0) {
+			toastInfo('No un-hydrated posts in the selected range.');
+			return;
+		}
+
+		timelineHydrationController?.abort();
+		const controller = new AbortController();
+		timelineHydrationController = controller;
+		timelineHydrating = true;
+		timelineHydrationProgress = { current: 0, total: items.length };
+
+		try {
+			await hydrateFeedItemsEngagement(items, {
+				signal: controller.signal,
+				concurrency: ENGAGEMENT_HYDRATION_CONCURRENCY,
+				onProgress: ({ completed, total }) => {
+					if (controller.signal.aborted) return;
+					timelineHydrationProgress = { current: completed, total: total || items.length };
+				}
+			});
+			if (controller.signal.aborted) return;
+
+			const counts = collectEngagementCountsFromFeedItems(items);
+			for (const uri of Object.keys(counts)) {
+				engagementAttemptedPostUris.add(uri);
+			}
+			engagementCountsByUri = { ...engagementCountsByUri, ...counts };
+			engagementHydratedCount = Object.keys(engagementCountsByUri).length;
+			repoStats = {
+				...repoStats,
+				hydratedCount: engagementHydratedCount,
+				missingCount: Math.max(0, engagementAttemptedPostUris.size - engagementHydratedCount)
+			};
+			// Apply to the master thread list so sorting (which derives from allThreads) sees the counts.
+			allThreads = applyEngagementCountsToThreadList(allThreads, counts);
+			applyEngagementCountsToActiveViews(counts);
+			flushViewer2MemoryCacheSave();
+			toastSuccess(
+				`Hydrated ${Object.keys(counts).length.toLocaleString()} post${Object.keys(counts).length !== 1 ? 's' : ''}`
+			);
+		} catch (err: any) {
+			if (err?.name !== 'AbortError' && !controller.signal.aborted) {
+				toastError(err?.message || 'Failed to hydrate the selected range.');
+			}
+		} finally {
+			if (timelineHydrationController === controller) {
+				timelineHydrationController = null;
+			}
+			timelineHydrating = false;
+		}
+	}
+
 	function stopEngagementHydration() {
 		if (engagementHydrationState !== 'running') return;
 		engagementHydrationState = 'paused';
@@ -1806,13 +2436,61 @@
 		engagementHydrationController = controller;
 		engagementHydrationState = 'running';
 
+		const isStale = () =>
+			context.searchJob !== activeSearchJob ||
+			engagementHydrationContext !== context ||
+			controller.signal.aborted;
+
 		try {
+			// Thread-first pass over the full pending feed: one getPostThread call
+			// covers a whole thread, versus 25 posts per getPosts call. Running it
+			// per-chunk barely ever triggers because threads get split across chunks.
+			const pendingAll = context.hydrationFeedItems.filter((item) => {
+				const uri = feedItemUri(item);
+				return uri !== null && !engagementAttemptedPostUris.has(uri);
+			});
+			if (pendingAll.length > 0) {
+				const attemptedBeforeThreads = engagementAttemptedPostUris.size;
+				const { hydratedUris } = await hydrateFeedItemsThreadEngagement(pendingAll, {
+					signal: controller.signal,
+					threadConcurrency: ENGAGEMENT_THREAD_CONCURRENCY,
+					onProgress: ({ completed }) => {
+						if (isStale()) return;
+						engagementHydrationProgress = {
+							current: Math.min(context.total, attemptedBeforeThreads + completed),
+							total: context.total
+						};
+					}
+				});
+				if (isStale()) return;
+
+				if (hydratedUris.size > 0) {
+					const hydratedItems = pendingAll.filter((item) => {
+						const uri = feedItemUri(item);
+						return uri !== null && hydratedUris.has(uri);
+					});
+					for (const uri of hydratedUris) {
+						engagementAttemptedPostUris.add(uri);
+					}
+					const threadCounts = collectEngagementCountsFromFeedItems(hydratedItems);
+					Object.assign(engagementCountsByUri, threadCounts);
+					engagementHydratedCount += hydratedUris.size;
+					repoStats = {
+						...repoStats,
+						hydratedCount: engagementHydratedCount,
+						missingCount: Math.max(0, engagementAttemptedPostUris.size - engagementHydratedCount)
+					};
+					engagementHydrationProgress = {
+						current: engagementAttemptedPostUris.size,
+						total: context.total
+					};
+					applyEngagementCountsToActiveViews(threadCounts);
+					scheduleViewer2MemoryCacheSave();
+				}
+			}
+
 			while (true) {
-				if (
-					context.searchJob !== activeSearchJob ||
-					engagementHydrationContext !== context ||
-					controller.signal.aborted
-				) {
+				if (isStale()) {
 					return;
 				}
 
@@ -1830,15 +2508,11 @@
 
 				const engagement = await hydrateFeedItemsEngagement(chunk, {
 					signal: controller.signal,
-					concurrency: 4,
+					concurrency: ENGAGEMENT_HYDRATION_CONCURRENCY,
+					// Thread candidates were already fetched in the full-feed pass above.
+					minThreadFetchPosts: Number.POSITIVE_INFINITY,
 					onProgress: ({ completed }) => {
-						if (
-							context.searchJob !== activeSearchJob ||
-							engagementHydrationContext !== context ||
-							controller.signal.aborted
-						) {
-							return;
-						}
+						if (isStale()) return;
 						engagementHydrationProgress = {
 							current: Math.min(context.total, alreadyAttempted + completed),
 							total: context.total
@@ -1846,11 +2520,7 @@
 					}
 				});
 
-				if (
-					context.searchJob !== activeSearchJob ||
-					engagementHydrationContext !== context ||
-					controller.signal.aborted
-				) {
+				if (isStale()) {
 					return;
 				}
 
@@ -1858,10 +2528,7 @@
 					engagementAttemptedPostUris.add(uri);
 				}
 				const chunkCounts = collectEngagementCountsFromFeedItems(chunk);
-				engagementCountsByUri = {
-					...engagementCountsByUri,
-					...chunkCounts
-				};
+				Object.assign(engagementCountsByUri, chunkCounts);
 				engagementHydratedCount += engagement.hydratedCount;
 				repoStats = {
 					...repoStats,
@@ -1878,11 +2545,7 @@
 				await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			}
 
-			if (
-				context.searchJob !== activeSearchJob ||
-				engagementHydrationContext !== context ||
-				controller.signal.aborted
-			) {
+			if (isStale()) {
 				return;
 			}
 
@@ -1948,6 +2611,11 @@
 			allThreads = [];
 			repoAccounts = [];
 			resetFollowBatchState();
+			resetParentPosts();
+			parentFetchController?.abort();
+			parentFetchController = null;
+			parentFetchState = 'idle';
+			parentFetchProgress = { current: 0, total: 0 };
 			collapsedByRootUri = {};
 			pendingScrollToRootUri = null;
 			highlightedThread = null;
@@ -1961,6 +2629,21 @@
 			showAddAccount = false;
 			additionalHandle = '';
 			additionalProfile = null;
+			wholeThreadController?.abort();
+			wholeThreadController = null;
+			wholeThreadFetching = false;
+			wholeThreadItems = [];
+			wholeThreadTruncated = false;
+			wholeThreadSourceLabel = '';
+			showWholeThreadReader = false;
+			repostsController?.abort();
+			repostsController = null;
+			repostsFetching = false;
+			repostsPhase = 'idle';
+			repostThreads = [];
+			repostsLoaded = false;
+			repostsMissingCount = 0;
+			viewSource = 'threads';
 		}
 		hasSearched = true;
 		if (!appendMode) {
@@ -2202,8 +2885,13 @@
 
 	// Engagement-based sorts (liked/reposted/quoted) are only meaningful once engagement
 	// counts have been hydrated. Until then only Highest chain / Newest / Oldest apply.
+	// Reposts are hydrated with full engagement counts on fetch, so the sorts are always ready.
 	const engagementSortReady = $derived(
-		engagementHydrationState === 'done' || engagementHydrationState === 'partial'
+		viewSource !== 'threads'
+			? true
+			: engagementHydrationState === 'done' ||
+				engagementHydrationState === 'partial' ||
+				Object.keys(engagementCountsByUri).length > 0
 	);
 
 	$effect(() => {
@@ -2503,9 +3191,12 @@
 	});
 
 	onDestroy(() => {
+		stopBlastMode();
 		abortController?.abort();
 		followLoadController?.abort();
 		engagementHydrationController?.abort();
+		wholeThreadController?.abort();
+		repostsController?.abort();
 		flushViewer2MemoryCacheSave();
 	});
 </script>
@@ -2800,6 +3491,15 @@
 		</div>
 	{/if}
 
+	{#if showWholeThreadReader}
+		<WholeThreadReader
+			items={wholeThreadItems}
+			truncated={wholeThreadTruncated}
+			sourceLabel={wholeThreadSourceLabel}
+			onclose={closeWholeThreadReader}
+		/>
+	{/if}
+
 	<div class="results-layer" class:results-layer--parked={detailIsOpen} aria-hidden={detailIsOpen}>
 		{#if hasSearched}
 			<section class="results-section">
@@ -2895,8 +3595,50 @@
 						</div>
 					{/if}
 
-					{#if allThreads.length > 0}
-						<ThresholdControl bind:value={threshold} min={1} max={Math.max(maxDepth, 2)} />
+					{#if !loading}
+						<div class="source-toggle-row wobbly-border-light">
+							<span>Show</span>
+							<div class="source-toggle" aria-label="Content source">
+								<button
+									type="button"
+									class:active={viewSource === 'threads'}
+									onclick={() => setViewSource('threads')}
+								>
+									Threads{allThreads.length > 0 ? ` (${allThreads.length.toLocaleString()})` : ''}
+								</button>
+								<button
+									type="button"
+									class:active={viewSource === 'reposts'}
+									disabled={repostsFetching}
+									onclick={() => setViewSource('reposts')}
+									title="Every post this account has reposted"
+								>
+									🔁 Reposts{repostsLoaded ? ` (${repostThreads.length.toLocaleString()})` : ''}
+								</button>
+								<button
+									type="button"
+									class:active={viewSource === 'both'}
+									disabled={repostsFetching}
+									onclick={() => setViewSource('both')}
+									title="Threads and reposts together"
+								>
+									Both{repostsLoaded ? ` (${(allThreads.length + repostThreads.length).toLocaleString()})` : ''}
+								</button>
+							</div>
+							{#if repostsFetching}
+								<span class="source-toggle-note">{repostsProgressLabel}</span>
+							{:else if viewSource !== 'threads' && repostsMissingCount > 0}
+								<span class="source-toggle-note" title="Deleted, blocked, or hidden reposted posts">
+									{repostsMissingCount.toLocaleString()} unavailable
+								</span>
+							{/if}
+						</div>
+					{/if}
+
+					{#if activeThreads.length > 0}
+						{#if viewSource === 'threads'}
+							<ThresholdControl bind:value={threshold} min={1} max={Math.max(maxDepth, 2)} />
+						{/if}
 						<ModePicker value={renderMode} onchange={handleModePickerChange} />
 						<div class="thread-sort-row wobbly-border-light">
 							<span>Sort</span>
@@ -3082,25 +3824,138 @@
 								</p>
 							{/if}
 						</div>
-						<div class="date-filter-row">
-							<SearchOptions bind:dateFrom bind:dateTo />
+						<div class="timeline-filter-row">
+							<button
+								type="button"
+								class="timeline-toggle-btn"
+								onclick={() => (showTimeline = !showTimeline)}
+								aria-expanded={showTimeline}
+							>
+								{showTimeline ? '▾ Hide timeline' : '▸ Show timeline'}
+							</button>
+							<button
+								type="button"
+								class="timeline-toggle-btn blast-toggle"
+								class:active={blastMode}
+								disabled={!blastMode && displayedThreads.length === 0}
+								onclick={toggleBlastMode}
+								title="Blast the displayed posts across the screen"
+							>
+								🔥 Blast mode {blastMode ? 'on' : 'off'}
+							</button>
+							{#if blastMode}
+								<div class="blast-controls">
+									<label class="blast-slider">
+										<span>Rate</span>
+										<input type="range" min="0.5" max="8" step="0.5" bind:value={blastRate} />
+										<strong>{blastRate}/s</strong>
+									</label>
+									<label class="blast-slider">
+										<span>Burst</span>
+										<input type="range" min="1" max="12" step="1" bind:value={blastBurstSize} />
+										<strong>{blastBurstSize}</strong>
+									</label>
+									<label class="blast-slider">
+										<span>Fly time</span>
+										<input type="range" min="600" max="4000" step="100" bind:value={blastFlyMs} />
+										<strong>{(blastFlyMs / 1000).toFixed(1)}s</strong>
+									</label>
+									<label class="blast-slider">
+										<span>Size</span>
+										<input type="range" min="30" max="300" step="10" bind:value={blastSizePct} />
+										<strong>{blastSizePct}%</strong>
+									</label>
+								</div>
+							{/if}
+							{#if showTimeline}
+								<TimelineViewer
+									feedItems={cachedRepoFeedItems ?? []}
+									{engagementCountsByUri}
+									hydrating={timelineHydrating}
+									hydrationProgress={timelineHydrationProgress}
+									onhydrate={hydrateTimelineRange}
+									onselect={handleTimelineSelect}
+									onopenpost={handleTimelineOpenPost}
+								/>
+							{/if}
 						</div>
 						<p class="results-count">
 							{displayedThreads.length}
 							{#if renderMode === 'gallery' && galleryContentMode === 'images'}
-								image thread{displayedThreads.length !== 1 ? 's' : ''}
+								image {contentNoun}{displayedThreads.length !== 1 ? 's' : ''}
 							{:else if renderMode === 'gallery' && galleryContentMode === 'media'}
-								media thread{displayedThreads.length !== 1 ? 's' : ''}
+								media {contentNoun}{displayedThreads.length !== 1 ? 's' : ''}
 							{:else if renderMode === 'gallery' && galleryContentMode === 'movies'}
-								movie thread{displayedThreads.length !== 1 ? 's' : ''}
+								movie {contentNoun}{displayedThreads.length !== 1 ? 's' : ''}
 							{:else}
-								thread{displayedThreads.length !== 1 ? 's' : ''}
+								{contentNoun}{displayedThreads.length !== 1 ? 's' : ''}
 							{/if}
-							with depth {threshold}+
+							{#if viewSource === 'threads'}with depth {threshold}+{/if}
 							{#if isFilteringThreads}
 								<span class="filtering-note">updating...</span>
 							{/if}
 						</p>
+						{#if SHOW_FETCH_BUTTONS}
+						<div class="parent-fetch-row">
+							<span class="parent-fetch-label">
+								Parent posts (replies/mentions to others):
+								{#if fetchedParentCount > 0}
+									<strong>{fetchedParentCount.toLocaleString()}</strong> fetched
+								{/if}
+							</span>
+							<div class="parent-fetch-actions">
+								<button
+									type="button"
+									class="parent-fetch-action"
+									disabled={parentFetchState === 'running' || filteredParentCandidateCount === 0}
+									onclick={fetchParentsForFiltered}
+								>
+									{#if parentFetchState === 'running'}
+										Fetching {parentFetchProgress.current.toLocaleString()}/{parentFetchProgress.total.toLocaleString()}...
+									{:else}
+										Fetch parents (filtered{filteredParentCandidateCount > 0 ? ` · ${filteredParentCandidateCount.toLocaleString()}` : ''})
+									{/if}
+								</button>
+								<button
+									type="button"
+									class="parent-fetch-action"
+									disabled={parentFetchState === 'running'}
+									onclick={fetchParentsForAll}
+								>
+									Fetch parents (all)
+								</button>
+								<button
+									type="button"
+									class="parent-fetch-action"
+									disabled={wholeThreadFetching || displayedThreads.length === 0}
+									onclick={fetchWholeThreadsForFiltered}
+								>
+									{#if wholeThreadFetching}
+										Fetching threads {wholeThreadProgress.current.toLocaleString()}/{wholeThreadProgress.total.toLocaleString()}...
+									{:else}
+										Fetch whole threads (filtered{displayedThreads.length > 0 ? ` · ${displayedThreads.length.toLocaleString()}` : ''})
+									{/if}
+								</button>
+								<button
+									type="button"
+									class="parent-fetch-action"
+									disabled={wholeThreadFetching || allThreads.length === 0}
+									onclick={fetchWholeThreadsForAll}
+								>
+									Fetch whole threads (all)
+								</button>
+								{#if wholeThreadItems.length > 0 && !showWholeThreadReader}
+									<button
+										type="button"
+										class="parent-fetch-action"
+										onclick={openWholeThreadReader}
+									>
+										Open reader ({wholeThreadItems.length.toLocaleString()})
+									</button>
+								{/if}
+							</div>
+						</div>
+						{/if}
 					{/if}
 
 					{#if dateFrom || dateTo}
@@ -3129,6 +3984,7 @@
 						searchQuery={displayedSearchQuery}
 						searchMode={displayedSearchMode}
 						{highlightedThread}
+						showAuthor={viewSource !== 'threads' || repoAccounts.length > 1}
 						{collapsedByRootUri}
 						oncollapsedchange={setThreadCollapsed}
 						onexpand={handleExpand}
@@ -3140,7 +3996,20 @@
 					/>
 				{:else if !loading && !isFilteringThreads}
 					<div class="empty-state">
-						{#if allThreads.length === 0}
+						{#if viewSource !== 'threads'}
+							{#if activeThreads.length === 0}
+								<p>No {viewSource === 'both' ? 'posts' : 'reposts'} found for this account.</p>
+							{:else}
+								<p>No {viewSource === 'both' ? 'posts' : 'reposts'} match the current filters.</p>
+								<p class="empty-hint">
+									{#if renderMode === 'gallery' && galleryContentMode !== 'all'}
+										Try switching Gallery back to All or adjusting the date range.
+									{:else}
+										Try adjusting the search or date range.
+									{/if}
+								</p>
+							{/if}
+						{:else if activeThreads.length === 0}
 							<p>No self-reply threads found.</p>
 						{:else}
 							<p>No threads match the current filters.</p>
@@ -3166,11 +4035,207 @@
 	</div>
 </main>
 
+{#if blastMode && blastCards.length > 0}
+	<div class="blast-layer" aria-hidden="true" style="font-family: {fontFamily}">
+		{#each blastCards as card (card.id)}
+			<article
+				class="blast-card"
+				style={card.style}
+				onanimationend={() => removeBlastCard(card.id)}
+			>
+				{#if card.media.length > 0}
+					<div class="blast-media" class:pair={card.media.length > 1}>
+						{#each card.media as media}
+							<img src={media.src} alt="" style={`aspect-ratio: ${media.aspectRatio}`} />
+						{/each}
+					</div>
+				{/if}
+				{#if card.text}
+					<p class="blast-text">{card.text}</p>
+				{/if}
+			</article>
+		{/each}
+	</div>
+{/if}
+
 <style>
 	main {
 		max-width: 800px;
 		margin: 0 auto;
 		padding: 32px 20px;
+	}
+
+	.timeline-filter-row {
+		margin: 8px 0;
+	}
+
+	.blast-toggle.active {
+		border-radius: 999px;
+		background: color-mix(in srgb, #e25822 22%, transparent);
+		opacity: 1;
+	}
+
+	.blast-toggle:disabled {
+		cursor: not-allowed;
+		opacity: 0.4;
+	}
+
+	.blast-controls {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px 14px;
+		margin: 6px 0 2px;
+	}
+
+	.blast-slider {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 0.78rem;
+		color: var(--muted, #888);
+	}
+
+	.blast-slider span {
+		font-weight: 700;
+	}
+
+	.blast-slider input[type='range'] {
+		width: 110px;
+		accent-color: #e25822;
+	}
+
+	.blast-slider strong {
+		min-width: 34px;
+		color: var(--text-ink);
+		font-size: 0.78rem;
+	}
+
+	.blast-layer {
+		position: fixed;
+		inset: 0;
+		z-index: 950;
+		overflow: hidden;
+		pointer-events: none;
+	}
+
+	.blast-card {
+		position: absolute;
+		width: min(300px, 70vw);
+		padding: 10px 14px;
+		background: rgba(255, 252, 246, 0.97);
+		border-radius: 10px;
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+		transform: translate(-50%, -50%) scale(0.05);
+		animation: blast-out var(--dur, 1800ms) cubic-bezier(0.3, 0.6, 0.6, 1) both;
+		animation-delay: var(--delay, 0ms);
+		will-change: transform, opacity;
+	}
+
+	@keyframes blast-out {
+		0% {
+			transform: translate(-50%, -50%) scale(0.05) rotate(0deg);
+			opacity: 0;
+		}
+		12% {
+			opacity: 1;
+		}
+		75% {
+			opacity: 1;
+		}
+		100% {
+			transform: translate(calc(-50% + var(--tx, 0px)), calc(-50% + var(--ty, 0px)))
+				scale(var(--sc, 2.5)) rotate(var(--rot, 0deg));
+			opacity: 0;
+		}
+	}
+
+	.blast-media {
+		display: grid;
+		gap: 4px;
+		margin-bottom: 6px;
+	}
+
+	.blast-media.pair {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.blast-media img {
+		display: block;
+		width: 100%;
+		max-height: 40vh;
+		object-fit: cover;
+		border-radius: 6px;
+	}
+
+	.blast-media:last-child {
+		margin-bottom: 0;
+	}
+
+	.blast-text {
+		margin: 0;
+		font-size: 0.85rem;
+		line-height: 1.45;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		display: -webkit-box;
+		-webkit-line-clamp: 6;
+		line-clamp: 6;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+	}
+
+	.parent-fetch-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px 12px;
+		margin: 4px 0 10px;
+		font-size: 0.82rem;
+	}
+
+	.parent-fetch-label {
+		color: var(--muted, #888);
+	}
+
+	.parent-fetch-actions {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.parent-fetch-action {
+		padding: 4px 12px;
+		font-size: 0.8rem;
+		font-family: inherit;
+		background: transparent;
+		color: var(--accent);
+		border: 1px solid var(--accent);
+		border-radius: 999px;
+		cursor: pointer;
+	}
+
+	.parent-fetch-action:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
+	}
+
+	.parent-fetch-action:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+
+	.timeline-toggle-btn {
+		padding: 3px 10px;
+		font-size: 0.82rem;
+		font-family: var(--font-hand);
+		background: transparent;
+		color: var(--text-ink);
+		border: none;
+		cursor: pointer;
+		opacity: 0.8;
+	}
+
+	.timeline-toggle-btn:hover {
+		opacity: 1;
 	}
 
 	main.blog-reader-main {
@@ -3672,6 +4737,7 @@
 		color: var(--accent);
 	}
 
+	.source-toggle-row,
 	.thread-sort-row,
 	.gallery-content-row,
 	.gallery-view-row {
@@ -3687,6 +4753,12 @@
 		font-size: 0.86rem;
 	}
 
+	.source-toggle-note {
+		font-size: 0.76rem;
+		color: #b4690e;
+	}
+
+	.source-toggle,
 	.thread-sort-toggle,
 	.gallery-content-toggle,
 	.gallery-view-toggle,
@@ -3700,6 +4772,7 @@
 		background: color-mix(in srgb, var(--card-bg) 88%, white 12%);
 	}
 
+	.source-toggle button,
 	.thread-sort-toggle button,
 	.gallery-content-toggle button,
 	.gallery-view-toggle button,
@@ -3715,10 +4788,16 @@
 		cursor: pointer;
 	}
 
+	.source-toggle button:disabled {
+		cursor: default;
+		opacity: 0.85;
+	}
+
 	.thread-sort-toggle button {
 		padding-inline: 9px;
 	}
 
+	.source-toggle button:last-child,
 	.thread-sort-toggle button:last-child,
 	.gallery-content-toggle button:last-child,
 	.gallery-view-toggle button:last-child,
@@ -3727,6 +4806,7 @@
 		border-right: 0;
 	}
 
+	.source-toggle button.active,
 	.thread-sort-toggle button.active,
 	.gallery-content-toggle button.active,
 	.gallery-view-toggle button.active,
@@ -3736,6 +4816,7 @@
 		color: white;
 	}
 
+	.source-toggle button:hover:not(.active):not(:disabled),
 	.thread-sort-toggle button:hover:not(.active),
 	.gallery-content-toggle button:hover:not(.active),
 	.gallery-view-toggle button:hover:not(.active),

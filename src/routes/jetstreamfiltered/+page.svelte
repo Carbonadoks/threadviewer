@@ -223,6 +223,17 @@ Skip:
 	let batchSize = $state(DEFAULT_CLASSIFIER_BATCH_SIZE);
 	let queuePaused = $state(false);
 	let isClassifying = $state(false);
+
+	type BlastCard = {
+		id: number;
+		text: string;
+		style: string;
+	};
+
+	const MAX_BLAST_CARDS = 40;
+	let blastMode = $state(false);
+	let blastCards = $state<BlastCard[]>([]);
+	let blastCardId = 0;
 	let endpointIndex = 0;
 	let profilesByDid = $state<Record<string, ProfileInfo>>({});
 
@@ -798,11 +809,61 @@ Skip:
 		};
 	}
 
+	function blastCardStyle(stagger: number): string {
+		const vw = window.innerWidth;
+		const vh = window.innerHeight;
+		// Spawn near the middle of the screen with some spray
+		const ox = vw / 2 + (Math.random() - 0.5) * vw * 0.3;
+		const oy = vh / 2 + (Math.random() - 0.5) * vh * 0.3;
+		// Blast outward in a random direction, well past the screen edge
+		const angle = Math.random() * Math.PI * 2;
+		const dist = Math.hypot(vw, vh) * (0.6 + Math.random() * 0.6);
+		const tx = Math.cos(angle) * dist;
+		const ty = Math.sin(angle) * dist;
+		const scale = 1.6 + Math.random() * 2.2;
+		const rot = (Math.random() - 0.5) * 90;
+		const dur = 1600 + Math.random() * 1400;
+		const delay = stagger * 180 + Math.random() * 120;
+		return (
+			`left: ${ox.toFixed(0)}px; top: ${oy.toFixed(0)}px; ` +
+			`--tx: ${tx.toFixed(0)}px; --ty: ${ty.toFixed(0)}px; ` +
+			`--sc: ${scale.toFixed(2)}; --rot: ${rot.toFixed(1)}deg; ` +
+			`--dur: ${dur.toFixed(0)}ms; --delay: ${delay.toFixed(0)}ms;`
+		);
+	}
+
+	function spawnBlastCards(items: ClassifiedPost[]) {
+		if (!browser || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+		const fresh = items
+			.filter((item) => item.post.text.trim().length > 0)
+			.map((item, i) => ({
+				id: blastCardId++,
+				text: item.post.text,
+				style: blastCardStyle(i)
+			}));
+		if (fresh.length === 0) return;
+		const next = [...blastCards, ...fresh];
+		blastCards = next.length > MAX_BLAST_CARDS ? next.slice(next.length - MAX_BLAST_CARDS) : next;
+	}
+
+	function removeBlastCard(id: number) {
+		blastCards = blastCards.filter((card) => card.id !== id);
+	}
+
+	function toggleBlastMode() {
+		blastMode = !blastMode;
+		if (!blastMode) blastCards = [];
+	}
+
 	function storeClassifiedItems(items: ClassifiedPost[]) {
 		const accepted = items.filter((item) => item.decision.keep);
 		const rejected = items.filter((item) => !item.decision.keep);
 		postsAccepted += accepted.length;
 		postsRejected += rejected.length;
+
+		if (blastMode && accepted.length > 0) {
+			spawnBlastCards(accepted);
+		}
 
 		if (accepted.length > 0) {
 			const acceptedUris = new Set(accepted.map((item) => item.post.uri));
@@ -1466,6 +1527,15 @@ ${JSON.stringify(payload, null, 2)}`;
 				<button type="button" class="secondary-button wobbly-border-light" onclick={clearResults}>
 					Clear results
 				</button>
+				<button
+					type="button"
+					class="secondary-button wobbly-border-light blast-toggle"
+					class:active={blastMode}
+					onclick={toggleBlastMode}
+					title="Blast newly accepted posts across the screen as they arrive"
+				>
+					🔥 Blast mode {blastMode ? 'on' : 'off'}
+				</button>
 			</div>
 		</div>
 
@@ -1697,6 +1767,20 @@ ${JSON.stringify(payload, null, 2)}`;
 	{/if}
 </main>
 
+{#if blastMode && blastCards.length > 0}
+	<div class="blast-layer" aria-hidden="true" style="font-family: {fontFamily}">
+		{#each blastCards as card (card.id)}
+			<article
+				class="blast-card"
+				style={card.style}
+				onanimationend={() => removeBlastCard(card.id)}
+			>
+				<p class="blast-text">{card.text}</p>
+			</article>
+		{/each}
+	</div>
+{/if}
+
 <style>
 	main {
 		width: min(1440px, calc(100vw - 32px));
@@ -1706,6 +1790,63 @@ ${JSON.stringify(payload, null, 2)}`;
 
 	.page-header {
 		margin-bottom: 16px;
+	}
+
+	.blast-toggle.active {
+		background: color-mix(in srgb, #e25822 22%, white);
+		border-color: #e25822;
+	}
+
+	.blast-layer {
+		position: fixed;
+		inset: 0;
+		z-index: 950;
+		overflow: hidden;
+		pointer-events: none;
+	}
+
+	.blast-card {
+		position: absolute;
+		width: min(300px, 70vw);
+		padding: 10px 14px;
+		background: rgba(255, 252, 246, 0.97);
+		border-radius: 10px;
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+		transform: translate(-50%, -50%) scale(0.05);
+		animation: blast-out var(--dur, 1800ms) cubic-bezier(0.3, 0.6, 0.6, 1) both;
+		animation-delay: var(--delay, 0ms);
+		will-change: transform, opacity;
+	}
+
+	@keyframes blast-out {
+		0% {
+			transform: translate(-50%, -50%) scale(0.05) rotate(0deg);
+			opacity: 0;
+		}
+		12% {
+			opacity: 1;
+		}
+		75% {
+			opacity: 1;
+		}
+		100% {
+			transform: translate(calc(-50% + var(--tx, 0px)), calc(-50% + var(--ty, 0px)))
+				scale(var(--sc, 2.5)) rotate(var(--rot, 0deg));
+			opacity: 0;
+		}
+	}
+
+	.blast-text {
+		margin: 0;
+		font-size: 0.85rem;
+		line-height: 1.45;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		display: -webkit-box;
+		-webkit-line-clamp: 6;
+		line-clamp: 6;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
 	}
 
 	.title-row {

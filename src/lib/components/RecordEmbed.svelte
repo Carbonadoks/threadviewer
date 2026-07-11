@@ -23,8 +23,21 @@
 	const displayRecord = $derived(hydratedRecord ?? record);
 
 	function recordUrl(uri: string, handle: string): string {
+		// X/Twitter quotes already carry a full https URL; link straight to it.
+		if (/^https?:\/\//i.test(uri)) return uri;
 		const rkey = uri.split('/').pop();
 		return handle && rkey ? `https://bsky.app/profile/${handle}/post/${rkey}` : uri;
+	}
+
+	const externalUrl = $derived(/^https?:\/\//i.test(displayRecord.uri) ? displayRecord.uri : null);
+
+	function openExternalRecord(event: MouseEvent | KeyboardEvent) {
+		if (!externalUrl) return;
+		// Ignore clicks that land on inner interactive elements (links, media, nested quotes).
+		const target = event.target as HTMLElement | null;
+		if (target?.closest('a, img, video, button')) return;
+		event.stopPropagation();
+		window.open(externalUrl, '_blank', 'noopener,noreferrer');
 	}
 
 	$effect(() => {
@@ -94,7 +107,17 @@
 	});
 </script>
 
-<div class="record-embed wobbly-border-light" class:dense bind:this={containerEl}>
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div
+	class="record-embed wobbly-border-light"
+	class:dense
+	class:clickable={Boolean(externalUrl)}
+	bind:this={containerEl}
+	onclick={externalUrl ? openExternalRecord : undefined}
+	onkeydown={externalUrl ? (e) => e.key === 'Enter' && openExternalRecord(e) : undefined}
+	role={externalUrl ? 'link' : undefined}
+	tabindex={externalUrl ? 0 : undefined}
+>
 	<div class="record-header">
 		{#if displayRecord.author.avatar}
 			<img src={displayRecord.author.avatar} alt="" class="record-avatar" />
@@ -189,6 +212,10 @@
 
 	.record-embed.dense {
 		padding: 7px 9px;
+	}
+
+	.record-embed.clickable {
+		cursor: pointer;
 	}
 
 	.record-header {

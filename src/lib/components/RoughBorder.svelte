@@ -2,10 +2,28 @@
 	import { onMount, type Snippet } from 'svelte';
 	import rough from 'roughjs';
 
-	let { children }: { children: Snippet } = $props();
+	let {
+		children,
+		stroke = '#333',
+		strokeWidth = 1.5,
+		padding = 20
+	}: {
+		children: Snippet;
+		stroke?: string;
+		strokeWidth?: number;
+		padding?: number;
+	} = $props();
 
 	let container: HTMLDivElement;
 	let canvas: HTMLCanvasElement;
+
+	function resolveStroke(): string {
+		if (stroke.startsWith('--') && container) {
+			const value = getComputedStyle(container).getPropertyValue(stroke).trim();
+			if (value) return value;
+		}
+		return stroke;
+	}
 
 	function draw() {
 		if (!canvas || !container) return;
@@ -28,8 +46,8 @@
 		rc.rectangle(4, 4, rect.width - 8, rect.height - 8, {
 			roughness: 1.5,
 			bowing: 2,
-			stroke: '#333',
-			strokeWidth: 1.5
+			stroke: resolveStroke(),
+			strokeWidth
 		});
 	}
 
@@ -41,11 +59,17 @@
 
 		return () => observer.disconnect();
 	});
+
+	$effect(() => {
+		void stroke;
+		void strokeWidth;
+		draw();
+	});
 </script>
 
 <div class="rough-border-wrapper" bind:this={container}>
 	<canvas bind:this={canvas} class="rough-canvas"></canvas>
-	<div class="rough-content">
+	<div class="rough-content" style={`padding: ${padding}px;`}>
 		{@render children()}
 	</div>
 </div>
@@ -65,6 +89,5 @@
 
 	.rough-content {
 		position: relative;
-		padding: 20px;
 	}
 </style>

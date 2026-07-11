@@ -8,6 +8,7 @@ export type ViewerPage =
 	| 'blog'
 	| 'clock'
 	| 'treeviewer'
+	| 'carousel'
 	| 'parallelboard'
 	| 'band'
 	| 'bisk2bisk'

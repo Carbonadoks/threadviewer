@@ -195,6 +195,8 @@
 	}
 
 	function postUrl(uri: string, handle: string): string | null {
+		// X/Twitter posts already carry a full https permalink as their uri.
+		if (/^https?:\/\//i.test(uri)) return uri;
 		return buildBskyPostUrl(uri, handle);
 	}
 

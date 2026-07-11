@@ -2,7 +2,7 @@ import { getFullThread } from '../api/bluesky';
 import type { BoardThread } from '../types/boardPlatform';
 
 type WorkerIncomingMessage =
-	| { type: 'start'; runId: number; taskIds: string[]; delayMs: number }
+	| { type: 'start'; runId: number; taskIds: string[]; delayMs: number; maxConcurrent?: number }
 	| { type: 'enqueue'; runId: number; taskIds: string[]; placement?: 'front' | 'back' }
 	| { type: 'complete'; runId: number; taskId: string }
 	| { type: 'pause'; runId: number }
@@ -22,7 +22,8 @@ type WorkerOutgoingMessage =
 let activeRunId = 0;
 let running = false;
 let paused = false;
-let activeTaskId = '';
+let maxConcurrent = 1;
+const activeTaskIds = new Set<string>();
 let queue: string[] = [];
 let delayMs = 700;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -39,20 +40,27 @@ function clearTimer() {
 
 function dispatchNext() {
 	clearTimer();
-	if (!running || paused || activeTaskId) return;
-	const nextTaskId = queue.shift();
-	if (!nextTaskId) {
-		running = false;
-		post({ type: 'idle', runId: activeRunId });
+	if (!running || paused) return;
+	if (queue.length === 0) {
+		if (activeTaskIds.size === 0) {
+			running = false;
+			post({ type: 'idle', runId: activeRunId });
+		}
 		return;
 	}
-	activeTaskId = nextTaskId;
+	if (activeTaskIds.size >= maxConcurrent) return;
+	const nextTaskId = queue.shift();
+	if (!nextTaskId) return;
+	activeTaskIds.add(nextTaskId);
 	post({ type: 'run-task', runId: activeRunId, taskId: nextTaskId });
+	if (queue.length > 0 && activeTaskIds.size < maxConcurrent) {
+		timer = setTimeout(dispatchNext, delayMs);
+	}
 }
 
 function scheduleNext(wait: boolean) {
 	clearTimer();
-	if (!running || paused || activeTaskId) return;
+	if (!running || paused) return;
 	if (!wait) {
 		dispatchNext();
 		return;
@@ -71,7 +79,7 @@ function uniqueTaskIds(taskIds: string[]) {
 
 function enqueueTaskIds(taskIds: string[], placement: 'front' | 'back' = 'back') {
 	const nextTaskIds = uniqueTaskIds(taskIds).filter(
-		(taskId) => taskId !== activeTaskId && !queue.includes(taskId)
+		(taskId) => !activeTaskIds.has(taskId) && !queue.includes(taskId)
 	);
 	if (nextTaskIds.length === 0) return;
 	if (placement === 'front') {
@@ -105,9 +113,10 @@ function handleMessage(message: WorkerIncomingMessage) {
 		activeRunId = message.runId;
 		running = true;
 		paused = false;
-		activeTaskId = '';
+		activeTaskIds.clear();
 		queue = uniqueTaskIds(message.taskIds);
 		delayMs = Math.max(0, Math.round(message.delayMs));
+		maxConcurrent = Math.max(1, Math.round(message.maxConcurrent ?? 1));
 		scheduleNext(false);
 		return;
 	}
@@ -121,8 +130,7 @@ function handleMessage(message: WorkerIncomingMessage) {
 	}
 
 	if (message.type === 'complete') {
-		if (message.taskId === activeTaskId) {
-			activeTaskId = '';
+		if (activeTaskIds.delete(message.taskId)) {
 			scheduleNext(true);
 		}
 		return;
@@ -146,7 +154,7 @@ function handleMessage(message: WorkerIncomingMessage) {
 		clearTimer();
 		running = false;
 		paused = false;
-		activeTaskId = '';
+		activeTaskIds.clear();
 		queue = [];
 		post({ type: 'stopped', runId: activeRunId });
 	}

@@ -95,6 +95,13 @@
 		authorDid: string;
 	};
 
+	type BlastCard = {
+		id: number;
+		thumb: string;
+		aspectRatio: string;
+		style: string;
+	};
+
 	type StreamTagEvent = {
 		id: string;
 		uri: string;
@@ -133,6 +140,11 @@
 	let streamTaggedPostsSeen = $state(0);
 	let streamImageTaggedPostsSeen = $state(0);
 	let lastEventAt: string | null = $state(null);
+	const MAX_BLAST_CARDS = 40;
+	let blastMode = $state(false);
+	let blastCards = $state<BlastCard[]>([]);
+	let blastCardId = 0;
+	const blastedImageIds = new Set<string>();
 	let socket: WebSocket | null = null;
 	let seenImageIds = new Set<string>();
 	const adultCheckCache = new Map<string, AdultCheckCacheEntry>();
@@ -365,6 +377,8 @@
 			for (const image of event.images) {
 				if (seenImageIds.has(image.id)) continue;
 				seenImageIds.add(image.id);
+				// Backlog hydration should fill the gallery quietly, not blast the screen.
+				blastedImageIds.add(image.id);
 				eventAdded = true;
 				nextItems.push({
 					id: image.id,
@@ -396,6 +410,61 @@
 				void moderateImagePost(uri, moderation.base, moderation.createdAt);
 			}
 		}
+	}
+
+	function blastCardStyle(stagger: number): string {
+		const vw = window.innerWidth;
+		const vh = window.innerHeight;
+		// Spawn near the middle of the screen with some spray
+		const ox = vw / 2 + (Math.random() - 0.5) * vw * 0.3;
+		const oy = vh / 2 + (Math.random() - 0.5) * vh * 0.3;
+		// Blast outward in a random direction, well past the screen edge
+		const angle = Math.random() * Math.PI * 2;
+		const dist = Math.hypot(vw, vh) * (0.6 + Math.random() * 0.6);
+		const tx = Math.cos(angle) * dist;
+		const ty = Math.sin(angle) * dist;
+		const scale = 1.6 + Math.random() * 2.2;
+		const rot = (Math.random() - 0.5) * 90;
+		const dur = 1600 + Math.random() * 1400;
+		const delay = stagger * 180 + Math.random() * 120;
+		return (
+			`left: ${ox.toFixed(0)}px; top: ${oy.toFixed(0)}px; ` +
+			`--tx: ${tx.toFixed(0)}px; --ty: ${ty.toFixed(0)}px; ` +
+			`--sc: ${scale.toFixed(2)}; --rot: ${rot.toFixed(1)}deg; ` +
+			`--dur: ${dur.toFixed(0)}ms; --delay: ${delay.toFixed(0)}ms;`
+		);
+	}
+
+	function maybeBlastImages(items: GalleryImage[]) {
+		if (!blastMode || !browser) return;
+		if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+		const eligible = items.filter(
+			(item) =>
+				!blastedImageIds.has(item.id) &&
+				!hasBlacklistedTag(item.tags) &&
+				(!moderationEnabled || (item.moderationChecked && !item.moderationBlocked))
+		);
+		if (eligible.length === 0) return;
+		const fresh = eligible.map((item, i) => {
+			blastedImageIds.add(item.id);
+			return {
+				id: blastCardId++,
+				thumb: item.thumb,
+				aspectRatio: item.aspectRatio,
+				style: blastCardStyle(i)
+			};
+		});
+		const next = [...blastCards, ...fresh];
+		blastCards = next.length > MAX_BLAST_CARDS ? next.slice(next.length - MAX_BLAST_CARDS) : next;
+	}
+
+	function removeBlastCard(id: number) {
+		blastCards = blastCards.filter((card) => card.id !== id);
+	}
+
+	function toggleBlastMode() {
+		blastMode = !blastMode;
+		if (!blastMode) blastCards = [];
 	}
 
 	function normalizeTag(tag: unknown): string | null {
@@ -581,6 +650,9 @@
 					}
 				: item
 		);
+		if (!normalized.blocked) {
+			maybeBlastImages(galleryCandidates.filter((item) => item.postUri === uri));
+		}
 	}
 
 	async function moderateImagePost(uri: string, base: AdultCheck, createdAt: string) {
@@ -770,6 +842,7 @@
 
 		if (nextItems.length > 0) {
 			galleryCandidates = [...nextItems, ...galleryCandidates].slice(0, MAX_GALLERY_CANDIDATES);
+			maybeBlastImages(nextItems);
 			void moderateImagePost(uri, initialModeration, createdAt);
 		}
 	}
@@ -976,11 +1049,22 @@
 				</div>
 			</div>
 
-			<label class="moderation-toggle">
-				<input type="checkbox" checked={moderationEnabled} onchange={handleModerationChange} />
-				<span>Moderation</span>
-				<strong>{moderationEnabled ? 'On' : 'Off'}</strong>
-			</label>
+			<div class="control-side">
+				<label class="moderation-toggle">
+					<input type="checkbox" checked={moderationEnabled} onchange={handleModerationChange} />
+					<span>Moderation</span>
+					<strong>{moderationEnabled ? 'On' : 'Off'}</strong>
+				</label>
+				<button
+					type="button"
+					class="secondary-button wobbly-border-light blast-toggle"
+					class:active={blastMode}
+					onclick={toggleBlastMode}
+					title="Blast newly matched images across the screen as they arrive"
+				>
+					🔥 Blast mode {blastMode ? 'on' : 'off'}
+				</button>
+			</div>
 		</div>
 
 		<div class="tag-strip" aria-label="Active hashtags">
@@ -1276,6 +1360,20 @@
 	{/if}
 </main>
 
+{#if blastMode && blastCards.length > 0}
+	<div class="blast-layer" aria-hidden="true">
+		{#each blastCards as card (card.id)}
+			<article
+				class="blast-card"
+				style={card.style}
+				onanimationend={() => removeBlastCard(card.id)}
+			>
+				<img src={card.thumb} alt="" style={`aspect-ratio: ${card.aspectRatio}`} />
+			</article>
+		{/each}
+	</div>
+{/if}
+
 <style>
 	main {
 		width: min(1440px, calc(100vw - 32px));
@@ -1441,6 +1539,64 @@
 	.muted-chip strong {
 		min-width: 28px;
 		color: var(--muted);
+	}
+
+	.control-side {
+		display: grid;
+		gap: 6px;
+		justify-items: end;
+	}
+
+	.blast-toggle.active {
+		background: color-mix(in srgb, #e25822 22%, white);
+		border-color: #e25822;
+	}
+
+	.blast-layer {
+		position: fixed;
+		inset: 0;
+		z-index: 950;
+		overflow: hidden;
+		pointer-events: none;
+	}
+
+	.blast-card {
+		position: absolute;
+		width: min(260px, 60vw);
+		padding: 6px;
+		background: rgba(255, 252, 246, 0.97);
+		border-radius: 10px;
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+		transform: translate(-50%, -50%) scale(0.05);
+		animation: blast-out var(--dur, 1800ms) cubic-bezier(0.3, 0.6, 0.6, 1) both;
+		animation-delay: var(--delay, 0ms);
+		will-change: transform, opacity;
+	}
+
+	.blast-card img {
+		display: block;
+		width: 100%;
+		max-height: 60vh;
+		object-fit: cover;
+		border-radius: 6px;
+	}
+
+	@keyframes blast-out {
+		0% {
+			transform: translate(-50%, -50%) scale(0.05) rotate(0deg);
+			opacity: 0;
+		}
+		12% {
+			opacity: 1;
+		}
+		75% {
+			opacity: 1;
+		}
+		100% {
+			transform: translate(calc(-50% + var(--tx, 0px)), calc(-50% + var(--ty, 0px)))
+				scale(var(--sc, 2.5)) rotate(var(--rot, 0deg));
+			opacity: 0;
+		}
 	}
 
 	.moderation-toggle {

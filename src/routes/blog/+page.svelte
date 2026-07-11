@@ -7,9 +7,12 @@
 	import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
 	import FontPicker from '$lib/components/FontPicker.svelte';
 	import RouteNav from '$lib/components/RouteNav.svelte';
+	import ThreadExportButton from '$lib/components/ThreadExportButton.svelte';
 	import type { SelfReplyThread } from '$lib/types';
 	import { findSelfReplyChainRoot, measureSelfReplyChainDepth } from '$lib/utils/threadBlog';
 	import { buildAtUri, normalizeBskyPostUrl, parseBskyPostUrl } from '$lib/utils/viewerLinks';
+	import { buildYouTubePlaylists, collectYouTubeIds } from '$lib/utils/youtubePlaylist';
+	import { toastError, toastSuccess } from '$lib/utils/toasts';
 
 	const fontFamilies: Record<string, string> = {
 		virgil: "'Virgil', cursive",
@@ -23,10 +26,18 @@
 	let fontKey = $state('patrick');
 	let fontFamily = $derived(fontFamilies[fontKey] ?? fontFamilies.virgil);
 
+	type LoadedThread = SelfReplyThread & { isTruncated?: boolean };
+
 	let urlInput = $state('');
 	let loading = $state(false);
 	let error: string | null = $state(null);
-	let thread: (SelfReplyThread & { isTruncated?: boolean }) | null = $state(null);
+	type BlogViewMode = 'chain' | 'thread';
+
+	let viewMode = $state<BlogViewMode>('chain');
+	let loadedThreads = $state<{ chain: LoadedThread; whole: LoadedThread } | null>(null);
+	let thread = $derived(
+		loadedThreads ? (viewMode === 'chain' ? loadedThreads.chain : loadedThreads.whole) : null
+	);
 
 	function handleFontChange(key: string) {
 		fontKey = key;
@@ -44,6 +55,14 @@
 		window.history.replaceState({}, '', current.toString());
 	}
 
+	function setViewMode(mode: BlogViewMode) {
+		viewMode = mode;
+		if (!browser) return;
+		const current = new URL(window.location.href);
+		current.searchParams.set('view', mode);
+		window.history.replaceState({}, '', current.toString());
+	}
+
 	async function loadThread(bskyUrl: string) {
 		const normalizedUrl = normalizeBskyPostUrl(bskyUrl);
 		const parsed = normalizedUrl ? parseBskyPostUrl(normalizedUrl) : null;
@@ -54,7 +73,7 @@
 
 		loading = true;
 		error = null;
-		thread = null;
+		loadedThreads = null;
 		urlInput = normalizedUrl;
 		updateQueryParam(normalizedUrl);
 
@@ -68,11 +87,14 @@
 
 			const fullThread = await getFullThread(atUri);
 			const chainRoot = findSelfReplyChainRoot(fullThread.rootPost, atUri);
-			thread = {
-				rootPost: chainRoot,
-				rootUri: chainRoot.uri,
-				depth: measureSelfReplyChainDepth(chainRoot),
-				isTruncated: fullThread.isTruncated
+			loadedThreads = {
+				chain: {
+					rootPost: chainRoot,
+					rootUri: chainRoot.uri,
+					depth: measureSelfReplyChainDepth(chainRoot),
+					isTruncated: fullThread.isTruncated
+				},
+				whole: fullThread
 			};
 		} catch (e: any) {
 			if (e?.message?.includes('resolve')) {
@@ -90,6 +112,41 @@
 		if (urlInput.trim()) loadThread(urlInput.trim());
 	}
 
+	let youtubeIds = $derived(thread ? collectYouTubeIds([thread.rootPost]) : []);
+	let playlists = $derived(buildYouTubePlaylists(youtubeIds));
+	let playlistMenuOpen = $state(false);
+
+	$effect(() => {
+		// close the menu whenever the thread changes / has no videos
+		if (youtubeIds.length === 0) playlistMenuOpen = false;
+	});
+
+	function openPlaylist(url: string) {
+		window.open(url, '_blank', 'noopener,noreferrer');
+		playlistMenuOpen = false;
+	}
+
+	async function copyPlaylist(url: string) {
+		try {
+			if (navigator.clipboard?.writeText) {
+				await navigator.clipboard.writeText(url);
+			} else {
+				const textarea = document.createElement('textarea');
+				textarea.value = url;
+				textarea.style.position = 'fixed';
+				textarea.style.left = '-9999px';
+				document.body.appendChild(textarea);
+				textarea.select();
+				document.execCommand('copy');
+				textarea.remove();
+			}
+			toastSuccess('Playlist link copied');
+		} catch {
+			toastError('Could not copy link');
+		}
+		playlistMenuOpen = false;
+	}
+
 	onMount(() => {
 		try {
 			const saved = localStorage.getItem('preferred-font');
@@ -97,6 +154,10 @@
 		} catch {}
 
 		const params = new URLSearchParams(window.location.search);
+		const viewParam = params.get('view');
+		if (viewParam === 'chain' || viewParam === 'thread') {
+			viewMode = viewParam;
+		}
 		const urlParam = params.get('url');
 		if (urlParam) {
 			urlInput = urlParam;
@@ -147,14 +208,71 @@
 
 	{#if thread}
 		<div class="reader-topbar">
-			<button type="button" class="change-btn" onclick={() => (thread = null)}>
+			<button type="button" class="change-btn" onclick={() => (loadedThreads = null)}>
 				Change thread
 			</button>
+			<div class="mode-toggle" role="group" aria-label="Blog format">
+				<button
+					type="button"
+					class="mode-btn"
+					class:active={viewMode === 'chain'}
+					onclick={() => setViewMode('chain')}
+				>
+					Self-reply
+				</button>
+				<button
+					type="button"
+					class="mode-btn"
+					class:active={viewMode === 'thread'}
+					onclick={() => setViewMode('thread')}
+				>
+					Whole thread
+				</button>
+			</div>
+			<div class="playlist-menu">
+				<button
+					type="button"
+					class="playlist-btn"
+					aria-haspopup="menu"
+					aria-expanded={playlistMenuOpen}
+					onclick={() => (playlistMenuOpen = !playlistMenuOpen)}
+					disabled={youtubeIds.length === 0}
+					title={youtubeIds.length === 0
+						? 'No YouTube links in this thread'
+						: `${youtubeIds.length} video${youtubeIds.length === 1 ? '' : 's'} found`}
+				>
+					▶ Playlist{youtubeIds.length > 0 ? ` (${youtubeIds.length})` : ''} ▾
+				</button>
+
+				{#if playlistMenuOpen && playlists.length > 0}
+					<div class="playlist-popover wobbly-border-light" role="menu">
+						{#if playlists.length > 1}
+							<p class="playlist-note">
+								YouTube caps anonymous playlists at 50 videos, so this is split into
+								{playlists.length} parts.
+							</p>
+						{/if}
+						{#each playlists as playlist, i}
+							<div class="playlist-row">
+								<span class="playlist-label">
+									{playlists.length > 1 ? `Part ${i + 1}` : 'Playlist'}
+									<span class="playlist-count">{playlist.ids.length} video{playlist.ids.length === 1 ? '' : 's'}</span>
+								</span>
+								<div class="playlist-actions">
+									<button type="button" role="menuitem" onclick={() => openPlaylist(playlist.url)}>Open</button>
+									<button type="button" role="menuitem" onclick={() => copyPlaylist(playlist.url)}>Copy link</button>
+								</div>
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+			<ThreadExportButton {thread} label="Export MD" compact />
 		</div>
 		{#if thread.isTruncated}
 			<p class="truncation-warning">Some replies may be missing</p>
 		{/if}
-		<BlogArticle {thread} />
+		<BlogArticle {thread} mode={viewMode} />
 	{/if}
 </main>
 
@@ -233,7 +351,35 @@
 	.reader-topbar {
 		display: flex;
 		justify-content: center;
+		align-items: center;
+		gap: 18px;
 		margin-bottom: 32px;
+	}
+
+	.mode-toggle {
+		display: flex;
+		gap: 2px;
+	}
+
+	.mode-btn {
+		border: 0;
+		background: transparent;
+		color: var(--muted);
+		font-family: Inter, system-ui, sans-serif;
+		font-size: 0.8rem;
+		padding: 4px 8px;
+		cursor: pointer;
+	}
+
+	.mode-btn:hover {
+		color: var(--accent);
+	}
+
+	.mode-btn.active {
+		color: var(--accent);
+		font-weight: 700;
+		text-decoration: underline;
+		text-underline-offset: 4px;
 	}
 
 	.change-btn {
@@ -246,6 +392,99 @@
 	}
 
 	.change-btn:hover {
+		color: var(--accent);
+	}
+
+	.playlist-menu {
+		position: relative;
+		display: inline-flex;
+	}
+
+	.playlist-btn {
+		border: 1px solid var(--control-border, rgba(63, 56, 78, 0.24));
+		border-radius: 7px;
+		background: var(--control-bg, var(--card-bg, #fff));
+		color: var(--text-ink, #2d2733);
+		font-family: Inter, system-ui, sans-serif;
+		font-size: 0.72rem;
+		font-weight: 800;
+		min-height: 24px;
+		padding: 0 8px;
+		cursor: pointer;
+	}
+
+	.playlist-btn:hover:not(:disabled) {
+		background: var(--control-bg-hover, var(--muted-surface, #f2eee4));
+		color: var(--accent);
+	}
+
+	.playlist-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.playlist-popover {
+		position: absolute;
+		top: calc(100% + 6px);
+		right: 0;
+		z-index: 40;
+		width: min(280px, calc(100vw - 32px));
+		display: grid;
+		gap: 8px;
+		padding: 10px;
+		border-radius: 8px;
+		background: color-mix(in srgb, var(--card-bg, #fff) 96%, white);
+		box-shadow: var(--shadow-soft, 0 10px 24px rgba(0, 0, 0, 0.14));
+		color: var(--text-ink, #2d2733);
+		font-family: Inter, system-ui, sans-serif;
+	}
+
+	.playlist-note {
+		margin: 0;
+		font-size: 0.72rem;
+		line-height: 1.35;
+		color: var(--muted, #6b6670);
+	}
+
+	.playlist-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+	}
+
+	.playlist-label {
+		display: flex;
+		flex-direction: column;
+		font-size: 0.78rem;
+		font-weight: 800;
+	}
+
+	.playlist-count {
+		font-size: 0.68rem;
+		font-weight: 600;
+		color: var(--muted, #6b6670);
+	}
+
+	.playlist-actions {
+		display: flex;
+		gap: 4px;
+	}
+
+	.playlist-actions button {
+		border: 1px solid var(--control-border, rgba(63, 56, 78, 0.24));
+		border-radius: 6px;
+		background: var(--control-bg, var(--card-bg, #fff));
+		color: var(--text-ink, #2d2733);
+		font-family: inherit;
+		font-size: 0.72rem;
+		font-weight: 800;
+		padding: 3px 8px;
+		cursor: pointer;
+	}
+
+	.playlist-actions button:hover {
+		background: var(--control-bg-hover, var(--muted-surface, #f2eee4));
 		color: var(--accent);
 	}
 

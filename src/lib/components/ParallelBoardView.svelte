@@ -198,9 +198,13 @@
 			const ZOOM_MIN = 0.1;
 			const ZOOM_MAX = 1.5;
 			const ZOOM_STEP = 0.1;
-		const FETCH_MODE_DELAY_MS = 700;
-		const FETCH_MODE_MAX_TASKS = 250;
+		const FETCH_MODE_DELAY_MS = 300;
+		const FETCH_MODE_MAX_TASKS = 1000;
 		const FETCH_MODE_VISIBLE_ITEMS = 9;
+		const FETCH_MODE_CONCURRENCY = 3;
+		const BULK_LANE_CONCURRENCY = 5;
+		const BULK_LANE_FLUSH_SIZE = 12;
+		const BULK_LANE_FLUSH_MS = 250;
 			function buildBlueskyPostUrl(uri: string, handle: string): string {
 				const rkey = uri.split('/').pop();
 				return `https://bsky.app/profile/${handle}/post/${rkey}`;
@@ -230,6 +234,7 @@
 				{ keys: ['o'], description: `Open the selected post on ${platformName}` },
 				{ keys: ['q'], description: 'Fetch, link, or jump to the selected card’s quoted thread' },
 				{ keys: ['w'], description: 'Open quote posts for the selected card' },
+				{ keys: ['Shift + w'], description: 'Open a lane for every quote post of the selected card' },
 				{ keys: ['x'], description: 'Close the active quoted lane' },
 				{ keys: ['+', '-', '0'], description: 'Zoom in, zoom out, or reset zoom' },
 				{ keys: ['f'], description: 'Toggle fullscreen for the board' },
@@ -255,6 +260,7 @@
 
 	let parallelBoardLayoutEl: HTMLDivElement | undefined = $state();
 	let boardEl: HTMLDivElement | undefined = $state();
+	let boardCanvasEl: HTMLDivElement | undefined = $state();
 	let shortcutsHelpEl: HTMLDivElement | undefined = $state();
 	let detailModalDialogEl: HTMLDialogElement | undefined = $state();
 	let treeBoardDialogEl: HTMLDialogElement | undefined = $state();
@@ -345,6 +351,29 @@
 
 		visit(rootPost, [], '0');
 		return chains;
+	}
+
+	// Lane threads are immutable once loaded, so chain and depth layouts can be
+	// computed once per thread instead of on every board model rebuild.
+	const laneChainsCache = new WeakMap<ThreadPost, LaneChain[]>();
+	const lanePostDepthCache = new WeakMap<ThreadPost, Map<string, number>>();
+
+	function getLaneChainsCached(rootPost: ThreadPost): LaneChain[] {
+		let chains = laneChainsCache.get(rootPost);
+		if (!chains) {
+			chains = collectLaneChains(rootPost);
+			laneChainsCache.set(rootPost, chains);
+		}
+		return chains;
+	}
+
+	function getPostDepthMapCached(rootPost: ThreadPost): Map<string, number> {
+		let depthMap = lanePostDepthCache.get(rootPost);
+		if (!depthMap) {
+			depthMap = buildPostDepthMap(rootPost);
+			lanePostDepthCache.set(rootPost, depthMap);
+		}
+		return depthMap;
 	}
 
 	function findChainDivergenceDepth(activePosts: ThreadPost[], candidatePosts: ThreadPost[]): number {
@@ -639,7 +668,7 @@
 				seedLane.targetPostUri ?? seedLane.quotedUri
 			);
 			const preferredChainId = getLaneAnchorActiveChainId(
-				collectLaneChains(seedLane.thread.rootPost),
+				getLaneChainsCached(seedLane.thread.rootPost),
 				anchorUri
 			);
 			if (preferredChainId) {
@@ -690,7 +719,7 @@
 				sourceUri?: string,
 				sourceLaneId?: string
 			): LaneRenderModel {
-				const chains = collectLaneChains(laneThread.rootPost);
+				const chains = getLaneChainsCached(laneThread.rootPost);
 				const activeChainId =
 					chains.some((chain) => chain.id === activeChainByLane[id])
 						? activeChainByLane[id]
@@ -718,7 +747,7 @@
 					cards: []
 				};
 				laneById.set(id, lane);
-				depthByLanePostUri.set(id, buildPostDepthMap(laneThread.rootPost));
+				depthByLanePostUri.set(id, getPostDepthMapCached(laneThread.rootPost));
 				return lane;
 			}
 
@@ -848,6 +877,8 @@
 				}
 			}
 
+			const cardsByEmbedRecordUri = new Map<string, LaneCard[]>();
+
 			function registerLaneCard(card: LaneCard) {
 				laneById.get(card.laneId)?.cards.push(card);
 				if (card.visibility === 'active') {
@@ -855,6 +886,12 @@
 				}
 				cardsByKey.set(card.key, card);
 				cardsByLanePost.set(`${card.laneId}:${card.post.uri}`, card);
+				const embedRecordUri = card.post.embed?.record?.uri;
+				if (embedRecordUri) {
+					const group = cardsByEmbedRecordUri.get(embedRecordUri) ?? [];
+					group.push(card);
+					cardsByEmbedRecordUri.set(embedRecordUri, group);
+				}
 				setPreferredPostCard(card);
 			}
 
@@ -1078,22 +1115,19 @@
 					cardsByPostUri.get(entry.targetPostUri);
 				if (!targetCard) continue;
 
-				for (const lane of orderedLanes) {
-					for (const card of lane.cards) {
-						if (card.post.embed?.record?.uri !== entry.quotedUri) continue;
-						const isPrimarySpawn =
-							entry.status === 'ready' &&
-							card.laneId === entry.sourceLaneId &&
-							card.post.uri === entry.sourceUri &&
-							targetCard.laneId === entry.quotedUri &&
-							targetCard.post.uri === entry.quotedUri;
-						connectors.push({
-							key: `${isPrimarySpawn ? 'spawn' : 'reference'}:${card.key}->${targetCard.key}`,
-							from: card,
-							to: targetCard,
-							kind: isPrimarySpawn ? 'spawn' : 'reference'
-						});
-					}
+				for (const card of cardsByEmbedRecordUri.get(entry.quotedUri) ?? []) {
+					const isPrimarySpawn =
+						entry.status === 'ready' &&
+						card.laneId === entry.sourceLaneId &&
+						card.post.uri === entry.sourceUri &&
+						targetCard.laneId === entry.quotedUri &&
+						targetCard.post.uri === entry.quotedUri;
+					connectors.push({
+						key: `${isPrimarySpawn ? 'spawn' : 'reference'}:${card.key}->${targetCard.key}`,
+						from: card,
+						to: targetCard,
+						kind: isPrimarySpawn ? 'spawn' : 'reference'
+					});
 				}
 			}
 
@@ -1351,7 +1385,7 @@
 	}
 
 	function cardMatchesSearchLane(card: LaneCard): boolean {
-		return Boolean(searchLane && card.laneId === searchLane.id);
+		return expandedSearchLane ? card.laneId === expandedSearchLane.id : true;
 	}
 
 	function cardMatchesPinnedUri(card: LaneCard, uri: string | null): boolean {
@@ -1469,18 +1503,6 @@
 		return laneIsExpanded(card.laneId) ? card.post.children : [];
 	}
 
-	async function focusTreeSearchMatch(
-		post: ThreadPost,
-		message: string,
-		scrollBehavior: ScrollBehavior = 'auto'
-	) {
-		if (!searchLane) return;
-		treeSearchMessage = message;
-		treeSearchStatus = 'success';
-		await tick();
-		await focusCard(`${searchLane.id}:${post.uri}`, scrollBehavior);
-	}
-
 	function setTreeSearchError(message: string) {
 		treeSearchMessage = message;
 		treeSearchStatus = 'error';
@@ -1495,20 +1517,43 @@
 		input?.select();
 	}
 
+	type LaneSearchMatch = {
+		laneId: string;
+		laneLabel: string;
+		post: ThreadPost;
+	};
+
+	function collectLaneSearchMatches(predicate: (post: ThreadPost) => boolean): LaneSearchMatch[] {
+		const lanesToSearch = expandedSearchLane ? [expandedSearchLane] : boardModel.lanes;
+		const matches: LaneSearchMatch[] = [];
+		const seenKeys = new Set<string>();
+		for (const lane of lanesToSearch) {
+			for (const post of findMatchingPosts(lane.thread.rootPost, predicate)) {
+				const key = `${lane.id}:${post.uri}`;
+				if (seenKeys.has(key)) continue;
+				seenKeys.add(key);
+				matches.push({ laneId: lane.id, laneLabel: lane.label, post });
+			}
+		}
+		return matches;
+	}
+
+	async function focusLaneSearchMatch(match: LaneSearchMatch, message: string) {
+		treeSearchMessage = message;
+		treeSearchStatus = 'success';
+		await tick();
+		await focusCard(`${match.laneId}:${match.post.uri}`, 'auto');
+	}
+
 	async function searchTreeAuthor() {
-		const lane = searchLane;
 		const rawQuery = treeAuthorSearch.trim();
 		const query = normalizeSearchQuery(treeAuthorSearch);
-		if (!lane) {
-			setTreeSearchError('Select a lane to search.');
-			return;
-		}
 		if (!query) {
 			setTreeSearchError('Enter an author to search.');
 			return;
 		}
 
-		const matches = findMatchingPosts(lane.thread.rootPost, (post) => {
+		const matches = collectLaneSearchMatches((post) => {
 			const handle = post.author.handle.toLowerCase();
 			const displayName = post.author.displayName?.toLowerCase() ?? '';
 			return handle.includes(query) || displayName.includes(query);
@@ -1518,54 +1563,56 @@
 			treeAuthorMatchLookup = {};
 			treeAuthorMatchQuery = query;
 			treeAuthorMatchIndex = -1;
-			setTreeSearchError(`Author "${rawQuery}" not found in this lane.`);
+			setTreeSearchError(
+				`Author "${rawQuery}" not found${expandedSearchLane ? ' in this lane' : ' on the board'}.`
+			);
 			return;
 		}
 
 		const nextIndex = nextSearchIndex(treeAuthorMatchQuery, query, treeAuthorMatchIndex, matches.length);
 		const match = matches[nextIndex];
 
-		treeAuthorMatchLookup = buildMatchLookup(matches);
+		treeAuthorMatchLookup = buildMatchLookup(matches.map((entry) => entry.post));
 		treeAuthorMatchQuery = query;
 		treeAuthorMatchIndex = nextIndex;
 
-		await focusTreeSearchMatch(match, `Found ${matches.length} author matches (${nextIndex + 1}/${matches.length}).`);
+		await focusLaneSearchMatch(
+			match,
+			`Found ${matches.length} author matches (${nextIndex + 1}/${matches.length}) — lane ${match.laneLabel}.`
+		);
 	}
 
 	async function searchTreeText() {
-		const lane = searchLane;
 		const rawQuery = treeTextSearch.trim();
 		const query = normalizeSearchQuery(treeTextSearch);
-		if (!lane) {
-			setTreeSearchError('Select a lane to search.');
-			return;
-		}
 		if (!query) {
 			setTreeSearchError('Enter text to search.');
 			return;
 		}
 
-		const matches = findMatchingPosts(
-			lane.thread.rootPost,
-			(post) => post.text.toLowerCase().includes(query)
-		);
+		const matches = collectLaneSearchMatches((post) => post.text.toLowerCase().includes(query));
 
 		if (!matches.length) {
 			treeTextMatchLookup = {};
 			treeTextMatchQuery = query;
 			treeTextMatchIndex = -1;
-			setTreeSearchError(`Text "${rawQuery}" not found in this lane.`);
+			setTreeSearchError(
+				`Text "${rawQuery}" not found${expandedSearchLane ? ' in this lane' : ' on the board'}.`
+			);
 			return;
 		}
 
 		const nextIndex = nextSearchIndex(treeTextMatchQuery, query, treeTextMatchIndex, matches.length);
 		const match = matches[nextIndex];
 
-		treeTextMatchLookup = buildMatchLookup(matches);
+		treeTextMatchLookup = buildMatchLookup(matches.map((entry) => entry.post));
 		treeTextMatchQuery = query;
 		treeTextMatchIndex = nextIndex;
 
-		await focusTreeSearchMatch(match, `Found ${matches.length} text matches (${nextIndex + 1}/${matches.length}).`);
+		await focusLaneSearchMatch(
+			match,
+			`Found ${matches.length} text matches (${nextIndex + 1}/${matches.length}) — lane ${match.laneLabel}.`
+		);
 	}
 
 	function handleTreeSearchKey(event: KeyboardEvent, mode: 'author' | 'text') {
@@ -1912,6 +1959,13 @@
 			event.preventDefault();
 			closeShortcutsHelp();
 			await handleQuoteThreadAction(activeCard);
+			return;
+		}
+
+		if (key === 'w' && event.shiftKey && activeCard && activeCard.post.quoteCount > 0) {
+			event.preventDefault();
+			closeShortcutsHelp();
+			await loadAllQuotePostLanes(activeCard);
 			return;
 		}
 
@@ -2512,6 +2566,7 @@
 				sourceLaneId: string;
 				direction: QuoteLaneDirection;
 				suppressFocus?: boolean;
+				prefetchedPost?: ThreadPost;
 				loadThread?: (uri: string) => Promise<BoardThread>;
 			}) {
 			const existing = quoteLanes[options.quotedUri];
@@ -2585,16 +2640,26 @@
 			};
 
 		try {
+				let quotedThread: BoardThread;
+			const prefetchedPost = options.prefetchedPost;
+			if (
+				prefetchedPost &&
+				prefetchedPost.uri === options.quotedUri &&
+				canBuildLaneThreadFromQuotePost(prefetchedPost)
+			) {
+				quotedThread = buildSinglePostBoardThread(prefetchedPost);
+			} else {
 				const loadThread = options.loadThread ?? platform.loadThread;
-			if (!loadThread) {
-				throw new Error(`Quoted thread loading is unavailable for ${platform.name}.`);
+				if (!loadThread) {
+					throw new Error(`Quoted thread loading is unavailable for ${platform.name}.`);
+				}
+				quotedThread = await loadThread(options.quotedUri);
 			}
-			const quotedThread = await loadThread(options.quotedUri);
 			const didReachTargetThread = Boolean(
 				targetUri && findFirstMatchingPost(quotedThread.rootPost, (post) => post.uri === targetUri)
 			);
 			const preferredChainId = getLaneAnchorActiveChainId(
-				collectLaneChains(quotedThread.rootPost),
+				getLaneChainsCached(quotedThread.rootPost),
 				options.quotedUri
 				);
 				if (preferredChainId) {
@@ -2741,10 +2806,172 @@
 			});
 		}
 
-			async function loadAllQuotePostLanes(sourceCard: LaneCard) {
-				if (bulkQuoteLaneLoads[sourceCard.post.uri]) return;
+		function canBuildLaneThreadFromQuotePost(post: ThreadPost): boolean {
+			return post.replyCount === 0 && !post.parentUri;
+		}
 
-				bulkQuoteLaneLoads = {
+		function buildSinglePostBoardThread(post: ThreadPost): BoardThread {
+			return {
+				rootPost: { ...post, children: [] },
+				depth: 1,
+				rootUri: post.uri,
+				isTruncated: false
+			};
+		}
+
+		type QuoteLaneCandidatePartition = {
+			instantEntries: Record<string, QuoteLaneEntry>;
+			instantReadyUris: string[];
+			postsToFetch: ThreadPost[];
+			baseByUri: Map<string, QuoteLaneEntryBase>;
+		};
+
+		function partitionQuoteLaneCandidates(
+			sourceCard: LaneCard,
+			quotePosts: ThreadPost[],
+			options: { markLoading?: boolean; skipUris?: Set<string> } = {}
+		): QuoteLaneCandidatePartition {
+			const { markLoading = false, skipUris } = options;
+			const instantEntries: Record<string, QuoteLaneEntry> = {};
+			const instantReadyUris: string[] = [];
+			const postsToFetch: ThreadPost[] = [];
+			const baseByUri = new Map<string, QuoteLaneEntryBase>();
+			let loadedAtCursor = Date.now();
+
+			for (const quotePost of quotePosts) {
+				const quotedUri = quotePost.uri;
+				if (!quotedUri || quotedUri === sourceCard.post.uri) continue;
+				if (skipUris?.has(quotedUri)) continue;
+				if (baseByUri.has(quotedUri)) continue;
+				const existing = quoteLanes[quotedUri];
+				if (existing && existing.status !== 'error') continue;
+
+				const base: QuoteLaneEntryBase = {
+					quotedUri,
+					quotedHandle: quotePost.author.handle || '',
+					sourceUri: sourceCard.post.uri,
+					sourceLaneId: sourceCard.laneId,
+					loadedAt: existing?.loadedAt ?? loadedAtCursor++,
+					direction: 'inbound'
+				};
+				baseByUri.set(quotedUri, base);
+
+				const existingTarget = boardModel.cardsByPostUri.get(quotedUri);
+				if (existingTarget) {
+					instantEntries[quotedUri] = {
+						...base,
+						status: 'linked',
+						targetLaneId: existingTarget.laneId,
+						targetPostUri: existingTarget.post.uri
+					};
+					continue;
+				}
+
+				if (canBuildLaneThreadFromQuotePost(quotePost)) {
+					instantEntries[quotedUri] = {
+						...base,
+						status: 'ready',
+						thread: buildSinglePostBoardThread(quotePost),
+						targetLaneId: quotedUri,
+						targetPostUri: quotedUri
+					};
+					instantReadyUris.push(quotedUri);
+					continue;
+				}
+
+				postsToFetch.push(quotePost);
+				if (markLoading) {
+					instantEntries[quotedUri] = { ...base, status: 'loading' };
+				}
+			}
+
+			return { instantEntries, instantReadyUris, postsToFetch, baseByUri };
+		}
+
+		async function openQuoteLanesInBulk(sourceCard: LaneCard, quotePosts: ThreadPost[]) {
+			const { instantEntries, postsToFetch, baseByUri } = partitionQuoteLaneCandidates(
+				sourceCard,
+				quotePosts,
+				{ markLoading: true }
+			);
+
+			if (Object.keys(instantEntries).length > 0) {
+				quoteLanes = { ...quoteLanes, ...instantEntries };
+				await yieldToBrowser();
+			}
+
+			if (postsToFetch.length === 0) return;
+
+			let pendingEntries: Record<string, QuoteLaneEntry> = {};
+			let pendingChainIds: Record<string, string> = {};
+			let lastFlushAt = Date.now();
+
+			const flushPending = async (force = false) => {
+				const pendingCount = Object.keys(pendingEntries).length;
+				if (pendingCount === 0) return;
+				// Board rebuilds get pricier as lanes pile up, so flush in
+				// growing batches instead of at a fixed cadence.
+				const laneCount = Object.keys(quoteLanes).length;
+				const flushSize = Math.max(BULK_LANE_FLUSH_SIZE, Math.floor(laneCount / 8));
+				const flushMs = Math.min(2000, BULK_LANE_FLUSH_MS + laneCount * 2);
+				if (!force && pendingCount < flushSize && Date.now() - lastFlushAt < flushMs) {
+					return;
+				}
+				quoteLanes = { ...quoteLanes, ...pendingEntries };
+				if (Object.keys(pendingChainIds).length > 0) {
+					laneActiveChainIds = { ...laneActiveChainIds, ...pendingChainIds };
+				}
+				pendingEntries = {};
+				pendingChainIds = {};
+				lastFlushAt = Date.now();
+				await yieldToBrowser();
+			};
+
+			let nextIndex = 0;
+			const runLoader = async () => {
+				while (nextIndex < postsToFetch.length) {
+					const quotePost = postsToFetch[nextIndex];
+					nextIndex += 1;
+					const base = baseByUri.get(quotePost.uri);
+					if (!base) continue;
+					try {
+						const quotedThread = await loadThreadForFetchMode(quotePost.uri);
+						const preferredChainId = getLaneAnchorActiveChainId(
+							getLaneChainsCached(quotedThread.rootPost),
+							quotePost.uri
+						);
+						if (preferredChainId) {
+							pendingChainIds[quotePost.uri] = preferredChainId;
+						}
+						pendingEntries[quotePost.uri] = {
+							...base,
+							status: 'ready',
+							thread: quotedThread,
+							targetLaneId: quotePost.uri,
+							targetPostUri: quotePost.uri
+						};
+					} catch (error) {
+						pendingEntries[quotePost.uri] = {
+							...base,
+							status: 'error',
+							error:
+								error instanceof Error ? error.message : 'Could not load this quoted thread.'
+						};
+					}
+					await flushPending();
+				}
+			};
+
+			await Promise.all(
+				Array.from({ length: Math.min(BULK_LANE_CONCURRENCY, postsToFetch.length) }, runLoader)
+			);
+			await flushPending(true);
+		}
+
+		async function loadAllQuotePostLanes(sourceCard: LaneCard) {
+			if (bulkQuoteLaneLoads[sourceCard.post.uri]) return;
+
+			bulkQuoteLaneLoads = {
 				...bulkQuoteLaneLoads,
 				[sourceCard.post.uri]: true
 			};
@@ -2760,23 +2987,14 @@
 					return;
 				}
 
-				for (const quotePost of quotePosts) {
-					await openQuoteLane({
-						quotedUri: quotePost.uri,
-						quotedHandle: quotePost.author.handle || '',
-						sourceUri: sourceCard.post.uri,
-						sourceLaneId: sourceCard.laneId,
-						direction: 'inbound',
-						suppressFocus: true
-					});
-				}
+				await openQuoteLanesInBulk(sourceCard, quotePosts);
 			} finally {
 				bulkQuoteLaneLoads = {
 					...bulkQuoteLaneLoads,
 					[sourceCard.post.uri]: false
-					};
-				}
+				};
 			}
+		}
 
 			function yieldToBrowser(): Promise<void> {
 				if (typeof window === 'undefined') return Promise.resolve();
@@ -3116,6 +3334,7 @@
 				type: 'start',
 				runId,
 				delayMs: FETCH_MODE_DELAY_MS,
+				maxConcurrent: FETCH_MODE_CONCURRENCY,
 				taskIds: fetchModeQueue.map((item) => item.id)
 			});
 		}
@@ -3166,17 +3385,39 @@
 							if (!quotePosts && sourceCard.post.quoteCount > 0) {
 								throw new Error(getQuoteFeedState(sourceCard.post).error || 'Could not load quote posts.');
 							}
-							for (const quotePost of quotePosts ?? []) {
+
+							const { instantEntries, instantReadyUris, postsToFetch } =
+								partitionQuoteLaneCandidates(sourceCard, quotePosts ?? [], {
+									skipUris: fetchModeQueuedLaneTargets
+								});
+
+							if (Object.keys(instantEntries).length > 0) {
+								for (const quotedUri of Object.keys(instantEntries)) {
+									fetchModeQueuedLaneTargets.add(quotedUri);
+								}
+								quoteLanes = { ...quoteLanes, ...instantEntries };
+								queuedCount += Object.keys(instantEntries).length;
+								await tick();
+								if (!isFetchModeRunActive(runId)) return;
+								for (const quotedUri of instantReadyUris) {
+									const laneCard = boardModel.cardsByPostUri.get(quotedUri);
+									if (laneCard) {
+										enqueueScanCard(laneCard, 'Opened lane');
+									}
+								}
+							}
+
+							for (const quotePost of postsToFetch) {
 								queuedCount += enqueueLaneTask({
-										sourceCard,
-										quotedUri: quotePost.uri,
-										quotedHandle: quotePost.author.handle || '',
-										direction: 'inbound',
-										label: `Open quote post @${quotePost.author.handle || 'unknown'}`,
-										detail: previewText(quotePost.text)
-									})
-										? 1
-										: 0;
+									sourceCard,
+									quotedUri: quotePost.uri,
+									quotedHandle: quotePost.author.handle || '',
+									direction: 'inbound',
+									label: `Open quote post @${quotePost.author.handle || 'unknown'}`,
+									detail: previewText(quotePost.text)
+								})
+									? 1
+									: 0;
 							}
 						}
 
@@ -3184,7 +3425,7 @@
 							status: 'done',
 							detail:
 								queuedCount > 0
-									? `${queuedCount} quote lane${queuedCount === 1 ? '' : 's'} queued.`
+									? `${queuedCount} quote lane${queuedCount === 1 ? '' : 's'} opened or queued.`
 									: 'No new quote lanes found.'
 						});
 					}
@@ -3240,7 +3481,8 @@
 				quotedHandle: quotePost.author.handle || '',
 				sourceUri: sourceCard.post.uri,
 				sourceLaneId: sourceCard.laneId,
-				direction: 'inbound'
+				direction: 'inbound',
+				prefetchedPost: quotePost
 			});
 		}
 
@@ -3374,25 +3616,23 @@
 			ctx.clearRect(0, 0, minimapW, minimapH);
 
 			const boardRect = board.getBoundingClientRect();
+			const canvasRect = boardCanvasEl?.getBoundingClientRect();
 			const cardRects = new Map<
 				string,
 				{ x: number; y: number; w: number; h: number; card: LaneCard }
 			>();
-			const cardNodes = board.querySelectorAll<HTMLElement>('.dimension-card[data-card-key]');
-			cardNodes.forEach((node) => {
-				const cardKey = node.dataset.cardKey;
-				if (!cardKey) return;
-				const card = boardModel.cardsByKey.get(cardKey);
-				if (!card) return;
-				const rect = node.getBoundingClientRect();
-				cardRects.set(cardKey, {
-					x: (rect.left - boardRect.left + board.scrollLeft) * minimapScale,
-					y: (rect.top - boardRect.top + board.scrollTop) * minimapScale,
-					w: rect.width * minimapScale,
-					h: rect.height * minimapScale,
+			const canvasScale = zoom || 1;
+			const originX = canvasRect ? canvasRect.left - boardRect.left + board.scrollLeft : 0;
+			const originY = canvasRect ? canvasRect.top - boardRect.top + board.scrollTop : 0;
+			for (const card of boardModel.cardsByKey.values()) {
+				cardRects.set(card.key, {
+					x: (originX + card.x * canvasScale) * minimapScale,
+					y: (originY + card.y * canvasScale) * minimapScale,
+					w: CARD_WIDTH * canvasScale * minimapScale,
+					h: getRenderedCardHeight(card) * canvasScale * minimapScale,
 					card
 				});
-			});
+			}
 
 			ctx.lineCap = 'round';
 			ctx.lineJoin = 'round';
@@ -3527,8 +3767,118 @@
 			minimapClickAt(event.clientX, event.clientY);
 		}
 
+		const VIEWPORT_CULL_MARGIN = 600;
+
+		let viewportRect = $state({ left: 0, top: 0, width: 0, height: 0 });
+		let viewportFrame = 0;
+
+		function computeCanvasViewportRect() {
+			if (!boardEl || !boardCanvasEl) return null;
+			const boardRect = boardEl.getBoundingClientRect();
+			const canvasRect = boardCanvasEl.getBoundingClientRect();
+			const scale = zoom || 1;
+			return {
+				left: (boardRect.left - canvasRect.left) / scale,
+				top: (boardRect.top - canvasRect.top) / scale,
+				width: boardRect.width / scale,
+				height: boardRect.height / scale
+			};
+		}
+
+		function refreshViewportRect() {
+			const rect = computeCanvasViewportRect();
+			if (!rect) return;
+			const drift = VIEWPORT_CULL_MARGIN / 3;
+			if (
+				Math.abs(rect.left - viewportRect.left) < drift &&
+				Math.abs(rect.top - viewportRect.top) < drift &&
+				Math.abs(rect.width - viewportRect.width) < drift &&
+				Math.abs(rect.height - viewportRect.height) < drift
+			) {
+				return;
+			}
+			viewportRect = rect;
+		}
+
+		function scheduleViewportRefresh() {
+			if (typeof window === 'undefined' || viewportFrame) return;
+			viewportFrame = requestAnimationFrame(() => {
+				viewportFrame = 0;
+				refreshViewportRect();
+			});
+		}
+
+		function rectIntersectsViewport(minX: number, maxX: number, minY: number, maxY: number): boolean {
+			const vp = viewportRect;
+			if (vp.width <= 0 || vp.height <= 0) return true;
+			const margin = VIEWPORT_CULL_MARGIN;
+			return (
+				maxX >= vp.left - margin &&
+				minX <= vp.left + vp.width + margin &&
+				maxY >= vp.top - margin &&
+				minY <= vp.top + vp.height + margin
+			);
+		}
+
+		function cardShouldRender(card: LaneCard): boolean {
+			if (card.key === activeCardKey || card.key === openQuotePickerCardKey) return true;
+			if (
+				detailModalTarget &&
+				card.key === `${detailModalTarget.laneId}:${detailModalTarget.postUri}`
+			) {
+				return true;
+			}
+			if (treeBoardTarget && card.key === `${treeBoardTarget.laneId}:${treeBoardTarget.postUri}`) {
+				return true;
+			}
+			return rectIntersectsViewport(
+				card.x,
+				card.x + CARD_WIDTH,
+				card.y,
+				card.y + getRenderedCardHeight(card)
+			);
+		}
+
+		function visibleLaneCards(lane: LaneRenderModel): LaneCard[] {
+			return lane.cards.filter(cardShouldRender);
+		}
+
+		function connectorShouldRender(connector: LaneConnector): boolean {
+			return rectIntersectsViewport(
+				Math.min(connector.from.x, connector.to.x),
+				Math.max(connector.from.x, connector.to.x) + CARD_WIDTH,
+				Math.min(connector.from.y, connector.to.y),
+				Math.max(connector.from.y, connector.to.y) +
+					Math.max(getRenderedCardHeight(connector.from), getRenderedCardHeight(connector.to))
+			);
+		}
+
+		function laneIsNearViewportX(lane: LaneRenderModel): boolean {
+			const vp = viewportRect;
+			if (vp.width <= 0) return true;
+			const margin = VIEWPORT_CULL_MARGIN;
+			return lane.x + CARD_WIDTH >= vp.left - margin && lane.x <= vp.left + vp.width + margin;
+		}
+
+		$effect(() => {
+			void zoom;
+			void boardModel;
+			scheduleViewportRefresh();
+		});
+
+		$effect(() => {
+			if (typeof window === 'undefined') return;
+			const onResize = () => scheduleViewportRefresh();
+			window.addEventListener('resize', onResize);
+			return () => {
+				window.removeEventListener('resize', onResize);
+				if (viewportFrame) cancelAnimationFrame(viewportFrame);
+			};
+		});
+
 		function handleBoardScroll() {
 			scheduleMinimapRefresh();
+			scheduleViewportRefresh();
 		}
 
 		$effect(() => {
@@ -4006,6 +4356,7 @@
 					>
 						<div
 							class="parallel-board-canvas"
+							bind:this={boardCanvasEl}
 							style="width: {boardModel.boardWidth}px; height: {boardModel.boardHeight}px; top: {boardModel.canvasOffsetY}px; transform: scale({zoom});"
 						>
 							<svg
@@ -4020,8 +4371,8 @@
 									</marker>
 								</defs>
 
-								{#each boardModel.lanes as lane, laneIndex (lane.id + ':' + laneIndex)}
-									{#if lane.activeCards.length > 0 && !laneIsExpanded(lane.id)}
+								{#each boardModel.lanes as lane (lane.id)}
+									{#if lane.activeCards.length > 0 && !laneIsExpanded(lane.id) && laneIsNearViewportX(lane)}
 										<path
 											d={buildLaneRailPath(lane.activeCards)}
 											class="lane-rail"
@@ -4031,7 +4382,7 @@
 									{/if}
 								{/each}
 
-								{#each boardModel.connectors as connector, connectorIndex (connector.key + ':' + connectorIndex)}
+								{#each boardModel.connectors.filter(connectorShouldRender) as connector (connector.key)}
 									<path
 										d={buildConnectorPath(connector)}
 										class="lane-connector"
@@ -4044,7 +4395,8 @@
 								{/each}
 							</svg>
 
-							{#each boardModel.lanes as lane, laneIndex (lane.id + ':' + laneIndex)}
+							{#each boardModel.lanes as lane (lane.id)}
+								{#if laneIsNearViewportX(lane)}
 								<div
 									class="lane-marker"
 									class:lane-marker-main={lane.kind === 'main'}
@@ -4070,7 +4422,9 @@
 									</button>
 								</div>
 
-								{#each lane.cards as card, cardIndex (card.key + ':' + cardIndex)}
+								{/if}
+
+								{#each visibleLaneCards(lane) as card (card.key)}
 									<article
 										use:measureCardHeight={card.key}
 										class="dimension-card"
