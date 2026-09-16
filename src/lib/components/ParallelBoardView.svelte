@@ -6,11 +6,11 @@
 		} from '$lib/api/bluesky';
 		import BoardView from '$lib/components/BoardView.svelte';
 		import ThreadExportButton from '$lib/components/ThreadExportButton.svelte';
-		import type { ThreadPost } from '$lib/types';
+		import type { EmbedImage, QuotedRecordEmbed, ThreadPost } from '$lib/types';
 		import type { BoardPlatformConfig, BoardThread } from '$lib/types/boardPlatform';
 		import LinkedPostEmbeds from '$lib/components/LinkedPostEmbeds.svelte';
 		import { buildParentMap, findFirstMatchingPost, findMatchingPosts } from '$lib/utils/boardTree';
-		import { openLightbox } from '$lib/stores/lightbox';
+		import { openLightbox, type LightboxImageVariants } from '$lib/stores/lightbox';
 	type LaneKind = 'main' | 'quoted';
 	type QuoteLaneDirection = 'outbound' | 'inbound';
 		type QuoteLaneStatus = 'loading' | 'ready' | 'linked' | 'error';
@@ -174,6 +174,13 @@
 			onWinningMove?: WinningMoveHandler;
 			platform?: BoardPlatformConfig;
 			showExport?: boolean;
+			imageOverrides?: Record<string, string>;
+			imageMirrorVisibility?: Record<string, boolean>;
+			showImageAltOverlays?: boolean;
+			showImageMirrorButtons?: boolean;
+			showGalleryAltFilter?: boolean;
+			onImageMirrorToggle?: (key: string) => void;
+			onImagesDiscovered?: (images: Array<{ key: string; alt: string }>) => void;
 		};
 	type CelebrationBurst = {
 		key: number;
@@ -253,7 +260,14 @@
 			onActivePostChange,
 			onWinningMove,
 			platform = defaultBoardPlatform,
-			showExport = true
+			showExport = true,
+			imageOverrides = {},
+			imageMirrorVisibility = {},
+			showImageAltOverlays = false,
+			showImageMirrorButtons = false,
+			showGalleryAltFilter = false,
+			onImageMirrorToggle,
+			onImagesDiscovered
 		}: ParallelBoardViewProps = $props();
 
 		let keyboardShortcuts = $derived(buildKeyboardShortcuts(platform.name));
@@ -327,6 +341,124 @@
 	let lastHandledRequestedFocusUri = $state<string | null>(null);
 	let lastHandledWinningFocusUri = $state<string | null>(null);
 	let celebrationBurst = $state<CelebrationBurst | null>(null);
+
+	type BoardGalleryImage = {
+		key: string;
+		thumb: string;
+		fullsize: string;
+		alt: string;
+		aspectRatio: string;
+		handle: string;
+	};
+	type BlastCard = {
+		id: number;
+		src: string;
+		aspectRatio: string;
+		style: string;
+	};
+	function imageKey(image: Pick<EmbedImage, 'fullsize' | 'thumb'>): string {
+		return image.fullsize || image.thumb;
+	}
+
+	function imageThumb(image: EmbedImage): string {
+		const key = imageKey(image);
+		return (imageMirrorVisibility[key] !== false ? imageOverrides[key] : undefined) || image.thumb || image.fullsize;
+	}
+
+	function imageFullsize(image: EmbedImage): string {
+		const key = imageKey(image);
+		return (imageMirrorVisibility[key] !== false ? imageOverrides[key] : undefined) || image.fullsize || image.thumb;
+	}
+
+	function imageHasMirror(image: EmbedImage): boolean {
+		return Boolean(imageOverrides[imageKey(image)]);
+	}
+
+	function imageIsMirrored(image: EmbedImage): boolean {
+		return imageHasMirror(image) && imageMirrorVisibility[imageKey(image)] !== false;
+	}
+
+	function toggleImageMirror(event: MouseEvent, image: EmbedImage) {
+		event.stopPropagation();
+		onImageMirrorToggle?.(imageKey(image));
+	}
+
+	function lightboxVariantsForImage(image: EmbedImage): LightboxImageVariants | undefined {
+		const key = imageKey(image);
+		const mirrorSrc = imageOverrides[key];
+		if (!mirrorSrc) return undefined;
+		return {
+			originalSrc: image.fullsize || image.thumb,
+			mirrorSrc,
+			initialView: imageMirrorVisibility[key] === false ? 'original' : 'mirror'
+		};
+	}
+
+	function openImageLightbox(image: EmbedImage) {
+		openLightbox(imageFullsize(image), image.alt, lightboxVariantsForImage(image));
+	}
+
+	function openGalleryImageLightbox(image: BoardGalleryImage) {
+		const mirrorSrc = imageOverrides[image.key];
+		openLightbox(
+			image.fullsize,
+			image.alt,
+			mirrorSrc
+				? {
+						originalSrc: image.key,
+						mirrorSrc,
+						initialView: imageMirrorVisibility[image.key] === false ? 'original' : 'mirror'
+					}
+				: undefined
+		);
+	}
+
+	function quotedRecordWithImageOverrides(record: QuotedRecordEmbed): QuotedRecordEmbed {
+		return {
+			...record,
+			images: record.images?.map((image) => ({
+				...image,
+				thumb: imageThumb(image),
+				fullsize: imageFullsize(image)
+			})),
+			record: record.record ? quotedRecordWithImageOverrides(record.record) : undefined
+		};
+	}
+
+	function postWithImageOverrides(post: ThreadPost): ThreadPost {
+		return {
+			...post,
+			embed: post.embed
+				? {
+						...post.embed,
+						images: post.embed.images?.map((image) => ({
+							...image,
+							thumb: imageThumb(image),
+							fullsize: imageFullsize(image)
+						})),
+						record: post.embed.record
+							? quotedRecordWithImageOverrides(post.embed.record)
+							: undefined
+					}
+				: undefined,
+			children: post.children.map(postWithImageOverrides)
+		};
+	}
+
+	function threadWithImageOverrides(boardThread: BoardThread): BoardThread {
+		return { ...boardThread, rootPost: postWithImageOverrides(boardThread.rootPost) };
+	}
+	let showGallery = $state(true);
+	let galleryAltOnly = $state(true);
+	let blastMode = $state(false);
+	let blastCards = $state<BlastCard[]>([]);
+	let blastCardId = 0;
+	let blastRate = $state(3); // bursts per second
+	let blastBurstSize = $state(4);
+	let blastFlyMs = $state(1500);
+	let blastSizePct = $state(100);
+	const blastIntervalMs = $derived(Math.round(1000 / blastRate));
+	const maxBlastCards = $derived(Math.max(60, blastBurstSize * 15));
 	let celebrationFrame = 0;
 	let celebrationTimeout = 0;
 
@@ -1273,6 +1405,31 @@
 	);
 	let activeLane = $derived.by(() => (activeCard ? boardModel.laneById.get(activeCard.laneId) ?? null : null));
 	let exportAllPosts = $derived.by(() => collectUniqueLanePosts(boardModel.lanes));
+	let galleryImages = $derived.by(() => collectGalleryImages(exportAllPosts, postQuotes));
+	let visibleGalleryImages = $derived(
+		showGalleryAltFilter && galleryAltOnly
+			? galleryImages.filter((image) => image.alt.trim())
+			: galleryImages
+	);
+	let nestedLightboxImageVariants = $derived.by(() => {
+		const variants: Record<string, LightboxImageVariants> = {};
+		for (const [originalSrc, mirrorSrc] of Object.entries(imageOverrides)) {
+			const entry: LightboxImageVariants = {
+				originalSrc,
+				mirrorSrc,
+				initialView: imageMirrorVisibility[originalSrc] === false ? 'original' : 'mirror'
+			};
+			variants[originalSrc] = entry;
+			variants[mirrorSrc] = entry;
+		}
+		return variants;
+	});
+	$effect(() => {
+		const discovered = galleryImages
+			.filter((image) => image.alt.trim())
+			.map((image) => ({ key: image.key, alt: image.alt }));
+		untrack(() => onImagesDiscovered?.(discovered));
+	});
 	let expandedSearchLane = $derived.by(() =>
 		expandedLaneId ? boardModel.laneById.get(expandedLaneId) ?? null : null
 	);
@@ -2219,6 +2376,125 @@
 
 		return posts;
 	}
+
+	function galleryRatioOf(aspectRatio?: { width: number; height: number }): string {
+		return aspectRatio && aspectRatio.width > 0 && aspectRatio.height > 0
+			? `${aspectRatio.width} / ${aspectRatio.height}`
+			: '4 / 3';
+	}
+
+	function collectGalleryImages(
+		posts: ThreadPost[],
+		quoteFeeds: Record<string, QuotePostFeedState>
+	): BoardGalleryImage[] {
+		const images: BoardGalleryImage[] = [];
+		const seen = new Set<string>();
+
+		const addImages = (items: EmbedImage[] | undefined, handle: string) => {
+			const sources = [{ items, handle }];
+			for (const source of sources) {
+				for (const img of source.items ?? []) {
+					const key = img.fullsize || img.thumb;
+					if (!key || seen.has(key)) continue;
+					seen.add(key);
+					images.push({
+						key,
+						thumb: imageThumb(img),
+						fullsize: imageFullsize(img),
+						alt: img.alt,
+						aspectRatio: galleryRatioOf(img.aspectRatio),
+						handle: source.handle
+					});
+				}
+			}
+		};
+
+		const addRecordImages = (record: QuotedRecordEmbed | undefined) => {
+			if (!record) return;
+			addImages(record.images, record.author.handle);
+			addRecordImages(record.record);
+		};
+
+		const addPostImages = (post: ThreadPost) => {
+			addImages(post.embed?.images, post.author.handle);
+			addRecordImages(post.embed?.record);
+		};
+
+		const laneUris = new Set(posts.map((post) => post.uri));
+		for (const post of posts) addPostImages(post);
+		// Quote-post feeds hold fetched quote posts that may not have lanes yet.
+		for (const feed of Object.values(quoteFeeds)) {
+			for (const post of feed.posts) {
+				if (!laneUris.has(post.uri)) addPostImages(post);
+			}
+		}
+		return images;
+	}
+
+	function blastCardStyle(stagger: number): string {
+		const vw = window.innerWidth;
+		const vh = window.innerHeight;
+		// Spawn near the middle of the screen with some spray
+		const ox = vw / 2 + (Math.random() - 0.5) * vw * 0.3;
+		const oy = vh / 2 + (Math.random() - 0.5) * vh * 0.3;
+		// Blast outward in a random direction, well past the screen edge
+		const angle = Math.random() * Math.PI * 2;
+		const dist = Math.hypot(vw, vh) * (0.6 + Math.random() * 0.6);
+		const tx = Math.cos(angle) * dist;
+		const ty = Math.sin(angle) * dist;
+		const scale = (1.6 + Math.random() * 2.2) * (blastSizePct / 100);
+		const rot = (Math.random() - 0.5) * 90;
+		const dur = blastFlyMs * (0.75 + Math.random() * 0.5);
+		const delay = stagger * 90 + Math.random() * 80;
+		return (
+			`left: ${ox.toFixed(0)}px; top: ${oy.toFixed(0)}px; ` +
+			`--tx: ${tx.toFixed(0)}px; --ty: ${ty.toFixed(0)}px; ` +
+			`--sc: ${scale.toFixed(2)}; --rot: ${rot.toFixed(1)}deg; ` +
+			`--dur: ${dur.toFixed(0)}ms; --delay: ${delay.toFixed(0)}ms;`
+		);
+	}
+
+	function spawnBlastBurst() {
+		if (typeof window === 'undefined') return;
+		const pool = visibleGalleryImages;
+		if (pool.length === 0) return;
+		const fresh: BlastCard[] = [];
+		for (let i = 0; i < blastBurstSize; i++) {
+			const img = pool[Math.floor(Math.random() * pool.length)];
+			fresh.push({
+				id: blastCardId++,
+				src: img.thumb,
+				aspectRatio: img.aspectRatio,
+				style: blastCardStyle(i)
+			});
+		}
+		const next = [...blastCards, ...fresh];
+		blastCards = next.length > maxBlastCards ? next.slice(next.length - maxBlastCards) : next;
+	}
+
+	function toggleBlastMode() {
+		if (blastMode) {
+			blastMode = false;
+			blastCards = [];
+			return;
+		}
+		if (typeof window === 'undefined' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+			return;
+		}
+		blastMode = true;
+		spawnBlastBurst();
+	}
+
+	function removeBlastCard(id: number) {
+		blastCards = blastCards.filter((card) => card.id !== id);
+	}
+
+	// The interval restarts automatically when the rate slider changes.
+	$effect(() => {
+		if (!blastMode) return;
+		const timer = setInterval(spawnBlastBurst, blastIntervalMs);
+		return () => clearInterval(timer);
+	});
 
 	function getLaneBranchAlternatives(card: LaneCard): string[] {
 		if (laneIsExpanded(card.laneId)) return [];
@@ -4532,20 +4808,30 @@
 													{/each}
 												</p>
 
-												{#if card.post.embed?.images}
-													<div class="card-media-grid">
-														{#each card.post.embed.images as img}
+											{#if card.post.embed?.images}
+												<div class="card-media-grid">
+													{#each card.post.embed.images as img}
+														<div class="image-mirror-shell">
 															<button
 																type="button"
 																class="card-media-btn"
 																onclick={(event) => {
 																	event.stopPropagation();
-																	openLightbox(img.fullsize, img.alt);
+																	openImageLightbox(img);
 																}}
 															>
-																<img src={img.thumb} alt={img.alt} class="card-media-thumb" />
+																<img src={imageThumb(img)} alt={img.alt} class="card-media-thumb" />
+																{#if showImageAltOverlays && img.alt.trim()}
+																	<span class="image-alt-overlay">{img.alt}</span>
+																{/if}
 															</button>
-														{/each}
+															{#if showImageMirrorButtons && imageHasMirror(img)}
+																<button type="button" class="image-mirror-toggle" onclick={(event) => toggleImageMirror(event, img)}>
+																	{imageIsMirrored(img) ? 'Original' : 'Mirror'}
+																</button>
+															{/if}
+														</div>
+													{/each}
 													</div>
 												{/if}
 
@@ -4619,16 +4905,26 @@
 														{#if card.post.embed.record.images}
 															<div class="card-media-grid card-media-grid-quote">
 																{#each card.post.embed.record.images as img}
-																	<button
-																		type="button"
-																		class="card-media-btn"
-																		onclick={(event) => {
-																			event.stopPropagation();
-																			openLightbox(img.fullsize, img.alt);
-																		}}
-																	>
-																		<img src={img.thumb} alt={img.alt} class="card-media-thumb" />
-																	</button>
+																	<div class="image-mirror-shell">
+																		<button
+																			type="button"
+																			class="card-media-btn"
+																			onclick={(event) => {
+																				event.stopPropagation();
+																				openImageLightbox(img);
+																			}}
+																		>
+																			<img src={imageThumb(img)} alt={img.alt} class="card-media-thumb" />
+																			{#if showImageAltOverlays && img.alt.trim()}
+																				<span class="image-alt-overlay">{img.alt}</span>
+																			{/if}
+																		</button>
+																		{#if showImageMirrorButtons && imageHasMirror(img)}
+																			<button type="button" class="image-mirror-toggle" onclick={(event) => toggleImageMirror(event, img)}>
+																				{imageIsMirrored(img) ? 'Original' : 'Mirror'}
+																			</button>
+																		{/if}
+																	</div>
 																{/each}
 															</div>
 														{/if}
@@ -5029,9 +5325,19 @@
 							{#if detailModalCard.post.embed?.images}
 								<div class="detail-images">
 									{#each detailModalCard.post.embed.images as img}
-										<button type="button" class="detail-image-btn" onclick={() => openLightbox(img.fullsize, img.alt)}>
-											<img src={img.thumb} alt={img.alt} class="detail-image" />
-										</button>
+										<div class="image-mirror-shell image-mirror-shell-detail">
+											<button type="button" class="detail-image-btn" onclick={() => openImageLightbox(img)}>
+												<img src={imageThumb(img)} alt={img.alt} class="detail-image" />
+												{#if showImageAltOverlays && img.alt.trim()}
+													<span class="image-alt-overlay">{img.alt}</span>
+												{/if}
+											</button>
+											{#if showImageMirrorButtons && imageHasMirror(img)}
+												<button type="button" class="image-mirror-toggle" onclick={(event) => toggleImageMirror(event, img)}>
+													{imageIsMirrored(img) ? 'Original' : 'Mirror'}
+												</button>
+											{/if}
+										</div>
 									{/each}
 								</div>
 							{/if}
@@ -5122,7 +5428,117 @@
 				</div>
 			{/if}
 		</div>
+
+	{#if galleryImages.length > 0}
+		<section class="board-gallery wobbly-border-light">
+			<div class="board-gallery-head">
+				<button
+					type="button"
+					class="board-gallery-toggle"
+					aria-expanded={showGallery}
+					onclick={() => (showGallery = !showGallery)}
+				>
+					{showGallery ? '▾' : '▸'} Image gallery ({visibleGalleryImages.length})
+				</button>
+				{#if showGalleryAltFilter}
+					<button
+						type="button"
+						class="board-gallery-filter"
+						class:active={galleryAltOnly}
+						aria-pressed={galleryAltOnly}
+						onclick={() => (galleryAltOnly = !galleryAltOnly)}
+					>
+						{galleryAltOnly ? 'Alt text only' : 'All images'}
+					</button>
+				{/if}
+				<button
+					type="button"
+					class="board-blast-toggle"
+					class:active={blastMode}
+					onclick={toggleBlastMode}
+					title="Blast the board's images across the screen"
+				>
+					🔥 Blast mode {blastMode ? 'on' : 'off'}
+				</button>
+				{#if blastMode}
+					<div class="board-blast-controls">
+						<label class="board-blast-slider">
+							<span>Rate</span>
+							<input type="range" min="0.5" max="8" step="0.5" bind:value={blastRate} />
+							<strong>{blastRate}/s</strong>
+						</label>
+						<label class="board-blast-slider">
+							<span>Burst</span>
+							<input type="range" min="1" max="12" step="1" bind:value={blastBurstSize} />
+							<strong>{blastBurstSize}</strong>
+						</label>
+						<label class="board-blast-slider">
+							<span>Fly time</span>
+							<input type="range" min="600" max="4000" step="100" bind:value={blastFlyMs} />
+							<strong>{(blastFlyMs / 1000).toFixed(1)}s</strong>
+						</label>
+						<label class="board-blast-slider">
+							<span>Size</span>
+							<input type="range" min="30" max="300" step="10" bind:value={blastSizePct} />
+							<strong>{blastSizePct}%</strong>
+						</label>
+					</div>
+				{/if}
+			</div>
+			{#if showGallery}
+				{#if visibleGalleryImages.length === 0}
+					<p class="board-gallery-empty">No images with alt text in the current board.</p>
+				{:else}
+					<div class="board-gallery-grid">
+						{#each visibleGalleryImages as img (img.key)}
+						<div class="board-gallery-item">
+							<button
+								type="button"
+								class="board-gallery-image-btn"
+								title={`@${img.handle}`}
+								onclick={() => openGalleryImageLightbox(img)}
+							>
+								<img
+									src={img.thumb}
+									alt={img.alt}
+									loading="lazy"
+									style={`aspect-ratio: ${img.aspectRatio}`}
+								/>
+								{#if showImageAltOverlays && img.alt.trim()}
+									<span class="image-alt-overlay image-alt-overlay-gallery">{img.alt}</span>
+								{/if}
+								<span class="board-gallery-handle">@{img.handle}</span>
+							</button>
+							{#if showImageMirrorButtons && imageOverrides[img.key]}
+								<button type="button" class="image-mirror-toggle" onclick={(event) => {
+									event.stopPropagation();
+									onImageMirrorToggle?.(img.key);
+								}}>
+									{imageMirrorVisibility[img.key] === false ? 'Mirror' : 'Original'}
+								</button>
+							{/if}
+						</div>
+						{/each}
+					</div>
+				{/if}
+			{/if}
+		</section>
+	{/if}
 	</div>
+
+{#if blastMode && blastCards.length > 0}
+	<div class="board-blast-layer" aria-hidden="true">
+		{#each blastCards as card (card.id)}
+			<img
+				class="board-blast-card"
+				src={card.src}
+				alt=""
+				style={`${card.style} aspect-ratio: ${card.aspectRatio};`}
+				onanimationend={() => removeBlastCard(card.id)}
+			/>
+		{/each}
+	</div>
+{/if}
 
 		{#if treeBoardTarget && treeBoardLane && treeBoardCard}
 			<div class="tree-board-modal-layer">
@@ -5173,9 +5589,11 @@
 
 				<div class="tree-board-modal-body">
 					<BoardView
-						thread={treeBoardLane.thread}
+						thread={threadWithImageOverrides(treeBoardLane.thread)}
 						initialActiveUri={treeBoardCard.post.uri}
 						{platform}
+						{showImageAltOverlays}
+						lightboxImageVariants={nestedLightboxImageVariants}
 					/>
 				</div>
 		</dialog>
@@ -6346,13 +6764,74 @@
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
 
+	.image-mirror-shell {
+		position: relative;
+		min-width: 0;
+	}
+
 	.card-media-btn {
+		position: relative;
+		display: block;
+		width: 100%;
 		padding: 0;
 		border: none;
 		background: transparent;
 		border-radius: 10px;
 		cursor: pointer;
 		overflow: hidden;
+	}
+
+	.image-alt-overlay {
+		position: absolute;
+		inset: 0;
+		z-index: 2;
+		display: flex;
+		align-items: center;
+		padding: 10px;
+		overflow: auto;
+		background: rgba(20, 17, 26, 0.88);
+		color: #fff;
+		font-family: system-ui, sans-serif;
+		font-size: 0.72rem;
+		font-weight: 600;
+		line-height: 1.35;
+		text-align: left;
+		opacity: 0;
+		transition: opacity 0.15s ease;
+		pointer-events: none;
+	}
+
+	.card-media-btn:hover .image-alt-overlay,
+	.card-media-btn:focus-visible .image-alt-overlay,
+	.detail-image-btn:hover .image-alt-overlay,
+	.detail-image-btn:focus-visible .image-alt-overlay,
+	.board-gallery-image-btn:hover .image-alt-overlay,
+	.board-gallery-image-btn:focus-visible .image-alt-overlay {
+		opacity: 1;
+	}
+
+	.image-mirror-toggle {
+		position: absolute;
+		top: 6px;
+		right: 6px;
+		z-index: 4;
+		min-height: 0;
+		padding: 4px 8px;
+		border: 1px solid rgba(255, 255, 255, 0.65);
+		border-radius: 999px;
+		background: rgba(20, 17, 26, 0.82);
+		color: #fff;
+		font-family: system-ui, sans-serif;
+		font-size: 0.65rem;
+		font-weight: 800;
+		line-height: 1.2;
+		cursor: pointer;
+		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+	}
+
+	.image-mirror-toggle:hover,
+	.image-mirror-toggle:focus-visible {
+		background: var(--accent);
 	}
 
 	.card-media-thumb {
@@ -6934,6 +7413,8 @@
 	}
 
 	.detail-image-btn {
+		position: relative;
+		display: block;
 		padding: 0;
 		border: none;
 		background: transparent;
@@ -7251,6 +7732,197 @@
 
 		.tree-board-modal-body {
 			padding: 8px;
+		}
+	}
+
+	.board-gallery {
+		padding: 12px 16px 16px;
+		background: var(--card-bg, #fffcf6);
+	}
+
+	.board-gallery-head {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 8px 14px;
+		margin-bottom: 10px;
+	}
+
+	.board-gallery-toggle {
+		border: none;
+		background: none;
+		padding: 4px 0;
+		font-family: inherit;
+		font-size: 1rem;
+		font-weight: 700;
+		color: var(--text-ink);
+		cursor: pointer;
+	}
+
+	.board-blast-toggle {
+		border: 1px solid var(--border-color, #ccc);
+		border-radius: 999px;
+		background: none;
+		padding: 4px 12px;
+		font-family: inherit;
+		font-size: 0.85rem;
+		color: var(--text-ink);
+		cursor: pointer;
+	}
+
+	.board-gallery-filter {
+		border: 1px solid var(--border-color, #ccc);
+		border-radius: 999px;
+		background: none;
+		padding: 4px 12px;
+		font-family: inherit;
+		font-size: 0.85rem;
+		color: var(--text-ink);
+		cursor: pointer;
+	}
+
+	.board-gallery-filter.active {
+		border-color: var(--accent);
+		background: color-mix(in srgb, var(--accent) 18%, transparent);
+	}
+
+	.board-gallery-empty {
+		margin: 8px 0 2px;
+		color: var(--muted);
+		font-size: 0.9rem;
+	}
+
+	.board-blast-toggle.active {
+		background: color-mix(in srgb, #e25822 22%, transparent);
+	}
+
+	.board-blast-controls {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px 14px;
+	}
+
+	.board-blast-slider {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 0.78rem;
+		color: var(--muted, #888);
+	}
+
+	.board-blast-slider span {
+		font-weight: 700;
+	}
+
+	.board-blast-slider input[type='range'] {
+		width: 110px;
+		accent-color: #e25822;
+	}
+
+	.board-blast-slider strong {
+		min-width: 34px;
+		color: var(--text-ink);
+		font-size: 0.78rem;
+	}
+
+	.board-gallery-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+		gap: 10px;
+		max-height: 72vh;
+		overflow-y: auto;
+		padding-right: 4px;
+	}
+
+	.board-gallery-item {
+		position: relative;
+		display: block;
+		border-radius: 8px;
+		overflow: hidden;
+	}
+
+	.board-gallery-image-btn {
+		position: relative;
+		display: block;
+		width: 100%;
+		border: none;
+		background: none;
+		padding: 0;
+		cursor: zoom-in;
+	}
+
+	.board-gallery-image-btn img {
+		display: block;
+		width: 100%;
+		height: auto;
+		object-fit: cover;
+		border-radius: 8px;
+		transition: transform 0.15s ease;
+	}
+
+	.board-gallery-image-btn:hover img {
+		transform: scale(1.03);
+	}
+
+	.board-gallery-handle {
+		position: absolute;
+		left: 6px;
+		bottom: 6px;
+		padding: 2px 8px;
+		border-radius: 999px;
+		background: rgba(0, 0, 0, 0.55);
+		color: #fff;
+		font-size: 0.72rem;
+		opacity: 0;
+		transition: opacity 0.15s ease;
+		pointer-events: none;
+		max-width: calc(100% - 12px);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.board-gallery-image-btn:hover .board-gallery-handle,
+	.board-gallery-image-btn:focus-visible .board-gallery-handle {
+		opacity: 1;
+	}
+
+	.board-blast-layer {
+		position: fixed;
+		inset: 0;
+		z-index: 950;
+		overflow: hidden;
+		pointer-events: none;
+	}
+
+	.board-blast-card {
+		position: absolute;
+		width: min(300px, 70vw);
+		max-height: 40vh;
+		object-fit: cover;
+		border-radius: 10px;
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+		transform: translate(-50%, -50%) scale(0.05);
+		animation: board-blast-out var(--dur, 1800ms) cubic-bezier(0.3, 0.6, 0.6, 1) both;
+		animation-delay: var(--delay, 0ms);
+		will-change: transform, opacity;
+	}
+
+	@keyframes board-blast-out {
+		0% {
+			transform: translate(-50%, -50%) scale(0.05) rotate(0deg);
+			opacity: 0;
+		}
+		12% {
+			opacity: 1;
+		}
+		75% {
+			opacity: 1;
+		}
+		100% {
+			transform: translate(calc(-50% + var(--tx, 0px)), calc(-50% + var(--ty, 0px)))
+				scale(var(--sc, 2.5)) rotate(var(--rot, 0deg));
+			opacity: 0;
 		}
 	}
 </style>

@@ -254,6 +254,122 @@
 		persistTuning();
 	}
 
+	// ---- Middle panel tabs (constructed hand / cursor) ----
+
+	let handTab = $state<'hand' | 'cursor'>('hand');
+
+	// ---- Cursor mapping state ----
+
+	let cursorCanvasEl = $state<HTMLCanvasElement | null>(null);
+	let cursorSmoothing = $state(0);
+	let cursorGain = $state(1);
+	let cursorLandmark = $state<8 | 0>(8);
+	let cursorPos = $state<{ x: number; y: number } | null>(null);
+
+	// Non-reactive drawing state for the cursor view.
+	let cursorSmoothed: { x: number; y: number } | null = null;
+	let cursorTrail: { x: number; y: number }[] = [];
+	const CURSOR_TRAIL_MAX = 60;
+
+	function resetCursor() {
+		cursorSmoothed = null;
+		cursorTrail = [];
+		cursorPos = null;
+	}
+
+	/**
+	 * Naive landmark → cursor mapping: take one landmark's normalized camera
+	 * coordinates, mirror x (to match the mirrored view), optionally apply gain
+	 * around the frame center, optionally smooth with an EMA, and draw it as a
+	 * cursor in the 2D canvas. No calibration, no dead-zones — the point is to
+	 * see how far raw landmarks get you.
+	 */
+	function drawCursorView(ctx: CanvasRenderingContext2D, landmarks: Point3[], w: number, h: number) {
+		ctx.clearRect(0, 0, w, h);
+
+		// Background grid.
+		ctx.strokeStyle = 'rgba(80, 100, 120, 0.12)';
+		ctx.lineWidth = 1;
+		const step = 40;
+		for (let x = step; x < w; x += step) {
+			ctx.beginPath();
+			ctx.moveTo(x, 0);
+			ctx.lineTo(x, h);
+			ctx.stroke();
+		}
+		for (let y = step; y < h; y += step) {
+			ctx.beginPath();
+			ctx.moveTo(0, y);
+			ctx.lineTo(w, y);
+			ctx.stroke();
+		}
+
+		const lm = landmarks[cursorLandmark];
+		// Mirror x, apply gain around the center so a small hand region can
+		// still reach screen edges.
+		const nx = 0.5 + ((1 - lm.x) - 0.5) * cursorGain;
+		const ny = 0.5 + (lm.y - 0.5) * cursorGain;
+		const raw = {
+			x: Math.max(0, Math.min(1, nx)) * w,
+			y: Math.max(0, Math.min(1, ny)) * h
+		};
+
+		if (!cursorSmoothed || cursorSmoothing <= 0) {
+			cursorSmoothed = { ...raw };
+		} else {
+			const a = 1 - cursorSmoothing;
+			cursorSmoothed.x += (raw.x - cursorSmoothed.x) * a;
+			cursorSmoothed.y += (raw.y - cursorSmoothed.y) * a;
+		}
+		const cur = cursorSmoothed;
+
+		cursorTrail.push({ x: cur.x, y: cur.y });
+		if (cursorTrail.length > CURSOR_TRAIL_MAX) cursorTrail.shift();
+
+		// Trail, fading out toward the oldest point.
+		for (let i = 1; i < cursorTrail.length; i++) {
+			const t = i / cursorTrail.length;
+			ctx.strokeStyle = `rgba(85, 225, 235, ${t * 0.5})`;
+			ctx.lineWidth = 1 + t * 2;
+			ctx.lineCap = 'round';
+			ctx.beginPath();
+			ctx.moveTo(cursorTrail[i - 1].x, cursorTrail[i - 1].y);
+			ctx.lineTo(cursorTrail[i].x, cursorTrail[i].y);
+			ctx.stroke();
+		}
+
+		// Raw (unsmoothed) position as a faint ghost so jitter is visible.
+		if (cursorSmoothing > 0) {
+			ctx.beginPath();
+			ctx.arc(raw.x, raw.y, 5, 0, Math.PI * 2);
+			ctx.strokeStyle = 'rgba(232, 182, 76, 0.5)';
+			ctx.lineWidth = 1.5;
+			ctx.stroke();
+		}
+
+		// Crosshair.
+		ctx.strokeStyle = 'rgba(120, 255, 200, 0.25)';
+		ctx.lineWidth = 1;
+		ctx.beginPath();
+		ctx.moveTo(cur.x, 0);
+		ctx.lineTo(cur.x, h);
+		ctx.moveTo(0, cur.y);
+		ctx.lineTo(w, cur.y);
+		ctx.stroke();
+
+		// Cursor.
+		ctx.beginPath();
+		ctx.arc(cur.x, cur.y, 12, 0, Math.PI * 2);
+		ctx.fillStyle = 'rgba(120, 255, 200, 0.18)';
+		ctx.fill();
+		ctx.beginPath();
+		ctx.arc(cur.x, cur.y, 5, 0, Math.PI * 2);
+		ctx.fillStyle = 'rgba(120, 255, 200, 0.95)';
+		ctx.fill();
+
+		cursorPos = { x: cur.x / w, y: cur.y / h };
+	}
+
 	// ---- Constructed hand view state ----
 
 	let viewYaw = 0;
@@ -667,6 +783,7 @@
 
 				const overlayCtx = overlayEl.getContext('2d')!;
 				const handCtx = handCanvasEl.getContext('2d')!;
+				let cursorCtx: CanvasRenderingContext2D | null = null;
 				let lastVideoTime = -1;
 				let frameCount = 0;
 				let fpsWindowStart = performance.now();
@@ -676,11 +793,17 @@
 					rafId = requestAnimationFrame(loop);
 					if (!recognizer || videoEl.readyState < 2) return;
 
-					// Keep the constructed-hand canvas sized to its element.
-					const hw = handCanvasEl.clientWidth;
-					const hh = handCanvasEl.clientHeight;
-					if (hw && handCanvasEl.width !== hw) handCanvasEl.width = hw;
-					if (hh && handCanvasEl.height !== hh) handCanvasEl.height = hh;
+					// Keep the active middle-panel canvas sized to its element.
+					const activeCanvas = handTab === 'hand' ? handCanvasEl : cursorCanvasEl;
+					if (activeCanvas) {
+						const hw = activeCanvas.clientWidth;
+						const hh = activeCanvas.clientHeight;
+						if (hw && activeCanvas.width !== hw) activeCanvas.width = hw;
+						if (hh && activeCanvas.height !== hh) activeCanvas.height = hh;
+					}
+					if (handTab === 'cursor' && cursorCanvasEl && !cursorCtx) {
+						cursorCtx = cursorCanvasEl.getContext('2d');
+					}
 
 					if (videoEl.currentTime === lastVideoTime) return;
 					lastVideoTime = videoEl.currentTime;
@@ -708,7 +831,11 @@
 						handVisible = true;
 						handednessLabel = result.handedness?.[0]?.[0]?.displayName ?? '';
 						drawOverlay(overlayCtx, landmarks, width, height);
-						drawConstructedHand(handCtx, world, handCanvasEl.width, handCanvasEl.height);
+						if (handTab === 'hand') {
+							drawConstructedHand(handCtx, world, handCanvasEl.width, handCanvasEl.height);
+						} else if (cursorCtx && cursorCanvasEl) {
+							drawCursorView(cursorCtx, landmarks, cursorCanvasEl.width, cursorCanvasEl.height);
+						}
 
 						// Pretrained scores.
 						const cats: { categoryName: string; score: number }[] = result.gestures?.[0] ?? [];
@@ -745,9 +872,14 @@
 						handednessLabel = '';
 						smoothWorld = null;
 						resetDynamics();
+						resetCursor();
 						pretrainedTop = null;
 						pretrainedScores = {};
-						drawHandPlaceholder(handCtx, handCanvasEl.width, handCanvasEl.height);
+						if (handTab === 'hand') {
+							drawHandPlaceholder(handCtx, handCanvasEl.width, handCanvasEl.height);
+						} else if (cursorCtx && cursorCanvasEl) {
+							drawHandPlaceholder(cursorCtx, cursorCanvasEl.width, cursorCanvasEl.height);
+						}
 						updateRecording(now, null);
 					}
 				};
@@ -827,21 +959,119 @@
 			</p>
 		</section>
 
-		<!-- Middle: constructed hand -->
+		<!-- Middle: constructed hand / cursor -->
 		<section class="panel hand-panel">
-			<h2>
-				Constructed Hand
-				<button type="button" class="mini-btn" onclick={resetView}>reset view</button>
-			</h2>
+			<div class="tabs">
+				<button
+					type="button"
+					class="tab"
+					class:active={handTab === 'hand'}
+					onclick={() => (handTab = 'hand')}
+				>
+					Constructed Hand
+				</button>
+				<button
+					type="button"
+					class="tab"
+					class:active={handTab === 'cursor'}
+					onclick={() => {
+						handTab = 'cursor';
+						resetCursor();
+					}}
+				>
+					Cursor
+				</button>
+			</div>
+
+			{#if handTab === 'hand'}
+				<h2>
+					Constructed Hand
+					<button type="button" class="mini-btn" onclick={resetView}>reset view</button>
+				</h2>
+			{:else}
+				<h2>
+					Cursor
+					{#if cursorPos}
+						<span class="cursor-readout">
+							x {(cursorPos.x * 100).toFixed(0)}% · y {(cursorPos.y * 100).toFixed(0)}%
+						</span>
+					{/if}
+				</h2>
+			{/if}
+
 			<canvas
 				bind:this={handCanvasEl}
 				class="hand-canvas"
+				class:hidden-canvas={handTab !== 'hand'}
 				onpointerdown={onHandPointerDown}
 				onpointermove={onHandPointerMove}
 				onpointerup={onHandPointerUp}
 				onpointercancel={onHandPointerUp}
 			></canvas>
-			<p class="panel-hint">3D world landmarks, depth-shaded. Drag to orbit.</p>
+			<canvas
+				bind:this={cursorCanvasEl}
+				class="hand-canvas cursor-canvas"
+				class:hidden-canvas={handTab !== 'cursor'}
+			></canvas>
+
+			{#if handTab === 'hand'}
+				<p class="panel-hint">3D world landmarks, depth-shaded. Drag to orbit.</p>
+			{:else}
+				<div class="cursor-controls">
+					<div class="slider-row">
+						<span class="slider-caption">Landmark
+							<em>{cursorLandmark === 8 ? 'index tip' : 'wrist'}</em>
+						</span>
+						<div class="cursor-lm-btns">
+							<button
+								type="button"
+								class="mini-btn"
+								class:selected={cursorLandmark === 8}
+								onclick={() => {
+									cursorLandmark = 8;
+									resetCursor();
+								}}
+							>
+								☝️ index tip
+							</button>
+							<button
+								type="button"
+								class="mini-btn"
+								class:selected={cursorLandmark === 0}
+								onclick={() => {
+									cursorLandmark = 0;
+									resetCursor();
+								}}
+							>
+								✋ wrist
+							</button>
+						</div>
+					</div>
+					<div class="slider-row">
+						<label for="cursor-gain">Gain <em>{cursorGain.toFixed(1)}×</em></label>
+						<input id="cursor-gain" type="range" min="1" max="4" step="0.1" bind:value={cursorGain} />
+					</div>
+					<div class="slider-row">
+						<label for="cursor-smooth">
+							Smoothing <em>{cursorSmoothing === 0 ? 'off (raw)' : cursorSmoothing.toFixed(2)}</em>
+						</label>
+						<input
+							id="cursor-smooth"
+							type="range"
+							min="0"
+							max="0.95"
+							step="0.05"
+							bind:value={cursorSmoothing}
+						/>
+					</div>
+				</div>
+				<p class="panel-hint">
+					Naive mapping: the landmark's normalized camera position → 2D cursor, mirrored to match
+					the camera view. Smoothing off shows raw jitter; with smoothing on, the amber ring is the
+					raw position. Gain scales motion around the frame center so a small hand region reaches
+					the edges.
+				</p>
+			{/if}
 		</section>
 
 		<!-- Right: pretrained model + trainer tabs -->
@@ -1296,6 +1526,51 @@
 
 	.hand-canvas:active {
 		cursor: grabbing;
+	}
+
+	.cursor-canvas {
+		cursor: crosshair;
+	}
+
+	.hidden-canvas {
+		display: none;
+	}
+
+	.cursor-readout {
+		font-size: 0.75rem;
+		font-weight: 400;
+		text-transform: none;
+		letter-spacing: 0;
+		color: #78ffc8;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.cursor-controls {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.cursor-lm-btns {
+		display: flex;
+		gap: 6px;
+	}
+
+	.slider-caption {
+		display: flex;
+		justify-content: space-between;
+		font-size: 0.75rem;
+		color: #8b96a3;
+	}
+
+	.slider-caption em {
+		font-style: normal;
+		color: #dce4ec;
+	}
+
+	.mini-btn.selected {
+		color: #78ffc8;
+		border-color: #78ffc8;
 	}
 
 	/* Right panel */

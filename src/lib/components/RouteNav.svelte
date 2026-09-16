@@ -28,6 +28,8 @@
 		| 'carousel'
 		| 'town'
 		| 'parallelboard'
+		| 'mirrorboard'
+		| 'whiteboard'
 		| 'band'
 		| 'loom'
 		| 'bisk2bisk'
@@ -86,6 +88,8 @@
 		{ id: 'xtreeviewer', href: '/xtreeviewer', label: 'X Treeviewer', compactLabel: 'X Tree' },
 		{ id: 'carousel', href: '/carousel', label: 'Carousel', compactLabel: 'Carousel' },
 		{ id: 'parallelboard', href: '/parallelboard', label: 'Parallel Board', compactLabel: 'Parallel' },
+		{ id: 'mirrorboard', href: '/mirrorboard', label: 'Mirror Board', compactLabel: 'Mirror' },
+		{ id: 'whiteboard', href: '/whiteboard', label: 'Whiteboard', compactLabel: 'White' },
 		{ id: 'band', href: '/band', label: 'Band' },
 		{ id: 'loom', href: '/loom', label: 'Loom' },
 		{ id: 'bisk2bisk', href: '/bisk2bisk', label: 'Bisk2Bisk', compactLabel: 'Bisk2Bisk' },
@@ -118,6 +122,7 @@
 			item.id === 'treeviewer' ||
 			item.id === 'carousel' ||
 			item.id === 'parallelboard' ||
+			item.id === 'mirrorboard' ||
 			item.id === 'band' ||
 			item.id === 'bisk2bisk' ||
 			item.id === 'abstractfeed'

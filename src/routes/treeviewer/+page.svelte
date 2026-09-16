@@ -237,8 +237,10 @@
 	let quoteFeeds = $state<Record<string, QuoteFeedState>>({});
 	let quoteLaneLoads = $state<Record<string, boolean>>({});
 	let recentThreads = $state<RecentThreadEntry[]>([]);
+	const initialTreeOnlyEmbed = readTreeOnlyEmbedParam();
 	let embeddedSection = $state(readEmbeddedSectionParam());
-	let embeddedUiCollapsed = $state(false);
+	let treeOnlyEmbed = $state(initialTreeOnlyEmbed);
+	let embeddedUiCollapsed = $state(initialTreeOnlyEmbed);
 
 	let treeLaneHeaderHeight = $derived(embeddedUiCollapsed ? 0 : TREE_LANE_HEADER_HEIGHT);
 	let allLanes = $derived(thread ? buildViewerLanes(thread) : []);
@@ -343,7 +345,12 @@
 
 	function readEmbeddedSectionParam(): boolean {
 		if (!browser || typeof window === 'undefined') return false;
-		return new URLSearchParams(window.location.search).get('embed') === 'thread-section';
+		return ['thread-section', 'tree'].includes(new URLSearchParams(window.location.search).get('embed') ?? '');
+	}
+
+	function readTreeOnlyEmbedParam(): boolean {
+		if (!browser || typeof window === 'undefined') return false;
+		return new URLSearchParams(window.location.search).get('embed') === 'tree';
 	}
 
 	function rememberLoadedThread(url: string, loadedThread: SelfReplyThread & { isTruncated?: boolean }) {
@@ -2087,14 +2094,16 @@
 		} catch {}
 
 		const params = new URLSearchParams(window.location.search);
-		embeddedSection = params.get('embed') === 'thread-section';
+		embeddedSection = ['thread-section', 'tree'].includes(params.get('embed') ?? '');
+		treeOnlyEmbed = params.get('embed') === 'tree';
 		const viewParam = params.get('view');
 		if (viewParam === 'chat' || viewParam === 'forum' || viewParam === 'carousel') {
 			textPanelMode = viewParam;
 		}
 		if (embeddedSection) {
 			treeCollapsed = false;
-			chatCollapsed = false;
+			chatCollapsed = treeOnlyEmbed;
+			embeddedUiCollapsed = treeOnlyEmbed;
 		}
 		const urlParam = params.get('url');
 		if (urlParam) {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         xtreeviewer grabber
 // @namespace    https://threadviewer.app
-// @version      1.10.0
+// @version      1.13.0
 // @description  Capture the current X.com thread (using your own session) and open it in threadviewer.app/xtreeviewer
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -302,6 +302,7 @@
 		return {
 			id: result.rest_id,
 			parentId: legacy.in_reply_to_status_id_str || null,
+			conversationId: legacy.conversation_id_str || null,
 			userId: userResult.rest_id || '',
 			handle: handle,
 			name: userCore.name || userLegacy.name || '',
@@ -321,6 +322,12 @@
 	function handleItemContent(itemContent, out) {
 		if (!itemContent) return;
 		var itemType = itemContent.itemType || itemContent.__typename;
+		// "Discover more" section header. Real replies can appear after it, so only
+		// skip the label itself — the conversation-id check in addTweet decides
+		// which tweets actually belong to the thread.
+		if (itemType === 'TimelineLabel') return;
+		// Promoted tweets (ads) are never part of the conversation.
+		if (itemContent.promotedMetadata) return;
 		if (itemType === 'TimelineTweet') {
 			var tweet = extractTweet(itemContent.tweet_results && itemContent.tweet_results.result);
 			if (tweet) out.tweets.push(tweet);
@@ -330,6 +337,8 @@
 	}
 
 	function handleEntry(entry, out) {
+		var entryId = (entry && entry.entryId) || '';
+		if (/^(label|promoted|who-to-follow|community|trend)/i.test(entryId)) return;
 		var content = entry && entry.content;
 		if (!content) return;
 		if (content.itemContent) {
@@ -381,6 +390,7 @@
 	function makeCaptureState(focalTweetId) {
 		var st = {
 			focalTweetId: focalTweetId,
+			conversationId: null,
 			tweetsById: {},
 			childCount: {},
 			seenCursors: {},
@@ -417,10 +427,18 @@
 		var requests = 0;
 
 		function addTweet(tweet) {
+			// Every tweet reports its conversation's root id (conversation_id_str).
+			// Ads and "Discover more" suggestions belong to other conversations, so
+			// this is the authoritative "is this attached to the root post" check —
+			// unlike graph connectivity, it keeps real replies whose parent tweet was
+			// deleted or hidden.
+			if (st.conversationId && tweet.conversationId && tweet.conversationId !== st.conversationId)
+				return false;
 			if (!st.tweetsById[tweet.id] && tweet.parentId) {
 				st.childCount[tweet.parentId] = (st.childCount[tweet.parentId] || 0) + 1;
 			}
 			st.tweetsById[tweet.id] = tweet;
+			return true;
 		}
 
 		// Balance: only open a tweet's own "Show replies" page when it claims more
@@ -463,11 +481,29 @@
 				continue;
 			}
 
-			out.tweets.forEach(addTweet);
-			if (!st.opUserId && st.tweetsById[focalTweetId]) st.opUserId = st.tweetsById[focalTweetId].userId || null;
-			out.cursors.forEach(function (cursor) {
-				st.queue.push({ focalTweetId: job.focalTweetId, cursor: cursor });
+			// Learn the conversation root id from the original focal tweet, then use
+			// it to reject anything from a different conversation.
+			if (!st.conversationId) {
+				for (var i = 0; i < out.tweets.length; i++) {
+					if (out.tweets[i].id === st.focalTweetId) {
+						st.conversationId = out.tweets[i].conversationId || null;
+						break;
+					}
+				}
+			}
+			var accepted = 0;
+			out.tweets.forEach(function (tweet) {
+				if (addTweet(tweet)) accepted += 1;
 			});
+			if (!st.opUserId && st.tweetsById[focalTweetId]) st.opUserId = st.tweetsById[focalTweetId].userId || null;
+			// Don't paginate feeds that no longer yield conversation tweets — a
+			// cursor page with 0 in-conversation tweets is the "Discover more"
+			// suggestion feed, which can otherwise be followed indefinitely.
+			if (!job.cursor || accepted > 0 || !st.conversationId) {
+				out.cursors.forEach(function (cursor) {
+					st.queue.push({ focalTweetId: job.focalTweetId, cursor: cursor });
+				});
+			}
 			enqueueDeeperReplies();
 
 			onProgress(Object.keys(st.tweetsById).length, requests, st, focalTweetId);

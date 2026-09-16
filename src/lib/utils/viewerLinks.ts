@@ -10,6 +10,7 @@ export type ViewerPage =
 	| 'treeviewer'
 	| 'carousel'
 	| 'parallelboard'
+	| 'mirrorboard'
 	| 'band'
 	| 'bisk2bisk'
 	| 'dialogue'

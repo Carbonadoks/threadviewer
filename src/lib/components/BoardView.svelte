@@ -5,7 +5,7 @@
 		import type { BoardPlatformConfig, BoardThread } from '$lib/types/boardPlatform';
 		import LinkedPostEmbeds from '$lib/components/LinkedPostEmbeds.svelte';
 		import ThreadExportButton from '$lib/components/ThreadExportButton.svelte';
-	import { openLightbox } from '$lib/stores/lightbox';
+	import { openLightbox, type LightboxImageVariants } from '$lib/stores/lightbox';
 	import {
 		buildParentMap,
 		buildVisiblePostOrder,
@@ -48,12 +48,16 @@
 		thread,
 		initialActiveUri = null,
 		platform = defaultBoardPlatform,
-		showExport = true
+		showExport = true,
+		showImageAltOverlays = false,
+		lightboxImageVariants = {}
 	}: {
 		thread: BoardThread;
 		initialActiveUri?: string | null;
 		platform?: BoardPlatformConfig;
 		showExport?: boolean;
+		showImageAltOverlays?: boolean;
+		lightboxImageVariants?: Record<string, LightboxImageVariants>;
 	} = $props();
 
 	type HighlightSegment = {
@@ -61,6 +65,11 @@
 		match: boolean;
 	};
 	const MAIN_TREE_PANEL_ID = '__main__';
+
+	function openImageLightbox(image: { thumb: string; fullsize: string; alt: string }) {
+		const variants = lightboxImageVariants[image.fullsize] ?? lightboxImageVariants[image.thumb];
+		openLightbox(image.fullsize, image.alt, variants);
+	}
 
 	let boardEl: HTMLDivElement | undefined = $state();
 	let collapsedBranches = $state<Record<string, boolean>>({});
@@ -1046,10 +1055,13 @@
 								class="image-lightbox-btn"
 								onclick={(event) => {
 									event.stopPropagation();
-									openLightbox(img.fullsize, img.alt);
+									openImageLightbox(img);
 								}}
 							>
 								<img src={img.thumb} alt={img.alt} class="card-img" />
+								{#if showImageAltOverlays && img.alt.trim()}
+									<span class="image-alt-overlay">{img.alt}</span>
+								{/if}
 							</button>
 						{/each}
 					</div>
@@ -1111,8 +1123,11 @@
 				{#if post.embed?.images}
 					<div class="card-images">
 						{#each post.embed.images as img}
-							<button type="button" class="image-lightbox-btn" onclick={() => openLightbox(img.fullsize, img.alt)}>
+							<button type="button" class="image-lightbox-btn" onclick={() => openImageLightbox(img)}>
 								<img src={img.thumb} alt={img.alt} class="card-img" />
+								{#if showImageAltOverlays && img.alt.trim()}
+									<span class="image-alt-overlay">{img.alt}</span>
+								{/if}
 							</button>
 						{/each}
 					</div>
@@ -1214,10 +1229,13 @@
 							class="image-lightbox-btn"
 							onclick={(event) => {
 								event.stopPropagation();
-								openLightbox(img.fullsize, img.alt);
+								openImageLightbox(img);
 							}}
 						>
 							<img src={img.thumb} alt={img.alt} class="card-img" />
+							{#if showImageAltOverlays && img.alt.trim()}
+								<span class="image-alt-overlay">{img.alt}</span>
+							{/if}
 						</button>
 					{/each}
 				</div>
@@ -2215,10 +2233,37 @@
 	}
 
 	.image-lightbox-btn {
+		position: relative;
+		display: block;
 		padding: 0;
 		border: none;
 		background: transparent;
 		cursor: pointer;
+	}
+
+	.image-alt-overlay {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		padding: 10px;
+		overflow: auto;
+		border-radius: 4px;
+		background: rgba(20, 17, 26, 0.88);
+		color: #fff;
+		font-family: system-ui, sans-serif;
+		font-size: 0.72rem;
+		font-weight: 600;
+		line-height: 1.35;
+		text-align: left;
+		opacity: 0;
+		transition: opacity 0.15s ease;
+		pointer-events: none;
+	}
+
+	.image-lightbox-btn:hover .image-alt-overlay,
+	.image-lightbox-btn:focus-visible .image-alt-overlay {
+		opacity: 1;
 	}
 
 	.card-img {

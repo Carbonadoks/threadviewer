@@ -314,6 +314,44 @@ export async function searchPostsByTag(
 	};
 }
 
+export async function searchPostsGeneral(
+	query: string,
+	options: {
+		cursor?: string;
+		limit?: number;
+		sort?: 'latest' | 'top';
+		/** Restrict results to accounts the authenticated caller follows. */
+		following?: boolean;
+		signal?: AbortSignal;
+		agent?: PostSearchAgent;
+	} = {}
+): Promise<TaggedPostSearchPage> {
+	const q = query.trim();
+	if (!q) {
+		return { posts: [] };
+	}
+
+	const limit = Math.max(1, Math.min(options.limit ?? 100, 100));
+	const searchAgent = options.agent ?? agent;
+	// `following:true` is a search operator inside `q` (matching the official
+	// app's request), not a separate request parameter.
+	const res = await searchAgent.app.bsky.feed.searchPosts(
+		{
+			q: options.following ? `following:true ${q}` : q,
+			sort: options.sort ?? 'latest',
+			limit,
+			cursor: options.cursor
+		},
+		{ signal: options.signal }
+	);
+
+	return {
+		posts: (res.data.posts ?? []).map((post: any) => parsePostView(post)),
+		cursor: res.data.cursor,
+		hitsTotal: res.data.hitsTotal
+	};
+}
+
 export function buildAuthorSearchQuery(query: string, authorHandle: string): string {
 	const cleanHandle = authorHandle.replace(/^@/, '').trim();
 	return `${query.trim()} from:${cleanHandle}`.trim();

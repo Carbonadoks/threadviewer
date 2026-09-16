@@ -6,7 +6,7 @@
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 
 	let { children } = $props();
-	let hideThemeToggle = $derived(page.url.searchParams.get('embed') === 'thread-section');
+	let hideThemeToggle = $derived(['thread-section', 'tree'].includes(page.url.searchParams.get('embed') ?? ''));
 
 	function systemTheme() {
 		if (typeof window === 'undefined') return 'light';
