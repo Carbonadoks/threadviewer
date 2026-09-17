@@ -10,14 +10,14 @@ export type XArchivePost = Omit<ThreadPost, 'children' | 'linkedUrls'> & {
 	sourceUrl: string;
 	linkedUrls: string[];
 	countableText: string;
-	characterLength: number;
+	wordCount: number;
 	isNoteTweet?: boolean;
 	children: XArchivePost[];
 };
 
 export type XArchiveThread = Omit<SelfReplyThread, 'rootPost'> & {
 	rootPost: XArchivePost;
-	characterLength: number;
+	wordCount: number;
 	postCount: number;
 	latestCreatedAt: string;
 };
@@ -32,7 +32,7 @@ export type XArchiveStats = {
 	chainStarts: number;
 	threadsWithSelfReplies: number;
 	maxDepth: number;
-	totalCharacters: number;
+	totalWords: number;
 };
 
 export type XArchiveParseResult = {
@@ -456,8 +456,14 @@ function cleanTextForLength(text: string, urls: XArchiveTweetEntityUrl[]): strin
 	return cleaned.replace(URL_RE, ' ').replace(/\s+/g, ' ').trim();
 }
 
-function countCharacters(text: string): number {
-	return Array.from(text).length;
+const wordSegmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
+
+function countWords(text: string): number {
+	let count = 0;
+	for (const segment of wordSegmenter.segment(text)) {
+		if (segment.isWordLike) count += 1;
+	}
+	return count;
 }
 
 function tweetId(tweet: XArchiveTweet): string {
@@ -557,7 +563,7 @@ function toXArchivePost(
 		replyToScreenName: toStringValue(tweet.in_reply_to_screen_name) || undefined,
 		sourceUrl: buildXPostUrl(author.handle, id),
 		countableText,
-		characterLength: countCharacters(countableText),
+		wordCount: countWords(countableText),
 		isNoteTweet: Boolean(note),
 		children: []
 	};
@@ -581,19 +587,19 @@ function measureDepth(post: XArchivePost, seen = new Set<string>()): number {
 
 function summarizeThread(post: XArchivePost): {
 	postCount: number;
-	characterLength: number;
+	wordCount: number;
 	latestCreatedAt: string;
 } {
 	const seen = new Set<string>();
 	let postCount = 0;
-	let characterLength = 0;
+	let wordCount = 0;
 	let latest = post.createdAt;
 
 	function walk(node: XArchivePost) {
 		if (seen.has(node.uri)) return;
 		seen.add(node.uri);
 		postCount += 1;
-		characterLength += node.characterLength;
+		wordCount += node.wordCount;
 		if (postTime(node) > Date.parse(latest)) latest = node.createdAt;
 		for (const child of node.children) {
 			walk(child);
@@ -601,7 +607,7 @@ function summarizeThread(post: XArchivePost): {
 	}
 
 	walk(post);
-	return { postCount, characterLength, latestCreatedAt: latest };
+	return { postCount, wordCount, latestCreatedAt: latest };
 }
 
 function buildThreads(posts: XArchivePost[], accountId: string): XArchiveThread[] {
@@ -673,7 +679,7 @@ export function xArchiveThreadHasImages(thread: XArchiveThread): boolean {
 export function compareXArchiveThreads(mode: XArchiveThreadSortMode) {
 	return (a: XArchiveThread, b: XArchiveThread): number => {
 		if (mode === 'length') {
-			return b.characterLength - a.characterLength || b.depth - a.depth || postTime(b.rootPost) - postTime(a.rootPost);
+			return b.wordCount - a.wordCount || b.depth - a.depth || postTime(b.rootPost) - postTime(a.rootPost);
 		}
 		if (mode === 'newest') {
 			return postTime(b.rootPost) - postTime(a.rootPost) || b.depth - a.depth;
@@ -682,12 +688,12 @@ export function compareXArchiveThreads(mode: XArchiveThreadSortMode) {
 			return postTime(a.rootPost) - postTime(b.rootPost) || b.depth - a.depth;
 		}
 		if (mode === 'liked') {
-			return (b.rootPost.likeCount ?? 0) - (a.rootPost.likeCount ?? 0) || b.characterLength - a.characterLength;
+			return (b.rootPost.likeCount ?? 0) - (a.rootPost.likeCount ?? 0) || b.wordCount - a.wordCount;
 		}
 		if (mode === 'reposted') {
-			return (b.rootPost.repostCount ?? 0) - (a.rootPost.repostCount ?? 0) || b.characterLength - a.characterLength;
+			return (b.rootPost.repostCount ?? 0) - (a.rootPost.repostCount ?? 0) || b.wordCount - a.wordCount;
 		}
-		return b.depth - a.depth || b.characterLength - a.characterLength || postTime(b.rootPost) - postTime(a.rootPost);
+		return b.depth - a.depth || b.wordCount - a.wordCount || postTime(b.rootPost) - postTime(a.rootPost);
 	};
 }
 
@@ -736,7 +742,7 @@ export function parseXArchiveText(
 
 	const threads = buildThreads(posts, accountId);
 	const maxDepth = threads.length > 0 ? Math.max(...threads.map((thread) => thread.depth)) : 0;
-	const totalCharacters = threads.reduce((sum, thread) => sum + thread.characterLength, 0);
+	const totalWords = threads.reduce((sum, thread) => sum + thread.wordCount, 0);
 	const warnings: string[] = [];
 	if (!accountId) {
 		warnings.push('No account id was found in the archive; self-reply linking may be incomplete.');
@@ -759,7 +765,7 @@ export function parseXArchiveText(
 			chainStarts: threads.length,
 			threadsWithSelfReplies: threads.filter((thread) => thread.depth > 1).length,
 			maxDepth,
-			totalCharacters
+			totalWords
 		},
 		warnings
 	};

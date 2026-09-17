@@ -431,8 +431,8 @@
 					<span>{entry.kind === 'thread' ? `${entry.thread.postCount} posts` : `${entry.totalPosts} in chain`}</span>
 					<span>
 						{entry.kind === 'thread'
-							? entry.thread.characterLength.toLocaleString()
-							: entry.post.characterLength.toLocaleString()} chars
+							? entry.thread.wordCount.toLocaleString()
+							: entry.post.wordCount.toLocaleString()} words
 					</span>
 					{#if searchQuery.trim() && matchUris.length > 0}
 						<span class="match-label">{matchUris.length} hit{matchUris.length !== 1 ? 's' : ''}</span>

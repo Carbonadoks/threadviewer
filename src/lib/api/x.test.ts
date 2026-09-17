@@ -28,7 +28,7 @@ function mockPost(overrides: Partial<XArchivePost>): XArchivePost {
 		quoteCount: 0,
 		sourceUrl: 'https://x.com/alice/status/100',
 		countableText: '',
-		characterLength: 0,
+		wordCount: 0,
 		children: [],
 		...overrides
 	};

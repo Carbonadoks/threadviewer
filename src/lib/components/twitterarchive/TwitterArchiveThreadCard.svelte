@@ -65,7 +65,7 @@
 			<div class="x-thread-header">
 				<span class="depth-badge wobbly-border">{thread.depth} deep</span>
 				<span class="posts-badge">{thread.postCount} posts</span>
-				<span class="length-badge">{thread.characterLength.toLocaleString()} chars</span>
+				<span class="length-badge">{thread.wordCount.toLocaleString()} words</span>
 				<span class="engagement-badges">
 					<span>{formatCount(thread.rootPost.likeCount)} likes</span>
 					<span>{formatCount(thread.rootPost.repostCount)} reposts</span>

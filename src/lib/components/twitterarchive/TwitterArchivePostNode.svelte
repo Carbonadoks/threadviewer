@@ -55,7 +55,7 @@
 		<PostEmbedPreview post={post} compact />
 
 		<div class="x-post-meta" aria-label="Post statistics">
-			<span>{post.characterLength.toLocaleString()} chars</span>
+			<span>{post.wordCount.toLocaleString()} words</span>
 			<span>{formatCount(post.likeCount)} likes</span>
 			<span>{formatCount(post.repostCount)} reposts</span>
 			{#if post.replyCount > 0}

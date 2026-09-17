@@ -12,17 +12,21 @@
 	};
 
 	interface Props {
-		feedItems: any[];
+		feedItems?: any[];
+		posts?: ThreadPost[];
+		postUrl?: (post: ThreadPost) => string | null;
 		engagementCountsByUri: Record<string, EngagementCounts>;
 		hydrating?: boolean;
 		hydrationProgress?: { current: number; total: number };
-		onhydrate: (fromMs: number, toMs: number) => void;
+		onhydrate?: (fromMs: number, toMs: number) => void;
 		onselect?: (fromMs: number | null, toMs: number | null) => void;
 		onopenpost?: (uri: string, handle: string) => void;
 	}
 
 	let {
-		feedItems,
+		feedItems = [],
+		posts = [],
+		postUrl = (post) => buildBskyPostUrl(post.uri, post.author.handle),
 		engagementCountsByUri,
 		hydrating = false,
 		hydrationProgress = { current: 0, total: 0 },
@@ -30,6 +34,11 @@
 		onselect,
 		onopenpost
 	}: Props = $props();
+
+	const timelineItems = $derived(posts.length > 0
+		? posts.map((post) => ({ post: { ...post, record: { createdAt: post.createdAt } } }))
+		: feedItems);
+	const postsByUri = $derived(new Map(posts.map((post) => [post.uri, post])));
 
 	const MARGIN = { top: 10, right: 16, bottom: 28, left: 44 };
 	const HEIGHT = 170;
@@ -60,7 +69,7 @@
 	const points = $derived.by<Point[]>(() => {
 		const result: Point[] = [];
 		const seen = new Set<string>();
-		for (const item of feedItems) {
+		for (const item of timelineItems) {
 			const uri = item?.post?.uri;
 			if (typeof uri !== 'string' || seen.has(uri)) continue;
 			const t = postCreatedMs(item);
@@ -339,7 +348,7 @@
 	// --- Post popup ---
 	const itemByUri = $derived.by(() => {
 		const map = new Map<string, any>();
-		for (const item of feedItems) {
+		for (const item of timelineItems) {
 			const uri = item?.post?.uri;
 			if (typeof uri === 'string' && !map.has(uri)) map.set(uri, item);
 		}
@@ -353,7 +362,7 @@
 
 	function openPopupForPoint(p: { uri: string }, x: number, y: number) {
 		const item = itemByUri.get(p.uri);
-		const post = item ? feedItemToPost(item) : null;
+		const post = postsByUri.get(p.uri) ?? (item ? feedItemToPost(item) : null);
 		if (!post) return;
 		popupPost = post;
 		popupUri = p.uri;
@@ -419,7 +428,7 @@
 
 	function hydrateSelection() {
 		if (selFrom == null || selTo == null) return;
-		onhydrate(Math.min(selFrom, selTo), Math.max(selFrom, selTo));
+		onhydrate?.(Math.min(selFrom, selTo), Math.max(selFrom, selTo));
 	}
 
 	function fmtDate(ms: number): string {
@@ -617,7 +626,7 @@
 			Start: {fmtDate(selFrom)}
 		{:else}
 			Range: <strong>{fmtDate(selLo!)}</strong> → <strong>{fmtDate(selHi!)}</strong>
-			· {inRangeUnhydrated.toLocaleString()} posts to hydrate
+			{#if onhydrate}· {inRangeUnhydrated.toLocaleString()} posts to hydrate{/if}
 		{/if}
 	</div>
 
@@ -725,7 +734,7 @@
 					{/if}
 					<a
 						class="popup-link"
-						href={buildBskyPostUrl(popupPost.uri, popupPost.author.handle)}
+						href={postUrl(popupPost) ?? undefined}
 						target="_blank"
 						rel="noopener noreferrer"
 					>
@@ -748,6 +757,7 @@
 	</div>
 
 	<div class="timeline-actions">
+		{#if onhydrate}
 		<button
 			type="button"
 			class="hydrate-btn wobbly-border"
@@ -760,6 +770,7 @@
 				Hydrate {inRangeUnhydrated.toLocaleString()} posts in range
 			{/if}
 		</button>
+		{/if}
 		<button
 			type="button"
 			class="clear-btn"

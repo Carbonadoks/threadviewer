@@ -51,7 +51,7 @@
 		totalPosts: number;
 		visiblePosts: number;
 		hiddenPosts: number;
-		characterLength: number;
+		wordCount: number;
 		posts: ExportPost[];
 	};
 
@@ -276,7 +276,7 @@
 			totalPosts: chainPosts.length,
 			visiblePosts: posts.length,
 			hiddenPosts: hiddenPosts.length,
-			characterLength: thread.characterLength,
+			wordCount: thread.wordCount,
 			posts
 		};
 	}
@@ -404,7 +404,7 @@
 			<span>
 				{authorName}
 				<span class="meta-detail">
-					{visiblePosts.length} of {chainPosts.length} post{chainPosts.length === 1 ? '' : 's'} · {thread.characterLength.toLocaleString()} chars
+					{visiblePosts.length} of {chainPosts.length} post{chainPosts.length === 1 ? '' : 's'} · {thread.wordCount.toLocaleString()} words
 				</span>
 			</span>
 		</div>
@@ -510,7 +510,7 @@
 
 						<div class="article-engagement" aria-label="Post engagement">
 							<span>{index + 1} / {chainPosts.length}</span>
-							<span>{post.characterLength.toLocaleString()} chars</span>
+							<span>{post.wordCount.toLocaleString()} words</span>
 							<span>{formatCount(post.likeCount)} likes</span>
 							<span>{formatCount(post.repostCount)} reposts</span>
 							{#if post.replyCount > 0}

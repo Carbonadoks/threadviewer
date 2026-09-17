@@ -5,6 +5,7 @@
 	import FontPicker from '$lib/components/FontPicker.svelte';
 	import ThresholdControl from '$lib/components/ThresholdControl.svelte';
 	import SearchOptions from '$lib/components/SearchOptions.svelte';
+	import TimelineViewer from '$lib/components/TimelineViewer.svelte';
 	import ModePicker from '$lib/components/ModePicker.svelte';
 	import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
 	import ErrorBanner from '$lib/components/ErrorBanner.svelte';
@@ -76,10 +77,27 @@
 	let searchMode = $state<SearchMode>('fuzzy');
 	let dateFrom = $state('');
 	let dateTo = $state('');
+	let showTimeline = $state(true);
 	let collapsedByRootUri: Record<string, boolean> = $state({});
 	let visibleLimit = $state(INITIAL_VISIBLE_LIMIT);
 	let xblogThread = $state<XArchiveThread | null>(null);
 	let savedGalleryScrollY = $state(0);
+
+	const timelineCounts = $derived(Object.fromEntries((archive?.posts ?? []).map((post) => [
+		post.uri,
+		{ likeCount: post.likeCount ?? 0, repostCount: post.repostCount ?? 0,
+		  replyCount: post.replyCount ?? 0, quoteCount: post.quoteCount ?? 0 }
+	])));
+	const archivePostUrls = $derived(new Map((archive?.posts ?? []).map((post) => [post.uri, post.sourceUrl])));
+
+	function handleTimelineSelect(fromMs: number | null, toMs: number | null) {
+		const toDateInput = (ms: number) => {
+			const date = new Date(ms);
+			return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+		};
+		dateFrom = fromMs == null ? '' : toDateInput(fromMs);
+		dateTo = toMs == null ? '' : toDateInput(toMs);
+	}
 
 	const author = $derived(archive?.author ?? null);
 	const stats = $derived(archive?.stats ?? null);
@@ -297,6 +315,8 @@
 					progress = nextProgress;
 				}
 			});
+			dateFrom = '';
+			dateTo = '';
 			archive = parsed;
 			allThreads = parsed.threads;
 			threshold = parsed.stats.threadsWithSelfReplies > 0 ? 2 : 1;
@@ -455,7 +475,7 @@
 							<span class="stats-sep">/</span>
 							<span>max depth {stats.maxDepth.toLocaleString()}</span>
 							<span class="stats-sep">/</span>
-							<span>{stats.totalCharacters.toLocaleString()} countable chars</span>
+							<span>{stats.totalWords.toLocaleString()} words</span>
 						</div>
 						{#if stats.notesSeen > 0}
 							<div class="stats-bar">
@@ -618,12 +638,25 @@
 							<SearchOptions bind:dateFrom bind:dateTo />
 						</div>
 
+						<div class="timeline-filter-row">
+							<button type="button" class="timeline-toggle-btn" onclick={() => (showTimeline = !showTimeline)} aria-expanded={showTimeline}>
+								{showTimeline ? '▾ Hide timeline' : '▸ Show timeline'}
+							</button>
+							{#if showTimeline}
+								{#key archive}
+									<TimelineViewer posts={archive.posts} engagementCountsByUri={timelineCounts}
+										postUrl={(post) => archivePostUrls.get(post.uri) ?? null}
+										onselect={handleTimelineSelect} />
+								{/key}
+							{/if}
+						</div>
+
 						<p class="results-count">
 							Showing {visibleThreads.length.toLocaleString()} of {displayedThreads.length.toLocaleString()}
 							thread{displayedThreads.length === 1 ? '' : 's'} with depth {threshold}+
 						</p>
 						<p class="length-note">
-							Length sort counts text after removing links and quote-post URLs; self-reply chains are counted as one long post.
+							Length sort counts words after removing links and quote-post URLs; self-reply chains are counted as one long post.
 						</p>
 					{/if}
 				</div>
@@ -996,6 +1029,23 @@
 	}
 
 	.search-helper.warning {
+		color: var(--accent);
+	}
+
+	.timeline-filter-row {
+		margin: 12px auto 0;
+		text-align: left;
+	}
+
+	.timeline-toggle-btn {
+		border: 0;
+		background: transparent;
+		color: var(--muted);
+		font: inherit;
+		cursor: pointer;
+	}
+
+	.timeline-toggle-btn:hover {
 		color: var(--accent);
 	}
 
