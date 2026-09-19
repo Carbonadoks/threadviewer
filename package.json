@@ -16,7 +16,8 @@
     "embeddb:build": "node --import tsx scripts/build-post-embedding-db.ts",
     "thread-embeddb:build": "node --import tsx scripts/build-thread-embedding-db.ts",
     "window-embeddb:build": "node --import tsx scripts/build-window-embedding-db.ts",
-    "atproideasio:ingest": "node --import tsx scripts/ingest-atproideasio.ts"
+    "atproideasio:ingest": "node --import tsx scripts/ingest-atproideasio.ts",
+    "deploy": "npm run build && wrangler pages deploy .svelte-kit/cloudflare --project-name thread-viewer --branch main"
   },
   "keywords": [],
   "author": "",

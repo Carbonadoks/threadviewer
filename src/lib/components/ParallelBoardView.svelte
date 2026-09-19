@@ -1341,12 +1341,65 @@
 		cardHeightFrame = 0;
 		let nextHeights: Record<string, number> | null = null;
 		for (const [key, height] of pendingCardHeights) {
+			rememberCardHeight(key, height);
 			if ((cardHeights[key] ?? CARD_HEIGHT) === height) continue;
 			nextHeights ??= { ...cardHeights };
 			nextHeights[key] = height;
 		}
 		pendingCardHeights.clear();
 		if (nextHeights) cardHeights = nextHeights;
+	}
+
+	// Measured heights are saved per post URI across visits (cards are a fixed width, so a
+	// post's height is stable). A board opens with its rows already sized, and cards that
+	// scroll in do not shift the rows around them.
+	const SAVED_CARD_HEIGHTS_KEY = 'parallelboard:card-heights:v1';
+	const SAVED_CARD_HEIGHTS_LIMIT = 20000;
+	const savedCardHeights = loadSavedCardHeights();
+	let savedCardHeightsTimer = 0;
+
+	function loadSavedCardHeights(): Map<string, number> {
+		try {
+			const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(SAVED_CARD_HEIGHTS_KEY);
+			const entries = raw ? (JSON.parse(raw) as unknown) : null;
+			if (!Array.isArray(entries)) return new Map();
+			return new Map(
+				entries.filter(
+					(entry): entry is [string, number] =>
+						Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1] === 'number'
+				)
+			);
+		} catch {
+			return new Map();
+		}
+	}
+
+	function persistSavedCardHeights() {
+		savedCardHeightsTimer = 0;
+		let excess = savedCardHeights.size - SAVED_CARD_HEIGHTS_LIMIT;
+		for (const uri of savedCardHeights.keys()) {
+			if (excess-- <= 0) break;
+			savedCardHeights.delete(uri);
+		}
+		try {
+			localStorage.setItem(SAVED_CARD_HEIGHTS_KEY, JSON.stringify([...savedCardHeights]));
+		} catch {
+			// Storage full or unavailable: heights are still measured live.
+		}
+	}
+
+	function rememberCardHeight(cardKey: string, height: number) {
+		const card = boardModel.cardsByKey.get(cardKey);
+		// Open pickers and tree-fan controls make a card temporarily taller.
+		if (!card || laneIsExpanded(card.laneId) || openQuotePickerCardKey === cardKey) return;
+		const uri = card.post.uri;
+		if (savedCardHeights.get(uri) === height) return;
+		// Re-insert so the Map's order is least recently measured first.
+		savedCardHeights.delete(uri);
+		savedCardHeights.set(uri, height);
+		if (typeof window !== 'undefined' && !savedCardHeightsTimer) {
+			savedCardHeightsTimer = window.setTimeout(persistSavedCardHeights, 2000);
+		}
 	}
 
 	function getCardResizeObserver(): ResizeObserver {
@@ -2285,12 +2338,121 @@
 		return `Cycle through ${alternatives.length} stacked reply chains`;
 	}
 
+	// Board scrolling is animated here instead of with native smooth scrolling. Native
+	// smooth scrolls are cancelled by any scrollTop write (the row-anchor effect writes one
+	// whenever newly mounted cards are measured), which made moves stop and restart.
+	// The target is re-read from the model every frame, so rows measured mid-flight
+	// retarget the motion instead of landing short.
+	type BoardScrollAnimation = {
+		frame: number;
+		startLeft: number;
+		startTop: number;
+	};
+	let boardScrollAnimation: BoardScrollAnimation | null = null;
+	const BOARD_SCROLL_EDGE_MARGIN = 24;
+
+	function cancelBoardScrollAnimation() {
+		if (!boardScrollAnimation) return;
+		cancelAnimationFrame(boardScrollAnimation.frame);
+		boardScrollAnimation = null;
+	}
+
+	function clampBoardScroll(left: number, top: number) {
+		if (!boardEl) return { left, top };
+		return {
+			left: Math.min(Math.max(0, left), Math.max(0, boardEl.scrollWidth - boardEl.clientWidth)),
+			top: Math.min(Math.max(0, top), Math.max(0, boardEl.scrollHeight - boardEl.clientHeight))
+		};
+	}
+
+	function prefersReducedMotion(): boolean {
+		return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+	}
+
+	function animateBoardScroll(
+		getTarget: () => { left: number; top: number } | null,
+		behavior: ScrollBehavior
+	) {
+		cancelBoardScrollAnimation();
+		const el = boardEl;
+		const first = getTarget();
+		if (!el || !first) return;
+		if (behavior !== 'smooth' || prefersReducedMotion()) {
+			el.scrollLeft = first.left;
+			el.scrollTop = first.top;
+			return;
+		}
+		const distance = Math.hypot(first.left - el.scrollLeft, first.top - el.scrollTop);
+		if (distance < 1) return;
+		// Short hops stay snappy; long jumps get a little more time so they stay readable.
+		const duration = Math.min(420, 140 + Math.sqrt(distance) * 5);
+		const startTime = performance.now();
+		const animation: BoardScrollAnimation = {
+			frame: 0,
+			startLeft: el.scrollLeft,
+			startTop: el.scrollTop
+		};
+		const step = (now: number) => {
+			const target = getTarget();
+			if (!boardEl || !target || boardScrollAnimation !== animation) {
+				if (boardScrollAnimation === animation) boardScrollAnimation = null;
+				return;
+			}
+			const t = Math.min(1, Math.max(0, now - startTime) / duration);
+			const eased = 1 - (1 - t) ** 3;
+			boardEl.scrollLeft = animation.startLeft + (target.left - animation.startLeft) * eased;
+			boardEl.scrollTop = animation.startTop + (target.top - animation.startTop) * eased;
+			if (t < 1) {
+				animation.frame = requestAnimationFrame(step);
+			} else {
+				boardScrollAnimation = null;
+			}
+		};
+		boardScrollAnimation = animation;
+		animation.frame = requestAnimationFrame(step);
+	}
+
+	/** Scroll position that centers the card horizontally and brings it into view
+	 * vertically (like `scrollIntoView({ block: 'nearest', inline: 'center' })`), computed
+	 * from the model so the card does not need to be mounted. */
+	function getCardScrollTarget(card: LaneCard, verticalEdge: 'top' | 'bottom' | null) {
+		const stage = boardCanvasEl?.parentElement;
+		if (!boardEl || !stage) return null;
+		const scale = zoom || 1;
+		const left = stage.offsetLeft + card.x * scale;
+		const top = stage.offsetTop + (rowLayout.canvasOffsetY + cardTop(card)) * scale;
+		const width = CARD_WIDTH * scale;
+		const height = getRenderedCardHeight(card) * scale;
+		const viewWidth = boardEl.clientWidth;
+		const viewHeight = boardEl.clientHeight;
+		let nextTop = boardScrollAnimation?.startTop ?? boardEl.scrollTop;
+		if (verticalEdge === 'top') nextTop = top - BOARD_SCROLL_EDGE_MARGIN;
+		if (verticalEdge === 'bottom') nextTop = top + height + BOARD_SCROLL_EDGE_MARGIN - viewHeight;
+		return clampBoardScroll(left + width / 2 - viewWidth / 2, nextTop);
+	}
+
+	function getCardVerticalEdge(card: LaneCard): 'top' | 'bottom' | null {
+		const stage = boardCanvasEl?.parentElement;
+		if (!boardEl || !stage) return null;
+		const scale = zoom || 1;
+		const top = stage.offsetTop + (rowLayout.canvasOffsetY + cardTop(card)) * scale;
+		const height = getRenderedCardHeight(card) * scale;
+		const viewTop = boardEl.scrollTop;
+		const viewHeight = boardEl.clientHeight;
+		if (height + BOARD_SCROLL_EDGE_MARGIN * 2 > viewHeight) return 'top';
+		if (top - BOARD_SCROLL_EDGE_MARGIN < viewTop) return 'top';
+		if (top + height + BOARD_SCROLL_EDGE_MARGIN > viewTop + viewHeight) return 'bottom';
+		return null;
+	}
+
 	function scrollBoardCardIntoView(cardKey: string, behavior: ScrollBehavior = 'smooth') {
-		const node =
-			boardEl?.querySelector<HTMLElement>(
-				`.dimension-card[data-card-key="${CSS.escape(cardKey)}"]`
-			) ?? null;
-		node?.scrollIntoView({ behavior, block: 'nearest', inline: 'center' });
+		const initialCard = boardModel.cardsByKey.get(cardKey);
+		if (!initialCard) return;
+		const verticalEdge = getCardVerticalEdge(initialCard);
+		animateBoardScroll(() => {
+			const card = boardModel.cardsByKey.get(cardKey);
+			return card ? getCardScrollTarget(card, verticalEdge) : null;
+		}, behavior);
 	}
 
 	function clearCelebrationVisuals() {
@@ -4173,6 +4335,7 @@
 	}
 
 	function handleBoardPointerDown(event: PointerEvent) {
+		cancelBoardScrollAnimation();
 		const target = event.target as HTMLElement;
 		if (event.button !== 0 || target.closest('.dimension-card, button, a, input, textarea, label, .detail-panel')) {
 			return;
@@ -4412,11 +4575,10 @@
 				0,
 				Math.max(0, boardEl.scrollHeight - boardEl.clientHeight)
 			);
-			boardEl.scrollTo({
-				left: nextLeft,
-				top: nextTop,
-				behavior: minimapDragging ? 'auto' : 'smooth'
-			});
+			animateBoardScroll(
+				() => ({ left: nextLeft, top: nextTop }),
+				minimapDragging ? 'auto' : 'smooth'
+			);
 		}
 
 		function handleMinimapClick(event: MouseEvent) {
@@ -4546,14 +4708,207 @@
 			}
 			// A tree fan spreads beyond its column, so its cards are filtered individually.
 			if (expandedLane) pushLaneCardsInView(expandedLane, cards, true);
-			const pinnedKeys = [
-				activeCardKey,
-				openQuotePickerCardKey,
-				detailModalTarget ? `${detailModalTarget.laneId}:${detailModalTarget.postUri}` : null,
-				treeBoardTarget ? `${treeBoardTarget.laneId}:${treeBoardTarget.postUri}` : null
-			];
-			for (const key of pinnedKeys) {
-				const card = key ? boardModel.cardsByKey.get(key) : undefined;
+			for (const key of pinnedCardKeys) {
+				const card = boardModel.cardsByKey.get(key);
+				if (card && !cards.includes(card)) cards.push(card);
+			}
+			return cards;
+		});
+
+		let pinnedCardKeys = $derived(
+			new Set(
+				[
+					activeCardKey,
+					openQuotePickerCardKey,
+					detailModalTarget ? `${detailModalTarget.laneId}:${detailModalTarget.postUri}` : null,
+					treeBoardTarget ? `${treeBoardTarget.laneId}:${treeBoardTarget.postUri}` : null
+				].filter((key): key is string => Boolean(key))
+			)
+		);
+
+		// Progressive mounting: cards on or right next to the screen (and pinned cards) mount
+		// at once; the rest of the cull margin mounts a few cards per frame, nearest first,
+		// so scrolling into a new region never builds dozens of cards in one frame.
+		const CARD_MOUNT_CORE_MARGIN = VIEWPORT_CULL_MARGIN / 3;
+		const CARD_MOUNT_BATCH = 6;
+		const LITE_CARD_MOUNT_BATCH = 48;
+		let mountedCardKeys = $state.raw<Set<string>>(new Set());
+		let cardMountFrame = 0;
+
+		function cardInCoreViewport(card: LaneCard): boolean {
+			const vp = viewportRect;
+			if (vp.width <= 0 || vp.height <= 0) return true;
+			const top = cardTop(card);
+			return (
+				card.x + CARD_WIDTH >= vp.left - CARD_MOUNT_CORE_MARGIN &&
+				card.x <= vp.left + vp.width + CARD_MOUNT_CORE_MARGIN &&
+				top + getRenderedCardHeight(card) >= vp.top - CARD_MOUNT_CORE_MARGIN &&
+				top <= vp.top + vp.height + CARD_MOUNT_CORE_MARGIN
+			);
+		}
+
+		function cardDistanceFromViewport(card: LaneCard, centerX: number, centerY: number): number {
+			return Math.hypot(
+				card.x + CARD_WIDTH / 2 - centerX,
+				cardTop(card) + getRenderedCardHeight(card) / 2 - centerY
+			);
+		}
+
+		function cardMountsImmediately(card: LaneCard): boolean {
+			return pinnedCardKeys.has(card.key) || cardInCoreViewport(card);
+		}
+
+		function mountPendingCards() {
+			cardMountFrame = 0;
+			const mounted = mountedCardKeys;
+			const next = new Set<string>();
+			const pending: LaneCard[] = [];
+			for (const card of visibleCards) {
+				if (mounted.has(card.key) || cardMountsImmediately(card)) next.add(card.key);
+				else pending.push(card);
+			}
+			const vp = cullViewport;
+			const centerX = vp.left + vp.width / 2;
+			const centerY = vp.top + vp.height / 2;
+			pending.sort(
+				(a, b) => cardDistanceFromViewport(a, centerX, centerY) - cardDistanceFromViewport(b, centerX, centerY)
+			);
+			const budget = lowDetailCards ? LITE_CARD_MOUNT_BATCH : CARD_MOUNT_BATCH;
+			for (const card of pending.slice(0, budget)) next.add(card.key);
+			mountedCardKeys = next;
+		}
+
+		$effect(() => {
+			const cards = visibleCards;
+			const mounted = mountedCardKeys;
+			const hasPending = cards.some((card) => !mounted.has(card.key));
+			if ((!hasPending && mounted.size <= cards.length + 200) || cardMountFrame) return;
+			cardMountFrame = requestAnimationFrame(mountPendingCards);
+		});
+
+		// Background measuring: while the board is idle, cards whose height is unknown are
+		// mounted a few at a time at their real (offscreen) position, measured, then dropped.
+		// Heights are kept and saved, so once this finishes rows never resize during scrolling.
+		const MEASURE_BATCH = 8;
+		const MEASURE_SCROLL_PAUSE_MS = 350;
+		const MEASURE_QUEUE_REBUILD_MS = 1000;
+		let measureCardKeys = $state.raw<string[]>([]);
+		let measureQueue: LaneCard[] = [];
+		let measureQueueModel: BoardModel | null = null;
+		let measureQueueBuiltAt = 0;
+		let measureTimer = 0;
+		let measureIdleHandle = 0;
+		let lastUserScrollAt = 0;
+		let expectedAnchorScroll: { left: number; top: number } | null = null;
+
+		function cardHeightKnown(card: LaneCard): boolean {
+			return (
+				cardHeights[card.key] !== undefined ||
+				pendingCardHeights.has(card.key) ||
+				savedCardHeights.has(card.post.uri)
+			);
+		}
+
+		function buildMeasureQueue(model: BoardModel) {
+			const vp = cullViewport;
+			const centerX = vp.left + vp.width / 2;
+			const centerY = vp.top + vp.height / 2;
+			const queue: { card: LaneCard; distance: number }[] = [];
+			for (const lane of model.lanes) {
+				for (const card of lane.cards) {
+					if (card.visibility === 'shadow' && card.stackIndex >= SHADOW_STACK_RENDER_LIMIT) continue;
+					if (cardHeightKnown(card)) continue;
+					queue.push({ card, distance: cardDistanceFromViewport(card, centerX, centerY) });
+				}
+			}
+			// Farthest first, so the nearest card is popped from the end.
+			queue.sort((a, b) => b.distance - a.distance);
+			measureQueue = queue.map((entry) => entry.card);
+			measureQueueModel = model;
+			measureQueueBuiltAt = performance.now();
+		}
+
+		function cancelMeasureTick() {
+			if (measureTimer) clearTimeout(measureTimer);
+			if (measureIdleHandle && typeof cancelIdleCallback === 'function') cancelIdleCallback(measureIdleHandle);
+			measureTimer = 0;
+			measureIdleHandle = 0;
+		}
+
+		function scheduleMeasureTick(delayMs: number) {
+			if (typeof window === 'undefined' || measureTimer || measureIdleHandle) return;
+			measureTimer = window.setTimeout(() => {
+				measureTimer = 0;
+				if (typeof requestIdleCallback === 'function') {
+					measureIdleHandle = requestIdleCallback(
+						(deadline) => {
+							measureIdleHandle = 0;
+							runMeasureTick(deadline);
+						},
+						{ timeout: 1000 }
+					);
+				} else {
+					runMeasureTick(null);
+				}
+			}, delayMs);
+		}
+
+		function runMeasureTick(deadline: IdleDeadline | null) {
+			if (!boardEl || lowDetailCards) {
+				if (measureCardKeys.length) measureCardKeys = [];
+				return;
+			}
+			const sinceScroll = performance.now() - lastUserScrollAt;
+			if (
+				document.hidden ||
+				isPanning ||
+				boardScrollAnimation ||
+				sinceScroll < MEASURE_SCROLL_PAUSE_MS ||
+				(deadline && !deadline.didTimeout && deadline.timeRemaining() < 6)
+			) {
+				// Drop offscreen measuring cards so they do not add work while the user moves.
+				if (measureCardKeys.length) measureCardKeys = [];
+				scheduleMeasureTick(Math.max(50, MEASURE_SCROLL_PAUSE_MS - sinceScroll));
+				return;
+			}
+			const model = boardModel;
+			if (
+				measureQueueModel !== model &&
+				(!measureQueue.length || performance.now() - measureQueueBuiltAt > MEASURE_QUEUE_REBUILD_MS)
+			) {
+				buildMeasureQueue(model);
+			}
+			const rendered = new Set(visibleCards.map((card) => card.key));
+			const batch: string[] = [];
+			while (batch.length < MEASURE_BATCH && measureQueue.length) {
+				const queued = measureQueue.pop()!;
+				const card = model.cardsByKey.get(queued.key);
+				if (!card || cardHeightKnown(card) || rendered.has(card.key)) continue;
+				batch.push(card.key);
+			}
+			measureCardKeys = batch;
+			if (batch.length || measureQueue.length || measureQueueModel !== model) {
+				scheduleMeasureTick(batch.length ? 0 : MEASURE_QUEUE_REBUILD_MS);
+			}
+		}
+
+		$effect(() => {
+			void boardModel;
+			void lowDetailCards;
+			untrack(() => scheduleMeasureTick(500));
+		});
+
+		$effect(() => () => {
+			cancelMeasureTick();
+			if (cardMountFrame) cancelAnimationFrame(cardMountFrame);
+		});
+
+		/** What the board actually renders: mounted cards in view plus background-measured cards. */
+		let renderedCards = $derived.by(() => {
+			const mounted = mountedCardKeys;
+			const cards = visibleCards.filter((card) => mounted.has(card.key) || cardMountsImmediately(card));
+			for (const key of measureCardKeys) {
+				const card = boardModel.cardsByKey.get(key);
 				if (card && !cards.includes(card)) cards.push(card);
 			}
 			return cards;
@@ -4579,10 +4934,16 @@
 			return () => {
 				window.removeEventListener('resize', onResize);
 				if (viewportFrame) cancelAnimationFrame(viewportFrame);
+				cancelBoardScrollAnimation();
 			};
 		});
 
 		function handleBoardScroll() {
+			const anchor = expectedAnchorScroll;
+			expectedAnchorScroll = null;
+			if (!anchor || !boardEl || anchor.left !== boardEl.scrollLeft || anchor.top !== boardEl.scrollTop) {
+				lastUserScrollAt = performance.now();
+			}
 			scheduleMinimapViewportUpdate();
 			scheduleViewportRefresh();
 		}
@@ -4616,6 +4977,22 @@
 			cardHeights = {};
 			detailModalTarget = null;
 			treeBoardTarget = null;
+		});
+
+		// Size cards from saved heights before they are ever mounted.
+		$effect(() => {
+			const model = boardModel;
+			untrack(() => {
+				let nextHeights: Record<string, number> | null = null;
+				for (const [key, card] of model.cardsByKey) {
+					if (cardHeights[key] !== undefined) continue;
+					const saved = savedCardHeights.get(card.post.uri);
+					if (saved === undefined || saved === CARD_HEIGHT) continue;
+					nextHeights ??= { ...cardHeights };
+					nextHeights[key] = saved;
+				}
+				if (nextHeights) cardHeights = nextHeights;
+			});
 		});
 
 		$effect(() => {
@@ -4659,7 +5036,12 @@
 					layout.canvasOffsetY +
 					(nextIndex >= 0 && nextIndex < layout.tops.length ? layout.tops[nextIndex] : previous.tops[anchorIndex]);
 				const delta = nextY - previousY;
-				if (delta !== 0) boardEl.scrollTop += delta * scale;
+				if (delta === 0) return;
+				boardEl.scrollTop += delta * scale;
+				// This correction is not user scrolling; background measuring keeps going.
+				expectedAnchorScroll = { left: boardEl.scrollLeft, top: boardEl.scrollTop };
+				// Keep an in-flight scroll animation moving relative to the content.
+				if (boardScrollAnimation) boardScrollAnimation.startTop += delta * scale;
 			});
 		});
 
@@ -5276,6 +5658,7 @@
 					onpointermove={handleBoardPointerMove}
 					onpointerup={handleBoardPointerUp}
 					onscroll={handleBoardScroll}
+					onwheel={cancelBoardScrollAnimation}
 				>
 					<div
 						class="parallel-board-canvas-stage"
@@ -5354,7 +5737,7 @@
 							{/each}
 							{/if}
 
-								{#each visibleCards as card (card.key)}
+								{#each renderedCards as card (card.key)}
 									<article
 										use:measureCardHeight={{ key: card.key, enabled: !lowDetailCards }}
 										class="dimension-card big-dimension-card"

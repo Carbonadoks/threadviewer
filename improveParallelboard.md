@@ -27,6 +27,12 @@ Goal: no scroll/pan lag with hundreds of quote lanes and very large threads. Dec
 - CSS: no `filter` on cards, rails or tree connectors (the rail shadow is a second path), no `top` transition, `contain: layout style` on cards. Images use `loading="lazy"` and `decoding="async"`. The quote picker and gallery render in pages via an intersection sentinel.
 - The lane queue panel shows each "Create all quote lanes" run: discovery, a progress bar, loading/next/recent items, failures, and Stop (lanes that have not started are removed on stop).
 
+- Moving to a card (click, keyboard, focus requests, minimap click) uses its own rAF scroll animation (`animateBoardScroll`, ease-out cubic, 140–420 ms depending on distance), not native `scrollIntoView`/`scrollTo` smooth scrolling. With native smooth scrolling, the row-anchor effect's `scrollTop` writes (when newly mounted cards are measured) cancelled the scroll partway, so it stopped and restarted. The target comes from the model each frame, the anchor correction shifts the animation's start point, and a wheel or pointer-down cancels the animation.
+
+- Card heights are saved per post URI in localStorage (`parallelboard:card-heights:v1`, newest 20,000 posts) and seeded into `cardHeights` whenever the board model changes, so a revisited board opens with its rows already sized. Heights from cards with an open quote picker or an expanded tree fan are not saved.
+- Progressive mounting (`renderedCards`): cards within ~200 px of the screen and pinned cards mount at once. The rest of the 600 px cull margin mounts 6 cards per frame (48 at low zoom), nearest first.
+- Background measuring: when the board is idle (no scroll for 350 ms, no pan or scroll animation, tab visible, `requestIdleCallback` time left), cards with unknown heights mount 8 at a time at their real offscreen position, get measured, and are dropped. The queue is nearest-first and rebuilds at most once per second as lanes arrive. Once it finishes, rows no longer resize while scrolling. Row-anchor `scrollTop` corrections do not count as user scrolling. Cost: video posters of measured cards load.
+
 Still open for rendering: `moveActiveCard` scans every card per keypress; a canvas-rendered tier for extremely low zoom.
 
 ## Implemented: loading (queue, streaming, sharing, cancellation)
