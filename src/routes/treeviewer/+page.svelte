@@ -20,6 +20,8 @@
 	} from '$lib/utils/recentThreads';
 	import { pruneThreadCache, readCachedThread, writeCachedThread } from '$lib/utils/threadContentCache';
 	import { buildAtUri, buildBskyPostUrl, normalizeBskyPostUrl, parseBskyPostUrl } from '$lib/utils/viewerLinks';
+	import { intersectsViewport, treeViewport } from '$lib/utils/treeViewport';
+	import type { QuoteDownloadEvent } from '$lib/utils/treeQuoteLoader';
 	import { parseXStatusUrl } from '$lib/api/x';
 
 	const fontFamilies: Record<string, string> = {
@@ -193,7 +195,7 @@
 	const TREE_DEPTH_GAP = 30;
 	const TREE_PADDING = 12;
 	const TREE_LANE_GAP = 56;
-	const TREE_LANE_HEADER_HEIGHT = 34;
+	const TREE_LANE_HEADER_HEIGHT = 68;
 	const TREEVIEWER_PANEL_STATE_MESSAGE = 'atprotocodex:treeviewer:panel-state';
 
 	let fontKey = $state('patrick');
@@ -214,6 +216,10 @@
 	let radialArcSpan = $state(360);
 	let radialControlsOpen = $state(false);
 	let treeZoom = $state(1);
+	let horizontalScrollbar = $state(false);
+	let horizontalScrollLeft = $state(0);
+	let horizontalScrollMax = $state(0);
+	let treeViewportSize = $state({ left: 0, top: 0, width: 1000, height: 800 });
 	let treeCollapsed = $state(false);
 	let chatCollapsed = $state(false);
 	let splitPercent = $state(72);
@@ -236,6 +242,12 @@
 	let allReplyLaneIds = $state<Set<string>>(new Set());
 	let quoteFeeds = $state<Record<string, QuoteFeedState>>({});
 	let quoteLaneLoads = $state<Record<string, boolean>>({});
+	let bulkQuoteLoads = $state<Record<string, boolean>>({});
+	let hiddenLaneIds = $state<Set<string>>(new Set());
+	let quoteDownloads = $state<Record<string, { sourceLaneId: string; status: 'loading' | 'ready' | 'publishing'; completed: number; total: number; count: number; failed: number }>>({});
+	const quoteWorkers = new Map<string, Worker>();
+	let forumScrollTimer: ReturnType<typeof setTimeout> | undefined;
+	const laneLayoutCache = new WeakMap<ThreadPost, { key: string; model: TreeRenderModel; path: ThreadPost[] }>();
 	let recentThreads = $state<RecentThreadEntry[]>([]);
 	const initialTreeOnlyEmbed = readTreeOnlyEmbedParam();
 	let embeddedSection = $state(readEmbeddedSectionParam());
@@ -250,8 +262,31 @@
 		activeLane && activeLane.selectedUri ? findPathToUri(activeLane.thread.rootPost, activeLane.selectedUri) : []
 	);
 	let selectedPathSet = $derived(new Set(selectedPath.map((post) => post.uri)));
-	let treeModel = $derived(allLanes.length > 0 ? buildMultiLaneTreeModel(allLanes) : null);
-	let chainLaneModels = $derived(allLanes.map(buildChainLaneModel));
+	let visibleLanes = $derived(allLanes.filter((lane) => !hiddenLaneIds.has(lane.id)));
+	let treeModel = $derived(treeViewMode === 'nodes' && visibleLanes.length > 0 ? buildMultiLaneTreeModel(visibleLanes) : null);
+	let viewport = $derived(treeViewport(treeViewportSize.left, treeViewportSize.top, treeViewportSize.width, treeViewportSize.height, treeZoom));
+	let viewportTreeLanes = $derived((treeModel?.lanes ?? [])
+		.filter((lane) => intersectsViewport(lane, viewport))
+		.map((lane) => {
+			const localViewport = { ...viewport, x: viewport.x - lane.x, y: viewport.y - lane.y - treeLaneHeaderHeight };
+			return { ...lane, model: { ...lane.model,
+				nodes: lane.model.nodes.filter((node) => intersectsViewport({ x: node.x, y: node.y, width: node.width ?? TREE_NODE_SIZE, height: node.height ?? TREE_NODE_SIZE }, localViewport)),
+				connectors: lane.model.connectors.filter(({ from, to }) => intersectsViewport({
+					x: Math.min(from.x, to.x), y: Math.min(from.y, to.y),
+					width: Math.abs(from.x - to.x) + Math.max(from.width ?? TREE_NODE_SIZE, to.width ?? TREE_NODE_SIZE),
+					height: Math.abs(from.y - to.y) + Math.max(from.height ?? TREE_NODE_SIZE, to.height ?? TREE_NODE_SIZE)
+				}, localViewport))
+			} };
+		}));
+	let viewportQuoteConnectors = $derived((treeModel?.quoteConnectors ?? []).filter((connector) => {
+		const fromX = connector.fromLane.x + connector.from.x;
+		const fromY = connector.fromLane.y + treeLaneHeaderHeight + connector.from.y;
+		const toX = connector.toLane.x + connector.to.x;
+		const toY = connector.toLane.y + treeLaneHeaderHeight + connector.to.y;
+		return intersectsViewport({ x: Math.min(fromX, toX) - 160, y: Math.min(fromY, toY) - 40,
+			width: Math.abs(fromX - toX) + 320, height: Math.abs(fromY - toY) + 80 }, viewport);
+	}));
+	let chainLaneModels = $derived(treeViewMode === 'chains' ? visibleLanes.map(buildChainLaneModel) : []);
 	let pathThread = $derived(
 		activeLane && selectedPath.length > 0 ? buildPathThread(activeLane.thread, selectedPath) : null
 	);
@@ -716,18 +751,19 @@
 		let nextX = TREE_PADDING;
 
 		for (const lane of lanes) {
-			const selectedLanePath = lane.selectedUri ? findPathToUri(lane.thread.rootPost, lane.selectedUri) : [];
-			const fallbackPath = selectedLanePath.length > 0 ? selectedLanePath : [lane.thread.rootPost];
-			const renderPathSet = new Set(fallbackPath.map((post) => post.uri));
-			const model = buildTreeRenderModel(
-				lane.thread.rootPost,
-				renderPathSet,
-				lane.selectedUri,
-				lane.focusedUri,
-				treeLayout === 'horizontal' ? 'horizontal' : treeLayout,
-				new Set()
-			);
-			const laneWidth = Math.max(model.width, 124);
+			const key = JSON.stringify([lane.selectedUri, lane.focusedUri, treeLayout,
+				radialStartAngle, radialArcSpan, radialNodeSize, radialMinRadius, radialMaxRadius, radialDepthGap, radialLeafGap]);
+			let cached = laneLayoutCache.get(lane.thread.rootPost);
+			if (cached?.key !== key) {
+				const path = lane.selectedUri ? findPathToUri(lane.thread.rootPost, lane.selectedUri) : [];
+				const fallback = path.length ? path : [lane.thread.rootPost];
+				cached = { key, path: fallback, model: buildTreeRenderModel(lane.thread.rootPost,
+					new Set(fallback.map((post) => post.uri)), lane.selectedUri, lane.focusedUri, treeLayout, new Set()) };
+				laneLayoutCache.set(lane.thread.rootPost, cached);
+			}
+			const model = cached.model;
+			const fallbackPath = cached.path;
+			const laneWidth = Math.max(model.width, embeddedUiCollapsed ? 124 : 240);
 			const laneHeight = model.height + treeLaneHeaderHeight;
 
 			renderedLanes.push({
@@ -1114,11 +1150,11 @@
 
 			stateByUri.set(post.uri, {
 				quoteCount: post.quoteCount,
-				status: feedState.status,
+				status: bulkQuoteLoads[post.uri] ? 'loading' : feedState.status,
 				options: feedState.posts.map(quoteOptionFromPost),
 				hasMore: feedState.hasMore,
 				loadedAll: feedState.loadedAll,
-				loadingMode: feedState.loadingMode,
+				loadingMode: bulkQuoteLoads[post.uri] ? 'all' : feedState.loadingMode,
 				error: feedState.error,
 				quotedRecord
 			});
@@ -1163,6 +1199,7 @@
 	}
 
 	function setActiveLane(laneId: string) {
+		setLaneHidden(laneId, false);
 		activeLaneId = laneId;
 		const lane = allLanes.find((candidate) => candidate.id === laneId);
 		if (lane?.focusedUri) {
@@ -1288,6 +1325,10 @@
 		if (!lane) return;
 
 		const family = collectQuoteLaneFamily(laneId);
+		for (const [sourceUri, job] of Object.entries(quoteDownloads)) {
+			if (family.has(job.sourceLaneId)) cancelQuoteDownload(sourceUri);
+		}
+		hiddenLaneIds = new Set([...hiddenLaneIds].filter((id) => !family.has(id)));
 		quoteLanes = quoteLanes.filter((candidate) => !family.has(candidate.id));
 
 		const nextExpandedLaneIds = new Set(expandedLaneIds);
@@ -1471,6 +1512,11 @@
 		carouselScrollElement.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
 	}
 
+	function scheduleForumScrollUpdate() {
+		clearTimeout(forumScrollTimer);
+		forumScrollTimer = setTimeout(updateActiveForumPostFromScroll, 120);
+	}
+
 	function updateActiveForumPostFromScroll() {
 		if (!forumScrollElement || textPanelMode !== 'forum') return;
 
@@ -1501,7 +1547,11 @@
 		const lane = allLanes.find((candidate) => candidate.id === laneId);
 		if (!lane) return;
 		if (!findPostByUri(lane.thread.rootPost, uri)) return;
-		ensurePathOnlyForLane(laneId);
+		if (uri === lane.thread.rootPost.uri) {
+			setAllRepliesForLane(laneId, true);
+		} else {
+			ensurePathOnlyForLane(laneId);
+		}
 		expandAncestorsForUri(uri);
 		updateLaneSelection(laneId, uri, uri);
 		chatScrollRequest = { uri, nonce: ++chatScrollNonce };
@@ -1572,7 +1622,9 @@
 	}
 
 	async function loadQuotesForChatPost(postUri: string, fetchAll = false): Promise<ThreadPost[] | null> {
+		const requestId = loadRequestId;
 		const existing = quoteFeeds[postUri];
+		if (fetchAll && existing?.loadedAll) return existing.posts;
 		if (existing?.status === 'loading') return existing.posts;
 
 		quoteFeeds = {
@@ -1591,6 +1643,7 @@
 				postUri,
 				fetchAll ? { limit: 100, fetchAll: true } : { limit: 12 }
 			);
+			if (requestId !== loadRequestId) return null;
 			quoteFeeds = {
 				...quoteFeeds,
 				[postUri]: {
@@ -1602,6 +1655,7 @@
 			};
 			return result.posts;
 		} catch (e: any) {
+			if (requestId !== loadRequestId) return null;
 			quoteFeeds = {
 				...quoteFeeds,
 				[postUri]: {
@@ -1618,6 +1672,8 @@
 
 	async function openQuoteLane(sourceUri: string, quoteUri: string, quotedHandle: string, options: { focus?: boolean } = {}) {
 		const { focus = true } = options;
+		const requestId = loadRequestId;
+		const sourceLaneId = activeLaneId;
 
 		// X/Twitter quotes have no local thread to open as a lane — open on x.com.
 		const xQuote = parseXStatusUrl(quoteUri);
@@ -1629,12 +1685,14 @@
 		const existingLane = quoteLanes.find((lane) => lane.id === quoteUri);
 		if (existingLane) {
 			if (focus) {
+				setLaneHidden(existingLane.id, false);
 				activeLaneId = existingLane.id;
 				void tick().then(() => centerTreeNode(existingLane.focusedUri ?? existingLane.thread.rootPost.uri, existingLane.id));
 			}
 			return;
 		}
 
+		if (quoteLaneLoads[quoteUri]) return;
 		quoteLaneLoads = {
 			...quoteLaneLoads,
 			[quoteUri]: true
@@ -1642,6 +1700,7 @@
 
 		try {
 			const quotedThread = await getFullThread(quoteUri);
+			if (requestId !== loadRequestId || !allLanes.some((lane) => lane.id === sourceLaneId)) return;
 			const paths = collectLeafPaths(quotedThread.rootPost);
 			const targetPost = findPostByUri(quotedThread.rootPost, quoteUri);
 			const defaultLeafUri = targetPost
@@ -1656,7 +1715,7 @@
 				focusedUri: targetPost?.uri ?? quotedThread.rootPost.uri,
 				expandedTree: false,
 				sourceUri,
-				sourceLaneId: activeLaneId,
+				sourceLaneId,
 				loadedAt: Date.now()
 			};
 
@@ -1668,11 +1727,13 @@
 				centerTreeNode(nextLane.focusedUri ?? quotedThread.rootPost.uri, nextLane.id);
 			}
 		} catch (e: any) {
-			error = e?.message || 'Could not open quoted thread.';
+			if (requestId === loadRequestId) error = e?.message || 'Could not open quoted thread.';
 		} finally {
-			const nextLoads = { ...quoteLaneLoads };
-			delete nextLoads[quoteUri];
-			quoteLaneLoads = nextLoads;
+			if (requestId === loadRequestId) {
+				const nextLoads = { ...quoteLaneLoads };
+				delete nextLoads[quoteUri];
+				quoteLaneLoads = nextLoads;
+			}
 		}
 	}
 
@@ -1680,19 +1741,109 @@
 		await openQuoteLane(sourceUri, quoteUri, quotedHandle);
 	}
 
-	async function showAllQuotePosts(sourceUri: string) {
-		const posts = await loadQuotesForChatPost(sourceUri, true);
-		if (!posts?.length) return;
+	function stopQuoteDownloads() {
+		for (const worker of quoteWorkers.values()) worker.terminate();
+		quoteWorkers.clear();
+		quoteDownloads = {};
+		bulkQuoteLoads = {};
+	}
 
-		for (const post of posts) {
-			await openQuoteLane(sourceUri, post.uri, post.author.handle, { focus: false });
-		}
+	function cancelQuoteDownload(sourceUri: string) {
+		quoteWorkers.get(sourceUri)?.terminate();
+		quoteWorkers.delete(sourceUri);
+		const next = { ...quoteDownloads };
+		delete next[sourceUri];
+		quoteDownloads = next;
+		bulkQuoteLoads = { ...bulkQuoteLoads, [sourceUri]: false };
+	}
 
-		const firstLane = posts.find((post) => quoteLanes.some((lane) => lane.id === post.uri));
-		if (firstLane) {
-			activeLaneId = firstLane.uri;
-			void tick().then(() => centerTreeNode(firstLane.uri, firstLane.uri));
+	function showAllQuotePosts(sourceUri: string) {
+		if (quoteWorkers.has(sourceUri)) return;
+		const sourceLaneId = activeLaneId;
+		const requestId = loadRequestId;
+		try {
+			const worker = new Worker(new URL('../../lib/workers/treeQuoteLoader.worker.ts', import.meta.url), { type: 'module' });
+			quoteWorkers.set(sourceUri, worker);
+			bulkQuoteLoads = { ...bulkQuoteLoads, [sourceUri]: true };
+			quoteDownloads = { ...quoteDownloads, [sourceUri]: { sourceLaneId, status: 'loading', completed: 0, total: 0, count: 0, failed: 0 } };
+			const fail = (message: string) => {
+				if (quoteWorkers.get(sourceUri) !== worker) return;
+				cancelQuoteDownload(sourceUri);
+				error = message;
+			};
+			worker.onerror = () => fail('The quote download worker failed. Try loading quotes again.');
+			worker.onmessage = ({ data }: MessageEvent<QuoteDownloadEvent>) => {
+				if (requestId !== loadRequestId || quoteWorkers.get(sourceUri) !== worker) return;
+				if (!allLanes.some((lane) => lane.id === sourceLaneId)) { cancelQuoteDownload(sourceUri); return; }
+				const job = quoteDownloads[sourceUri];
+				if (data.type === 'error') { fail(data.error); return; }
+				if (data.type === 'progress') {
+					quoteDownloads = { ...quoteDownloads, [sourceUri]: { ...job, completed: data.completed, total: data.total } };
+				} else if (data.type === 'ready') {
+					quoteDownloads = { ...quoteDownloads, [sourceUri]: { ...job, status: 'ready', count: data.count, failed: data.failed } };
+				} else if (data.type === 'result') {
+					// Publish once, only after the user's explicit refresh. Downloads never rebuild the canvas.
+					const existing = new Set(quoteLanes.map((lane) => lane.id));
+					const now = Date.now();
+					const lanes: ViewerLane[] = data.threads.filter((item) => !existing.has(item.uri)).map((item, index) => {
+						const target = findPostByUri(item.thread.rootPost, item.uri) ?? item.thread.rootPost;
+						return { id: item.uri, label: `Q${quoteLanes.length + index + 1}`, title: `@${item.thread.rootPost.author.handle}`,
+							thread: item.thread, selectedUri: longestLeafUriFrom(target), focusedUri: target.uri,
+							expandedTree: false, sourceUri, sourceLaneId, loadedAt: now + index };
+					});
+					quoteLanes = [...quoteLanes, ...lanes];
+					quoteFeeds = { ...quoteFeeds, [sourceUri]: { status: 'ready', posts: data.posts, loadedAll: true, hasMore: false } };
+					if (data.failed) error = `${data.failed} quoted threads could not be downloaded. Load all quotes again to retry them.`;
+					cancelQuoteDownload(sourceUri);
+				}
+			};
+			worker.postMessage({ type: 'download', sourceUri,
+				skipUris: quoteLanes.map((lane) => lane.id),
+				posts: quoteFeeds[sourceUri]?.loadedAll ? $state.snapshot(quoteFeeds[sourceUri].posts) : undefined });
+		} catch (e) {
+			cancelQuoteDownload(sourceUri);
+			error = e instanceof Error ? e.message : 'Could not start the quote download worker.';
 		}
+	}
+
+	function refreshQuoteDownload(sourceUri: string) {
+		const job = quoteDownloads[sourceUri];
+		if (job?.status !== 'ready') return;
+		quoteDownloads = { ...quoteDownloads, [sourceUri]: { ...job, status: 'publishing' } };
+		quoteWorkers.get(sourceUri)?.postMessage({ type: 'publish' });
+	}
+
+	function setLaneHidden(laneId: string, hidden: boolean) {
+		const next = new Set(hiddenLaneIds);
+		if (hidden) next.add(laneId); else next.delete(laneId);
+		hiddenLaneIds = next;
+	}
+
+	function trackHorizontalScroll(node: HTMLDivElement) {
+		let frame = 0;
+		const update = () => {
+			frame = 0;
+			horizontalScrollLeft = node.scrollLeft;
+			horizontalScrollMax = Math.max(0, node.scrollWidth - node.clientWidth);
+			const left = Math.floor(node.scrollLeft / 256) * 256;
+			const top = Math.floor(node.scrollTop / 256) * 256;
+			if (treeViewportSize.left !== left || treeViewportSize.top !== top || treeViewportSize.width !== node.clientWidth || treeViewportSize.height !== node.clientHeight) {
+				treeViewportSize = { left, top, width: node.clientWidth, height: node.clientHeight };
+			}
+		};
+		const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
+		const resize = new ResizeObserver(schedule);
+		const observe = () => {
+			resize.disconnect();
+			resize.observe(node);
+			for (const child of node.children) resize.observe(child);
+			schedule();
+		};
+		const mutations = new MutationObserver(observe);
+		mutations.observe(node, { childList: true });
+		node.addEventListener('scroll', schedule, { passive: true });
+		observe();
+		return { destroy() { resize.disconnect(); mutations.disconnect(); cancelAnimationFrame(frame); node.removeEventListener('scroll', schedule); } };
 	}
 
 	function centerTreeNode(uri: string, laneId = activeLaneId) {
@@ -1799,6 +1950,8 @@
 		allReplyLaneIds = new Set();
 		quoteFeeds = {};
 		quoteLaneLoads = {};
+		stopQuoteDownloads();
+		hiddenLaneIds = new Set();
 		urlInput = canonicalUrl;
 		updateQueryParam(canonicalUrl);
 
@@ -1844,6 +1997,8 @@
 		allReplyLaneIds = new Set();
 		quoteFeeds = {};
 		quoteLaneLoads = {};
+		stopQuoteDownloads();
+		hiddenLaneIds = new Set();
 		urlInput = normalizedUrl;
 		updateQueryParam(normalizedUrl);
 
@@ -2046,6 +2201,7 @@
 			const savedFont = localStorage.getItem('preferred-font');
 			if (savedFont && savedFont in fontFamilies) fontKey = savedFont;
 
+			horizontalScrollbar = localStorage.getItem('treeviewer-horizontal-scrollbar') === '1';
 			const savedLayout = localStorage.getItem('treeviewer-layout');
 			if (savedLayout === 'horizontal' || savedLayout === 'vertical' || savedLayout === 'radial') {
 				treeLayout = savedLayout;
@@ -2120,6 +2276,7 @@
 		if (!browser) return;
 		try {
 			localStorage.setItem('treeviewer-layout', treeLayout);
+			localStorage.setItem('treeviewer-horizontal-scrollbar', horizontalScrollbar ? '1' : '0');
 			localStorage.setItem('treeviewer-zoom', String(treeZoom));
 			localStorage.setItem('treeviewer-chat-font-scale', String(chatFontScale));
 			localStorage.setItem('treeviewer-text-panel-mode', textPanelMode);
@@ -2155,6 +2312,9 @@
 	});
 
 	onDestroy(() => {
+		loadRequestId += 1;
+		stopQuoteDownloads();
+		clearTimeout(forumScrollTimer);
 		stopSplitDrag();
 		if (browser) {
 			window.removeEventListener('keydown', handleGlobalKeydown);
@@ -2263,6 +2423,7 @@
 						</div>
 
 						<div class="layout-toggle" aria-label="Tree layout mode">
+							<button type="button" class:active={horizontalScrollbar} aria-pressed={horizontalScrollbar} onclick={() => horizontalScrollbar = !horizontalScrollbar}>Horizontal scrollbar</button>
 							<button
 								type="button"
 								class:active={treeViewMode === 'nodes' && treeLayout === 'vertical'}
@@ -2333,6 +2494,39 @@
 						{/if}
 					{/if}
 
+					{#if Object.keys(quoteDownloads).length > 0}
+						<div class="quote-downloads" aria-label="Background quote downloads">
+							{#each Object.entries(quoteDownloads) as [sourceUri, job] (sourceUri)}
+								<div class="quote-download-row">
+									<span>{allLanes.find((lane) => lane.id === job.sourceLaneId)?.label ?? 'Quotes'}:
+										{job.status === 'loading' ? (job.total ? `Downloading ${job.completed}/${job.total}` : 'Finding quotes…') : `${job.count} trees ready`}
+										{job.failed ? ` · ${job.failed} failed` : ''}</span>
+									<button type="button" disabled={job.status !== 'ready'} onclick={() => refreshQuoteDownload(sourceUri)}>{job.status === 'publishing' ? 'Refreshing…' : 'Refresh view'}</button>
+									<button type="button" onclick={() => cancelQuoteDownload(sourceUri)}>Cancel</button>
+								</div>
+							{/each}
+						</div>
+					{/if}
+					{#if allLanes.length > 0 && !embeddedUiCollapsed}
+						<details class="quote-tree-manager">
+							<summary>Trees · {hiddenLaneIds.size} hidden</summary>
+							<div class="quote-tree-actions">
+								<button type="button" onclick={() => hiddenLaneIds = new Set(allLanes.map((lane) => lane.id))}>Hide all</button>
+								<button type="button" onclick={() => hiddenLaneIds = new Set()}>Show all</button>
+							</div>
+							<div class="quote-tree-list">
+								{#each allLanes as lane (lane.id)}
+									<div class="quote-download-row">
+										<span title={lane.title}>{lane.label} {lane.title}</span>
+										<button type="button" onclick={() => setLaneHidden(lane.id, !hiddenLaneIds.has(lane.id))}>{hiddenLaneIds.has(lane.id) ? 'Show' : 'Hide'}</button>
+										{#if lane.id !== MAIN_LANE_ID}
+											<button type="button" onclick={() => removeQuoteLane(lane.id)}>Close</button>
+										{/if}
+									</div>
+								{/each}
+							</div>
+						</details>
+					{/if}
 					<div class="tree-canvas-wrap">
 						{#if treeViewMode === 'nodes' && treeLayout === 'radial' && !embeddedUiCollapsed}
 							<div class="radial-control-dock" class:open={radialControlsOpen}>
@@ -2432,6 +2626,7 @@
 						{/if}
 						<div
 							bind:this={treeCanvasElement}
+							use:trackHorizontalScroll
 							class="tree-canvas"
 							class:horizontal={treeViewMode === 'nodes' && treeLayout === 'horizontal'}
 							class:vertical={treeViewMode === 'nodes' && treeLayout === 'vertical'}
@@ -2467,6 +2662,7 @@
 													>
 														{allReplyLaneIds.has(laneModel.lane.id) ? 'Path' : 'All replies'}
 													</button>
+													<button type="button" class="tree-lane-tree-toggle" onclick={() => setLaneHidden(laneModel.lane.id, true)} title="Hide tree; show it again from Trees">Hide</button>
 													{#if laneModel.lane.id !== MAIN_LANE_ID}
 														<button
 															type="button"
@@ -2496,7 +2692,7 @@
 														aria-label={`${row.count} post${row.count === 1 ? '' : 's'} by ${row.authorName}`}
 														aria-current={row.isSelected ? 'true' : undefined}
 														title={`${row.count} post${row.count === 1 ? '' : 's'} by @${row.authorHandle}`}
-														onclick={() => selectPost(row.targetUri, laneModel.lane.id)}
+														onclick={() => selectPost(row.depth === 0 ? laneModel.lane.thread.rootPost.uri : row.targetUri, laneModel.lane.id)}
 													>
 														<span class="chain-count">{row.count}</span>
 														<span class="chain-author">{row.authorName}</span>
@@ -2520,7 +2716,7 @@
 											viewBox={`0 0 ${treeModel.width} ${treeModel.height}`}
 											aria-hidden="true"
 										>
-											{#each treeModel.quoteConnectors as connector (connector.key)}
+											{#each viewportQuoteConnectors as connector (connector.key)}
 												<path
 													d={buildQuoteConnectorPath(connector)}
 													class:active={connector.toLane.lane.id === activeLaneId || connector.fromLane.lane.id === activeLaneId}
@@ -2528,7 +2724,7 @@
 											{/each}
 										</svg>
 
-										{#each treeModel.lanes as laneRender (laneRender.lane.id)}
+										{#each viewportTreeLanes as laneRender (laneRender.lane.id)}
 											<div
 												class="tree-lane"
 												class:active-lane={laneRender.lane.id === activeLaneId}
@@ -2555,6 +2751,7 @@
 									>
 										{allReplyLaneIds.has(laneRender.lane.id) ? 'Path' : 'All replies'}
 									</button>
+														<button type="button" class="tree-lane-tree-toggle" onclick={() => setLaneHidden(laneRender.lane.id, true)} title="Hide tree; show it again from Trees">Hide</button>
 														{#if laneRender.lane.id !== MAIN_LANE_ID}
 															<button
 																type="button"
@@ -2622,6 +2819,11 @@
 							{/if}
 						</div>
 					</div>
+					{#if horizontalScrollbar}
+						<input class="horizontal-scrollbar" type="range" min="0" max={horizontalScrollMax} step="1"
+							value={horizontalScrollLeft} disabled={horizontalScrollMax === 0} aria-label="Scroll tree horizontally"
+							oninput={(event) => { if (treeCanvasElement) treeCanvasElement.scrollLeft = Number(event.currentTarget.value); }} />
+					{/if}
 				</aside>
 			{/if}
 
@@ -2729,14 +2931,13 @@
 							bind:this={forumScrollElement}
 							class="forum-thread"
 							style={chatFontStyle}
-							onscroll={updateActiveForumPostFromScroll}
+							onscroll={scheduleForumScrollUpdate}
 						>
 							{#each forumPostGroups as group (group.key)}
 								{@const firstItem = group.items[0]}
 								{@const firstPost = firstItem.post}
 								<div
 									class="forum-post"
-									class:focused={group.items.some((item) => activeLane?.focusedUri === item.post.uri)}
 								>
 									<div class="forum-main">
 										<div class="forum-meta">
@@ -2760,7 +2961,6 @@
 												{@const bskyPostUrl = forumPostUrl(post)}
 												<div
 													class="forum-subpost"
-													class:focused={activeLane?.focusedUri === post.uri}
 													data-forum-post-uri={post.uri}
 													role="button"
 													tabindex="0"
@@ -3524,6 +3724,42 @@
 		padding: 0 6px;
 	}
 
+	.quote-downloads, .quote-tree-manager {
+		padding: 6px 8px;
+		border-bottom: 1px solid var(--tv-border);
+		font-size: 0.75rem;
+	}
+	.quote-download-row, .quote-tree-actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 3px 0;
+	}
+	.quote-download-row span {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.quote-tree-list { max-height: 180px; overflow: auto; }
+	.quote-download-row button, .quote-tree-actions button {
+		flex-shrink: 0;
+		border: 1px solid var(--tv-border);
+		border-radius: 6px;
+		padding: 3px 7px;
+		background: var(--control-bg);
+		color: var(--text-ink);
+	}
+	.quote-download-row button:disabled { opacity: 0.5; }
+
+	.horizontal-scrollbar {
+		width: calc(100% - 16px);
+		margin: 6px 8px;
+		flex: 0 0 auto;
+		accent-color: var(--text-ink);
+	}
+
 	.tree-canvas-wrap {
 		flex: 1 1 auto;
 		min-height: 0;
@@ -3558,7 +3794,9 @@
 	}
 
 	.chain-lane-outline {
-		min-width: 220px;
+		content-visibility: auto;
+		contain-intrinsic-size: auto 240px auto 400px;
+		min-width: 240px;
 		padding: 2px 0 14px;
 		border-radius: 8px;
 	}
@@ -3569,7 +3807,8 @@
 	}
 
 	.chain-lane-header {
-		display: flex;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto auto;
 		align-items: center;
 		gap: 5px;
 		margin-bottom: 8px;
@@ -3648,6 +3887,7 @@
 	}
 
 	.tree-lane {
+		content-visibility: auto;
 		position: absolute;
 		z-index: 2;
 		border-radius: 9px;
@@ -3664,13 +3904,18 @@
 		left: 0;
 		top: 0;
 		width: 100%;
-		height: 28px;
-		display: flex;
+		height: 60px;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto auto;
+		grid-template-rows: 28px 26px;
 		align-items: center;
 		gap: 5px;
 	}
 
 	.tree-lane-title {
+		grid-column: 1 / -1;
+		width: 100%;
+		overflow: hidden;
 		min-width: 0;
 		flex: 1 1 auto;
 		height: 28px;
@@ -3686,6 +3931,7 @@
 	}
 
 	.tree-lane-title span {
+		flex-shrink: 0;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -4214,9 +4460,6 @@
 		border-bottom: 0;
 	}
 
-	.forum-post.focused {
-		background: var(--tv-active-bg);
-	}
 
 	.forum-main {
 		min-width: 0;
@@ -4279,15 +4522,11 @@
 		border-top: 0;
 	}
 
-	.forum-subpost:hover,
 	.forum-subpost:focus-visible {
 		background: var(--tv-surface);
 		outline: none;
 	}
 
-	.forum-subpost.focused {
-		background: var(--tv-active-bg);
-	}
 
 	.forum-text {
 		margin: 0;

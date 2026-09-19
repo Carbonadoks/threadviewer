@@ -8,7 +8,8 @@ type WorkerIncomingMessage =
 	| { type: 'pause'; runId: number }
 	| { type: 'resume'; runId: number }
 	| { type: 'stop'; runId: number }
-	| { type: 'hydrate-thread'; requestId: number; uri: string };
+	| { type: 'hydrate-thread'; requestId: number; uri: string }
+	| { type: 'cancel-hydrate'; requestId: number };
 
 type WorkerOutgoingMessage =
 	| { type: 'run-task'; runId: number; taskId: string }
@@ -17,7 +18,7 @@ type WorkerOutgoingMessage =
 	| { type: 'resumed'; runId: number }
 	| { type: 'stopped'; runId: number }
 	| { type: 'thread-hydrated'; requestId: number; thread: BoardThread }
-	| { type: 'thread-error'; requestId: number; error: string };
+	| { type: 'thread-error'; requestId: number; error: string; status?: number; aborted?: boolean };
 
 let activeRunId = 0;
 let running = false;
@@ -89,22 +90,36 @@ function enqueueTaskIds(taskIds: string[], placement: 'front' | 'back' = 'back')
 	}
 }
 
+const hydrationControllers = new Map<number, AbortController>();
+
 async function hydrateThread(requestId: number, uri: string) {
+	const controller = new AbortController();
+	hydrationControllers.set(requestId, controller);
 	try {
-		const thread = await getFullThread(uri);
+		const thread = await getFullThread(uri, { signal: controller.signal });
 		post({ type: 'thread-hydrated', requestId, thread });
 	} catch (error) {
+		const status = Number((error as { status?: unknown } | null)?.status);
 		post({
 			type: 'thread-error',
 			requestId,
-			error: error instanceof Error ? error.message : 'Could not hydrate thread.'
+			error: error instanceof Error ? error.message : 'Could not hydrate thread.',
+			status: Number.isFinite(status) && status > 0 ? status : undefined,
+			aborted: controller.signal.aborted
 		});
+	} finally {
+		hydrationControllers.delete(requestId);
 	}
 }
 
 function handleMessage(message: WorkerIncomingMessage) {
 	if (message.type === 'hydrate-thread') {
 		void hydrateThread(message.requestId, message.uri);
+		return;
+	}
+
+	if (message.type === 'cancel-hydrate') {
+		hydrationControllers.get(message.requestId)?.abort();
 		return;
 	}
 

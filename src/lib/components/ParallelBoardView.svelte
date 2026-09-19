@@ -1,9 +1,24 @@
 	<script lang="ts">
 		import { onMount, tick, untrack } from 'svelte';
 		import {
+			assignLaneColumns, buildConnectorIndex, buildPostDepthMap, collectLaneChains,
+			firstIndexAtOrAbove, LaneCardLayoutCache, lastIndexAtOrBelow, pickLaneChainId,
+			queryConnectorIndex, type ConnectorIndex, type LaneChain, type LaneCard,
+			type LaneRenderModel, type LaneConnector
+		} from '$lib/utils/parallelBoardLayout';
+		import {
+			fetchQuotePostsPage as fetchBlueskyQuotePostsPage,
 			fetchQuotesForPost as fetchBlueskyQuotesForPost,
-			getFullThread as getBlueskyFullThread
+			getFullThread as getBlueskyFullThread,
+			getPostContext as getBlueskyPostContext
 		} from '$lib/api/bluesky';
+		import {
+			RequestScheduler,
+			abortError,
+			isAbortError,
+			type RequestPriority,
+			type SchedulerSnapshot
+		} from '$lib/utils/requestScheduler';
 		import BoardView from '$lib/components/BoardView.svelte';
 		import ThreadExportButton from '$lib/components/ThreadExportButton.svelte';
 		import type { EmbedImage, QuotedRecordEmbed, ThreadPost } from '$lib/types';
@@ -63,57 +78,12 @@
 		loadedAll?: boolean;
 		loadingMode?: 'page' | 'all';
 		error?: string;
-	};
-	type LaneChain = {
-		id: string;
-		order: number;
-		posts: ThreadPost[];
-	};
-	type LaneCardVisibility = 'active' | 'shadow';
-	type LaneCard = {
-		key: string;
-		laneId: string;
-		laneLabel: string;
-		laneTitle: string;
-		laneKind: LaneKind;
-		laneIsTruncated: boolean;
-		post: ThreadPost;
-		chainId: string;
-		chainOrder: number;
-		depth: number;
-		x: number;
-		y: number;
-		visibility: LaneCardVisibility;
-		divergenceDepth: number;
-		stackIndex: number;
-		switchGroupChainIds: string[];
-		isLaneRoot: boolean;
-	};
-	type LaneRenderModel = {
-		id: string;
-		kind: LaneKind;
-		label: string;
-		title: string;
-		handle: string;
-		anchorUri: string;
-		thread: BoardThread;
-		loadedAt: number;
-		sourceUri?: string;
-		sourceLaneId?: string;
-		column: number;
-		depthOffset: number;
-		x: number;
-		activeChainId: string;
-		chains: LaneChain[];
-		activeCards: LaneCard[];
-		maxDepth: number;
-		cards: LaneCard[];
-	};
-	type LaneConnector = {
-		key: string;
-		from: LaneCard;
-		to: LaneCard;
-		kind: 'spawn' | 'reference' | 'tree';
+		/** Where a partial "load all" stopped, so the next attempt resumes instead of restarting. */
+		cursor?: string;
+		pages?: number;
+		/** The post's advertised quote count, for progress. */
+		expected?: number;
+		handle?: string;
 	};
 	type NavigationDirection = 'left' | 'right' | 'up' | 'down';
 	type HighlightSegment = {
@@ -125,13 +95,25 @@
 		indexByUri: Map<string, number>;
 		parentByUri: Map<string, ThreadPost>;
 	};
+	/** Board structure: everything that does not depend on measured card heights. */
 	type BoardModel = {
 		lanes: LaneRenderModel[];
 		laneById: Map<string, LaneRenderModel>;
+		/** Lanes ordered by x, for viewport range queries. */
+		lanesByX: LaneRenderModel[];
 		cardsByKey: Map<string, LaneCard>;
 		cardsByPostUri: Map<string, LaneCard>;
 		connectors: LaneConnector[];
+		connectorIndex: ConnectorIndex;
 		boardWidth: number;
+		minRow: number;
+		maxRow: number;
+	};
+	/** Row geometry from measured heights; recomputed without rebuilding the structure. */
+	type RowLayout = {
+		minRow: number;
+		tops: Float64Array;
+		heights: Float64Array;
 		boardHeight: number;
 		canvasOffsetY: number;
 	};
@@ -201,6 +183,13 @@
 	const LANE_MARKER_GAP = 24;
 	const PADDING_X = 52;
 	const PADDING_Y = 44;
+	// Below this zoom, cards render as lightweight previews at their measured size.
+	const LOW_DETAIL_ZOOM = 0.35;
+	// Shadow cards deeper in a stack sit behind the others; render only the nearest ones.
+	const SHADOW_STACK_RENDER_LIMIT = 24;
+	const MINIMAP_REDRAW_MS = 120;
+	const QUOTE_PICKER_PAGE = 60;
+	const GALLERY_PAGE = 120;
 		const CARD_SCROLL_STEP = 144;
 			const ZOOM_MIN = 0.1;
 			const ZOOM_MAX = 1.5;
@@ -222,7 +211,9 @@
 			postLabel: 'post',
 			buildPostUrl: buildBlueskyPostUrl,
 			loadThread: getBlueskyFullThread,
-			fetchQuotePosts: fetchBlueskyQuotesForPost
+			loadPostContext: getBlueskyPostContext,
+			fetchQuotePosts: fetchBlueskyQuotesForPost,
+			fetchQuotePostsPage: fetchBlueskyQuotePostsPage
 		};
 
 		function buildKeyboardShortcuts(platformName: string) {
@@ -232,10 +223,10 @@
 				{ keys: ['Shift + h/j/k/l', 'Shift + arrows'], description: 'Scroll the selected post card without changing selection' },
 				{ keys: ['a', 's'], description: 'Switch backward or forward through stacked reply branches on the selected lane' },
 				{ keys: ['t'], description: 'Expand or collapse the selected lane into a fan-shaped tree view' },
+				{ keys: ['e'], description: 'Load the full conversation for the selected lane (lanes start with the post, its parents and its replies)' },
 				{ keys: ['/', 'u'], description: 'Focus lane text search or author search' },
 				{ keys: ['1-9'], description: 'Pick quote posts, or jump to numbered child branches in tree view' },
 				{ keys: ['r', 'Backspace'], description: 'Jump to the current fork point or the root while in tree view' },
-				{ keys: ['m'], description: 'Toggle big mode so cards grow with their content' },
 				{ keys: ['g'], description: 'Open or close the selected post details modal' },
 				{ keys: ['Enter'], description: 'Open the selected card in the tree board' },
 				{ keys: ['o'], description: `Open the selected post on ${platformName}` },
@@ -272,6 +263,10 @@
 
 		let keyboardShortcuts = $derived(buildKeyboardShortcuts(platform.name));
 
+		/** The main lane after "Full thread" replaced the `thread` prop's partial tree. */
+		let mainThreadOverride = $state.raw<BoardThread | null>(null);
+		let mainThread = $derived(mainThreadOverride ?? thread);
+
 	let parallelBoardLayoutEl: HTMLDivElement | undefined = $state();
 	let boardEl: HTMLDivElement | undefined = $state();
 	let boardCanvasEl: HTMLDivElement | undefined = $state();
@@ -280,11 +275,11 @@
 	let treeBoardDialogEl: HTMLDialogElement | undefined = $state();
 	let treeAuthorSearchInputEl: HTMLInputElement | undefined = $state();
 	let treeTextSearchInputEl: HTMLInputElement | undefined = $state();
-		let quoteLanes = $state<Record<string, QuoteLaneEntry>>({});
-		let postQuotes = $state<Record<string, QuotePostFeedState>>({});
-		let bulkQuoteLaneLoads = $state<Record<string, boolean>>({});
+		let quoteLanes = $state.raw<Record<string, QuoteLaneEntry>>({});
+		let postQuotes = $state.raw<Record<string, QuotePostFeedState>>({});
+		let bulkQuoteLaneLoads = $state.raw<Record<string, boolean>>({});
 		let openQuotePickerCardKey = $state<string | null>(null);
-		let fetchModeQueue = $state<FetchModeQueueItem[]>([]);
+		let fetchModeQueue = $state.raw<FetchModeQueueItem[]>([]);
 		let fetchModeRunning = $state(false);
 		let fetchModePaused = $state(false);
 		let showFetchModePanel = $state(true);
@@ -292,7 +287,8 @@
 		let nextFetchModeRunId = 1;
 		let fetchModeStatusMessage = $state('');
 		let fetchModeProcessedCount = $state(0);
-		let fetchModeWorker: Worker | null = null;
+			let fetchModeWorker: Worker | null = null;
+			let fetchModeAbort: AbortController | null = null;
 		let nextFetchModeHydrationRequestId = 1;
 		const fetchModeHydrationRequests = new Map<
 			number,
@@ -302,7 +298,7 @@
 		let fetchModeQueuedScanUris = new Set<string>();
 		let fetchModeQueuedLaneTargets = new Set<string>();
 		let fetchModeReachedTaskLimit = false;
-		let laneActiveChainIds = $state<Record<string, string>>({});
+		let laneActiveChainIds = $state.raw<Record<string, string>>({});
 	let expandedLaneId = $state<string | null>(null);
 	let activeLaneId = $state(MAIN_LANE_ID);
 	let activeCardKey = $state('');
@@ -311,20 +307,19 @@
 		let isParallelBoardFullscreen = $state(false);
 		let isTreeBoardFullscreen = $state(false);
 		let showShortcutsHelp = $state(false);
-	let isBigMode = $state(false);
 	let showTreeSearchPanel = $state(true);
 	let treeAuthorSearch = $state('');
 	let treeTextSearch = $state('');
 	let treeSearchMessage = $state('');
 	let treeSearchStatus = $state<'success' | 'error' | ''>('');
-	let treeAuthorMatchLookup = $state<Record<string, boolean>>({});
-	let treeTextMatchLookup = $state<Record<string, boolean>>({});
+	let treeAuthorMatchLookup = $state.raw<Record<string, boolean>>({});
+	let treeTextMatchLookup = $state.raw<Record<string, boolean>>({});
 	let treeAuthorMatchQuery = $state('');
 	let treeTextMatchQuery = $state('');
 	let treeAuthorMatchIndex = $state(-1);
 	let treeTextMatchIndex = $state(-1);
 	let lastSearchLaneId = $state<string | null>(null);
-	let cardHeights = $state<Record<string, number>>({});
+	let cardHeights = $state.raw<Record<string, number>>({});
 		let zoom = $state(1);
 		let zoomInput = $state('100');
 		let isPanning = $state(false);
@@ -337,7 +332,6 @@
 		let minimapDragging = $state(false);
 		let minimapViewport = $state({ x: 0, y: 0, w: 0, h: 0 });
 		let minimapFrame = 0;
-	let lastCanvasOffsetY = $state(0);
 	let lastHandledRequestedFocusUri = $state<string | null>(null);
 	let lastHandledWinningFocusUri = $state<string | null>(null);
 	let celebrationBurst = $state<CelebrationBurst | null>(null);
@@ -449,9 +443,39 @@
 		return { ...boardThread, rootPost: postWithImageOverrides(boardThread.rootPost) };
 	}
 	let showGallery = $state(true);
+	let galleryRenderLimit = $state(GALLERY_PAGE);
+	let quotePickerRenderLimit = $state(QUOTE_PICKER_PAGE);
+
+	/** Long lists render in pages; the sentinel at the end asks for the next page once
+	 * it scrolls near view, so thousands of quotes or images never mount at once. */
+	function revealWhenVisible(node: HTMLElement, onVisible: () => void) {
+		let frame = 0;
+		const observer = new IntersectionObserver(
+			(entries) => {
+				if (!entries.some((entry) => entry.isIntersecting)) return;
+				onVisible();
+				// Observing again reports the sentinel afresh, so pages keep loading
+				// while it stays within reach.
+				cancelAnimationFrame(frame);
+				frame = requestAnimationFrame(() => {
+					observer.unobserve(node);
+					observer.observe(node);
+				});
+			},
+			{ rootMargin: '600px' }
+		);
+		observer.observe(node);
+		return {
+			destroy() {
+				cancelAnimationFrame(frame);
+				observer.disconnect();
+			}
+		};
+	}
+
 	let galleryAltOnly = $state(true);
 	let blastMode = $state(false);
-	let blastCards = $state<BlastCard[]>([]);
+	let blastCards = $state.raw<BlastCard[]>([]);
 	let blastCardId = 0;
 	let blastRate = $state(3); // bursts per second
 	let blastBurstSize = $state(4);
@@ -462,33 +486,13 @@
 	let celebrationFrame = 0;
 	let celebrationTimeout = 0;
 
-	function collectLaneChains(rootPost: ThreadPost): LaneChain[] {
-		const chains: LaneChain[] = [];
-
-		function visit(post: ThreadPost, path: ThreadPost[], pathId: string) {
-			const nextPath = [...path, post];
-			if (post.children.length === 0) {
-				chains.push({
-					id: pathId,
-					order: chains.length,
-					posts: nextPath
-				});
-				return;
-			}
-
-			post.children.forEach((child, index) => {
-				visit(child, nextPath, `${pathId}.${index}`);
-			});
-		}
-
-		visit(rootPost, [], '0');
-		return chains;
-	}
-
 	// Lane threads are immutable once loaded, so chain and depth layouts can be
 	// computed once per thread instead of on every board model rebuild.
 	const laneChainsCache = new WeakMap<ThreadPost, LaneChain[]>();
+	const laneChainIdsCache = new WeakMap<ThreadPost, Set<string>>();
 	const lanePostDepthCache = new WeakMap<ThreadPost, Map<string, number>>();
+	const lanePreferredChainCache = new WeakMap<ThreadPost, Map<string, string>>();
+	const laneTreeNavigationCache = new WeakMap<ThreadPost, LaneTreeNavigation>();
 
 	function getLaneChainsCached(rootPost: ThreadPost): LaneChain[] {
 		let chains = laneChainsCache.get(rootPost);
@@ -497,6 +501,16 @@
 			laneChainsCache.set(rootPost, chains);
 		}
 		return chains;
+	}
+
+	function laneHasChain(rootPost: ThreadPost, chainId: string | undefined): boolean {
+		if (!chainId) return false;
+		let ids = laneChainIdsCache.get(rootPost);
+		if (!ids) {
+			ids = new Set(getLaneChainsCached(rootPost).map((chain) => chain.id));
+			laneChainIdsCache.set(rootPost, ids);
+		}
+		return ids.has(chainId);
 	}
 
 	function getPostDepthMapCached(rootPost: ThreadPost): Map<string, number> {
@@ -508,104 +522,34 @@
 		return depthMap;
 	}
 
-	function findChainDivergenceDepth(activePosts: ThreadPost[], candidatePosts: ThreadPost[]): number {
-		const limit = Math.min(activePosts.length, candidatePosts.length);
-		for (let index = 0; index < limit; index += 1) {
-			if (activePosts[index]?.uri !== candidatePosts[index]?.uri) {
-				return index;
-			}
+	function getPreferredLaneChainId(rootPost: ThreadPost, anchorUri: string, anchorOnly: boolean): string {
+		let byAnchor = lanePreferredChainCache.get(rootPost);
+		if (!byAnchor) {
+			byAnchor = new Map();
+			lanePreferredChainCache.set(rootPost, byAnchor);
 		}
-		return limit;
-	}
-
-	function getLaneDefaultActiveChainId(chains: LaneChain[], anchorUri: string): string {
-		const preferredChain = [...chains].sort((a, b) => {
-			const lengthDelta = b.posts.length - a.posts.length;
-			if (lengthDelta !== 0) return lengthDelta;
-			const aContainsAnchor = a.posts.some((post) => post.uri === anchorUri) ? 1 : 0;
-			const bContainsAnchor = b.posts.some((post) => post.uri === anchorUri) ? 1 : 0;
-			if (aContainsAnchor !== bContainsAnchor) return bContainsAnchor - aContainsAnchor;
-			return a.order - b.order;
-		})[0];
-		return preferredChain?.id ?? '';
-	}
-
-	function getLaneAnchorActiveChainId(chains: LaneChain[], anchorUri: string): string {
-		const anchorChains = chains.filter((chain) => chain.posts.some((post) => post.uri === anchorUri));
-		if (anchorChains.length === 0) {
-			return getLaneDefaultActiveChainId(chains, anchorUri);
-		}
-
-		const preferredChain = [...anchorChains].sort((a, b) => {
-			const lengthDelta = b.posts.length - a.posts.length;
-			if (lengthDelta !== 0) return lengthDelta;
-			return a.order - b.order;
-		})[0];
-		return preferredChain?.id ?? '';
-	}
-
-	function mergeUniqueChainIds(...groups: string[][]): string[] {
-		return Array.from(
-			new Set(
-				groups.flatMap((group) => group).filter((value): value is string => Boolean(value))
-			)
-		);
-	}
-
-	function buildPostDepthMap(rootPost: ThreadPost): Map<string, number> {
-		const depthByPostUri = new Map<string, number>();
-
-		function visit(post: ThreadPost, depth: number) {
-			depthByPostUri.set(post.uri, depth);
-			for (const child of post.children) {
-				visit(child, depth + 1);
-			}
-		}
-
-		visit(rootPost, 0);
-		return depthByPostUri;
-	}
-
-	function buildTreeFanXMap(rootPost: ThreadPost): Map<string, number> {
-		const widthByPostUri = new Map<string, number>();
-		const xByPostUri = new Map<string, number>();
-
-		function measure(post: ThreadPost): number {
-			if (post.children.length === 0) {
-				widthByPostUri.set(post.uri, 1);
-				return 1;
-			}
-
-			const width = Math.max(
-				post.children.reduce((sum, child) => sum + measure(child), 0),
-				1
+		const cacheKey = `${anchorOnly ? 'anchor' : 'default'}:${anchorUri}`;
+		let chainId = byAnchor.get(cacheKey);
+		if (chainId === undefined) {
+			chainId = pickLaneChainId(
+				getLaneChainsCached(rootPost), getPostDepthMapCached(rootPost), anchorUri, anchorOnly
 			);
-			widthByPostUri.set(post.uri, width);
-			return width;
+			byAnchor.set(cacheKey, chainId);
 		}
+		return chainId;
+	}
 
-		function place(post: ThreadPost, startSlot: number): number {
-			if (post.children.length === 0) {
-				xByPostUri.set(post.uri, startSlot);
-				return startSlot;
-			}
+	function getLaneAnchorActiveChainId(rootPost: ThreadPost, anchorUri: string): string {
+		return getPreferredLaneChainId(rootPost, anchorUri, true);
+	}
 
-			let cursor = startSlot;
-			const childCenters: number[] = [];
-			for (const child of post.children) {
-				const childWidth = widthByPostUri.get(child.uri) ?? 1;
-				childCenters.push(place(child, cursor));
-				cursor += childWidth;
-			}
-
-			const center = (childCenters[0] + childCenters[childCenters.length - 1]) / 2;
-			xByPostUri.set(post.uri, center);
-			return center;
+	function getLaneTreeNavigationCached(rootPost: ThreadPost): LaneTreeNavigation {
+		let navigation = laneTreeNavigationCache.get(rootPost);
+		if (!navigation) {
+			navigation = buildLaneTreeNavigation(rootPost);
+			laneTreeNavigationCache.set(rootPost, navigation);
 		}
-
-		measure(rootPost);
-		place(rootPost, 0);
-		return xByPostUri;
+		return navigation;
 	}
 
 	function buildLaneTreeNavigation(rootPost: ThreadPost): LaneTreeNavigation {
@@ -613,18 +557,18 @@
 		const indexByUri = new Map<string, number>();
 		const parentByUri = new Map<string, ThreadPost>();
 
-		function visit(post: ThreadPost, parent: ThreadPost | null) {
+		const stack: Array<[ThreadPost, ThreadPost | null]> = [[rootPost, null]];
+		while (stack.length) {
+			const [post, parent] = stack.pop()!;
 			if (parent) {
 				parentByUri.set(post.uri, parent);
 			}
 			indexByUri.set(post.uri, order.length);
 			order.push(post);
-			for (const child of post.children) {
-				visit(child, post);
+			for (let index = post.children.length - 1; index >= 0; index--) {
+				stack.push([post.children[index], post]);
 			}
 		}
-
-		visit(rootPost, null);
 		return { order, indexByUri, parentByUri };
 	}
 
@@ -799,10 +743,7 @@
 				seedLane.thread,
 				seedLane.targetPostUri ?? seedLane.quotedUri
 			);
-			const preferredChainId = getLaneAnchorActiveChainId(
-				getLaneChainsCached(seedLane.thread.rootPost),
-				anchorUri
-			);
+			const preferredChainId = getLaneAnchorActiveChainId(seedLane.thread.rootPost, anchorUri);
 			if (preferredChainId) {
 				activeChains[laneId] = preferredChainId;
 			}
@@ -823,21 +764,19 @@
 			return entry?.status === 'ready' || entry?.status === 'linked';
 		}
 
+		const laneCardLayoutCache = new LaneCardLayoutCache();
+
 		function buildBoardModel(
 			mainThread: BoardThread,
 			mainAnchorUri: string | null,
 			readyQuoteEntries: ReadyQuoteLaneEntry[],
-			quoteEntries: QuoteLaneEntry[],
+			quoteEntries: ResolvedQuoteLaneEntry[],
 			activeChainByLane: Record<string, string>,
-			expandedLane: string | null,
-			cardHeightLookup: Record<string, number>,
-			bigMode: boolean
+			expandedLane: string | null
 		): BoardModel {
 			const laneById = new Map<string, LaneRenderModel>();
 			const depthByLanePostUri = new Map<string, Map<string, number>>();
 			const childrenByParent = new Map<string, LaneRenderModel[]>();
-			const cardHeightForKey = (cardKey: string) =>
-				bigMode ? Math.max(CARD_HEIGHT, cardHeightLookup[cardKey] ?? CARD_HEIGHT) : CARD_HEIGHT;
 
 			function createLaneModel(
 				id: string,
@@ -852,12 +791,9 @@
 				sourceLaneId?: string
 			): LaneRenderModel {
 				const chains = getLaneChainsCached(laneThread.rootPost);
-				const activeChainId =
-					chains.some((chain) => chain.id === activeChainByLane[id])
-						? activeChainByLane[id]
-						: kind === 'quoted'
-							? getLaneAnchorActiveChainId(chains, anchorUri)
-							: getLaneDefaultActiveChainId(chains, anchorUri);
+				const activeChainId = laneHasChain(laneThread.rootPost, activeChainByLane[id])
+					? activeChainByLane[id]
+					: getPreferredLaneChainId(laneThread.rootPost, anchorUri, kind === 'quoted');
 				const lane: LaneRenderModel = {
 					id,
 					kind,
@@ -875,7 +811,7 @@
 					activeChainId,
 					chains,
 					activeCards: [],
-					maxDepth: Math.max(...chains.map((chain) => chain.posts.length), 1),
+					maxDepth: chains.reduce((max, chain) => Math.max(max, chain.posts.length), 1),
 					cards: []
 				};
 				laneById.set(id, lane);
@@ -928,53 +864,29 @@
 
 			const depthAssignedLaneIds = new Set<string>();
 			function assignDepthOffsets(laneId: string, depthOffset: number) {
-				const lane = laneById.get(laneId);
-				if (!lane || depthAssignedLaneIds.has(laneId)) return;
-				depthAssignedLaneIds.add(laneId);
-				lane.depthOffset = depthOffset;
-				const depthByPost = depthByLanePostUri.get(laneId) ?? new Map<string, number>();
-				for (const child of childrenByParent.get(laneId) ?? []) {
-					const childDepthByPost = depthByLanePostUri.get(child.id) ?? new Map<string, number>();
-					const sourceDepth = depthByPost.get(child.sourceUri ?? '') ?? 0;
-					const anchorDepth = childDepthByPost.get(child.anchorUri) ?? 0;
-					assignDepthOffsets(child.id, depthOffset + sourceDepth - anchorDepth);
-				}
-			}
-
-			const readyEntryByLaneId = new Map<string, ReadyQuoteLaneEntry>(
-				readyQuoteEntries.map((entry) => [entry.quotedUri, entry])
-			);
-			const columnAssignedLaneIds = new Set<string>([MAIN_LANE_ID]);
-
-			function assignLaneColumn(laneId: string) {
-				if (columnAssignedLaneIds.has(laneId)) return;
-				const entry = readyEntryByLaneId.get(laneId);
-				const lane = laneById.get(laneId);
-				if (!entry || !lane) return;
-
-				assignLaneColumn(entry.sourceLaneId);
-				const sourceLane = laneById.get(entry.sourceLaneId);
-				const sourceColumn = sourceLane?.column ?? 0;
-				const desiredColumn = sourceColumn + (entry.direction === 'inbound' ? -1 : 1);
-
-				for (const existingLane of orderedLanes) {
-					if (!columnAssignedLaneIds.has(existingLane.id)) continue;
-					if (entry.direction === 'inbound') {
-						if (existingLane.column <= desiredColumn) {
-							existingLane.column -= 1;
-						}
-					} else if (existingLane.column >= desiredColumn) {
-						existingLane.column += 1;
+				const pending = [{ laneId, depthOffset }];
+				while (pending.length) {
+					const next = pending.pop()!;
+					const lane = laneById.get(next.laneId);
+					if (!lane || depthAssignedLaneIds.has(lane.id)) continue;
+					depthAssignedLaneIds.add(lane.id);
+					lane.depthOffset = next.depthOffset;
+					const depths = depthByLanePostUri.get(lane.id)!;
+					const children = childrenByParent.get(lane.id) ?? [];
+					for (let index = children.length - 1; index >= 0; index--) {
+						const child = children[index];
+						const childDepths = depthByLanePostUri.get(child.id)!;
+						pending.push({ laneId: child.id, depthOffset: next.depthOffset +
+							(depths.get(child.sourceUri ?? '') ?? 0) - (childDepths.get(child.anchorUri) ?? 0) });
 					}
 				}
-
-				lane.column = desiredColumn;
-				columnAssignedLaneIds.add(laneId);
 			}
 
-			readyQuoteEntries.forEach((entry) => {
-				assignLaneColumn(entry.quotedUri);
-			});
+			const columns = assignLaneColumns(MAIN_LANE_ID, readyQuoteEntries.map((entry) => ({
+				id: entry.quotedUri, sourceLaneId: entry.sourceLaneId, direction: entry.direction
+			})));
+			for (const lane of orderedLanes) lane.column = columns.get(lane.id) ?? 0;
+			laneCardLayoutCache.retain(new Set(laneById.keys()));
 
 			assignDepthOffsets(MAIN_LANE_ID, 0);
 			for (const lane of orderedLanes) {
@@ -983,13 +895,11 @@
 				}
 			}
 
-			const minColumn = Math.min(0, ...orderedLanes.map((lane) => lane.column));
-			const maxColumn = Math.max(0, ...orderedLanes.map((lane) => lane.column));
+			const minColumn = orderedLanes.reduce((min, lane) => Math.min(min, lane.column), 0);
 
 			const cardsByKey = new Map<string, LaneCard>();
 			const cardsByLanePost = new Map<string, LaneCard>();
 			const cardsByPostUri = new Map<string, LaneCard>();
-			const absoluteDepthByCardKey = new Map<string, number>();
 			let minDepth = 0;
 			let maxDepth = 0;
 
@@ -1031,194 +941,22 @@
 
 			for (const lane of orderedLanes) {
 				lane.x = PADDING_X + (lane.column - minColumn) * STEP_X;
-				const isExpandedTreeLane = expandedLane === lane.id;
-				if (isExpandedTreeLane) {
-					const depthByPost = depthByLanePostUri.get(lane.id) ?? new Map<string, number>();
-					const xByPost = buildTreeFanXMap(lane.thread.rootPost);
-					const anchorX = xByPost.get(lane.anchorUri) ?? xByPost.get(lane.thread.rootPost.uri) ?? 0;
-					const fanCards: LaneCard[] = [];
-
-					function collectFanCards(post: ThreadPost) {
-						const depth = depthByPost.get(post.uri) ?? 0;
-						const card: LaneCard = {
-							key: `${lane.id}:${post.uri}`,
-							laneId: lane.id,
-							laneLabel: lane.label,
-							laneTitle: lane.title,
-							laneKind: lane.kind,
-							laneIsTruncated: Boolean(lane.thread.isTruncated),
-							post,
-							chainId: lane.activeChainId,
-							chainOrder: 0,
-							depth,
-							x: lane.x + ((xByPost.get(post.uri) ?? anchorX) - anchorX) * TREE_FAN_STEP_X,
-							y: 0,
-							visibility: 'active',
-							divergenceDepth: depth,
-							stackIndex: 0,
-							switchGroupChainIds: [],
-							isLaneRoot: depth === 0
-						};
-						const absoluteDepth = lane.depthOffset + depth;
-						absoluteDepthByCardKey.set(card.key, absoluteDepth);
-						minDepth = Math.min(minDepth, absoluteDepth);
-						maxDepth = Math.max(maxDepth, absoluteDepth);
-						fanCards.push(card);
-						for (const child of post.children) {
-							collectFanCards(child);
-						}
-					}
-
-					collectFanCards(lane.thread.rootPost);
-					fanCards.sort((a, b) => {
-						const depthDelta =
-							(absoluteDepthByCardKey.get(a.key) ?? 0) - (absoluteDepthByCardKey.get(b.key) ?? 0);
-						if (depthDelta !== 0) return depthDelta;
-						return a.x - b.x;
+				const localLayout = laneCardLayoutCache.get(
+					lane, expandedLane === lane.id,
+					depthByLanePostUri.get(lane.id)!, TREE_FAN_STEP_X
+				);
+				for (const localCard of localLayout.cards) {
+					const row = lane.depthOffset + localCard.depth;
+					if (row < minDepth) minDepth = row;
+					if (row > maxDepth) maxDepth = row;
+					registerLaneCard({ ...localCard, x: lane.x + localCard.x, row });
+				}
+				for (const connector of localLayout.connectors) {
+					connectors.push({
+						...connector,
+						from: cardsByKey.get(connector.from.key)!,
+						to: cardsByKey.get(connector.to.key)!
 					});
-
-					for (const card of fanCards) {
-						registerLaneCard(card);
-					}
-
-					function collectTreeConnectors(post: ThreadPost) {
-						const fromCard = cardsByLanePost.get(`${lane.id}:${post.uri}`);
-						if (!fromCard) return;
-						for (const child of post.children) {
-							const toCard = cardsByLanePost.get(`${lane.id}:${child.uri}`);
-							if (toCard) {
-								connectors.push({
-									key: `tree:${fromCard.key}->${toCard.key}`,
-									from: fromCard,
-									to: toCard,
-									kind: 'tree'
-								});
-							}
-							collectTreeConnectors(child);
-						}
-					}
-
-					collectTreeConnectors(lane.thread.rootPost);
-					continue;
-				}
-
-				const activeChain = lane.chains.find((chain) => chain.id === lane.activeChainId) ?? lane.chains[0];
-				if (!activeChain) continue;
-				const activePosts = activeChain.posts;
-				const switchGroupByDepth = new Map<number, string[]>();
-
-				for (const chain of lane.chains) {
-					if (chain.id === activeChain.id) continue;
-					const divergenceDepth = findChainDivergenceDepth(activePosts, chain.posts);
-					if (divergenceDepth >= chain.posts.length || divergenceDepth >= activePosts.length) continue;
-					const group = switchGroupByDepth.get(divergenceDepth) ?? [activeChain.id];
-					group.push(chain.id);
-					group.sort((a, b) => {
-						const chainA = lane.chains.find((candidate) => candidate.id === a);
-						const chainB = lane.chains.find((candidate) => candidate.id === b);
-						return (chainA?.order ?? 0) - (chainB?.order ?? 0);
-					});
-					switchGroupByDepth.set(divergenceDepth, group);
-				}
-
-				const visibleCardByPostUri = new Map<string, LaneCard>();
-				for (const chain of lane.chains) {
-					const isActiveChain = chain.id === activeChain.id;
-					const divergenceDepth = isActiveChain
-						? 0
-						: findChainDivergenceDepth(activePosts, chain.posts);
-					const startDepth = isActiveChain ? 0 : divergenceDepth;
-					if (!isActiveChain && startDepth >= chain.posts.length) continue;
-
-					for (let depth = startDepth; depth < chain.posts.length; depth += 1) {
-						const post = chain.posts[depth];
-						const card: LaneCard = {
-							key: `${lane.id}:${post.uri}`,
-							laneId: lane.id,
-							laneLabel: lane.label,
-							laneTitle: lane.title,
-							laneKind: lane.kind,
-							laneIsTruncated: Boolean(lane.thread.isTruncated),
-							post,
-							chainId: chain.id,
-							chainOrder: chain.order,
-							depth,
-							x: lane.x,
-							y: 0,
-							visibility: isActiveChain ? 'active' : 'shadow',
-							divergenceDepth,
-							stackIndex: 0,
-							switchGroupChainIds: isActiveChain ? switchGroupByDepth.get(depth) ?? [] : [],
-							isLaneRoot: depth === 0
-						};
-						const absoluteDepth = lane.depthOffset + depth;
-						absoluteDepthByCardKey.set(card.key, absoluteDepth);
-						minDepth = Math.min(minDepth, absoluteDepth);
-						maxDepth = Math.max(maxDepth, absoluteDepth);
-						const existing = visibleCardByPostUri.get(post.uri);
-						if (!existing) {
-							visibleCardByPostUri.set(post.uri, card);
-							continue;
-						}
-
-						existing.switchGroupChainIds = mergeUniqueChainIds(
-							existing.switchGroupChainIds,
-							card.switchGroupChainIds
-						);
-						if (existing.visibility === 'active' && card.visibility === 'shadow') {
-							continue;
-						}
-						if (existing.visibility === 'shadow' && card.visibility === 'active') {
-							card.switchGroupChainIds = existing.switchGroupChainIds;
-							visibleCardByPostUri.set(post.uri, card);
-							continue;
-						}
-						if (
-							card.divergenceDepth < existing.divergenceDepth ||
-							(card.divergenceDepth === existing.divergenceDepth && card.chainOrder < existing.chainOrder)
-						) {
-							existing.chainId = card.chainId;
-							existing.chainOrder = card.chainOrder;
-							existing.divergenceDepth = card.divergenceDepth;
-						}
-					}
-				}
-
-				const visibleCards = Array.from(visibleCardByPostUri.values());
-
-				const shadowGroups = new Map<number, LaneCard[]>();
-				for (const card of visibleCards) {
-					if (card.visibility !== 'shadow') continue;
-					const absoluteDepth = absoluteDepthByCardKey.get(card.key) ?? 0;
-					const group = shadowGroups.get(absoluteDepth) ?? [];
-					group.push(card);
-					shadowGroups.set(absoluteDepth, group);
-				}
-
-				for (const group of shadowGroups.values()) {
-					group
-						.sort((a, b) => {
-							if (a.divergenceDepth !== b.divergenceDepth) {
-								return b.divergenceDepth - a.divergenceDepth;
-							}
-							return a.chainOrder - b.chainOrder;
-						})
-						.forEach((card, index) => {
-							card.stackIndex = index;
-						});
-				}
-
-				visibleCards.sort((a, b) => {
-					const depthDelta =
-						(absoluteDepthByCardKey.get(a.key) ?? 0) - (absoluteDepthByCardKey.get(b.key) ?? 0);
-					if (depthDelta !== 0) return depthDelta;
-					if (a.visibility !== b.visibility) return a.visibility === 'shadow' ? -1 : 1;
-					return a.chainOrder - b.chainOrder;
-				});
-
-				for (const card of visibleCards) {
-					card.x = lane.x;
-					registerLaneCard(card);
 				}
 			}
 
@@ -1263,10 +1001,12 @@
 				}
 			}
 
-			const contentMinX = Math.min(
-				...orderedLanes.map((lane) => lane.x + (CARD_WIDTH - LANE_MARKER_WIDTH) / 2),
-				...Array.from(cardsByKey.values(), (card) => card.x)
-			);
+			let contentMinX = Infinity;
+			for (const lane of orderedLanes) {
+				contentMinX = Math.min(contentMinX, lane.x + (CARD_WIDTH - LANE_MARKER_WIDTH) / 2);
+			}
+			for (const card of cardsByKey.values()) contentMinX = Math.min(contentMinX, card.x);
+
 			const xShift = PADDING_X - contentMinX;
 			if (Number.isFinite(xShift) && xShift !== 0) {
 				for (const lane of orderedLanes) {
@@ -1275,39 +1015,6 @@
 				for (const card of cardsByKey.values()) {
 					card.x += xShift;
 				}
-			}
-
-			const baseCardTop = PADDING_Y + LANE_MARKER_HEIGHT + LANE_MARKER_GAP;
-			const rowTopByDepth = new Map<number, number>([[0, baseCardTop]]);
-			const rowHeightByDepth = new Map<number, number>();
-
-			for (const card of cardsByKey.values()) {
-				const absoluteDepth = absoluteDepthByCardKey.get(card.key) ?? 0;
-				rowHeightByDepth.set(
-					absoluteDepth,
-					Math.max(rowHeightByDepth.get(absoluteDepth) ?? CARD_HEIGHT, cardHeightForKey(card.key))
-				);
-			}
-
-			for (let depth = 1; depth <= maxDepth; depth += 1) {
-				const previousTop = rowTopByDepth.get(depth - 1) ?? baseCardTop;
-				const previousHeight = rowHeightByDepth.get(depth - 1) ?? CARD_HEIGHT;
-				rowTopByDepth.set(depth, previousTop + previousHeight + CARD_GAP);
-			}
-
-			for (let depth = -1; depth >= minDepth; depth -= 1) {
-				const nextTop = rowTopByDepth.get(depth + 1) ?? baseCardTop;
-				const depthHeight = rowHeightByDepth.get(depth) ?? CARD_HEIGHT;
-				rowTopByDepth.set(depth, nextTop - depthHeight - CARD_GAP);
-			}
-
-			let minRawY = baseCardTop;
-			let maxRawBottom = baseCardTop + CARD_HEIGHT;
-			for (const card of cardsByKey.values()) {
-				const absoluteDepth = absoluteDepthByCardKey.get(card.key) ?? 0;
-				card.y = rowTopByDepth.get(absoluteDepth) ?? baseCardTop;
-				minRawY = Math.min(minRawY, card.y);
-				maxRawBottom = Math.max(maxRawBottom, card.y + cardHeightForKey(card.key));
 			}
 
 			let boardRightEdge = PADDING_X + CARD_WIDTH;
@@ -1319,24 +1026,54 @@
 				boardRightEdge = Math.max(boardRightEdge, card.x + CARD_WIDTH);
 			}
 
-			const boardWidth = boardRightEdge + PADDING_X;
-			const negativeExtent = minDepth < 0 ? Math.max(0, baseCardTop - minRawY) : 0;
-			const canvasOffsetY =
-				negativeExtent > 0 ? negativeExtent + DEPTH_HEADROOM_ROWS * STEP_Y : 0;
-			const boardHeight = Math.max(
-				maxRawBottom + PADDING_Y,
-				PADDING_Y * 2 + LANE_MARKER_HEIGHT + LANE_MARKER_GAP + CARD_HEIGHT
-			);
-
 			return {
 				lanes: orderedLanes,
 				laneById,
+				lanesByX: [...orderedLanes].sort((a, b) => a.x - b.x),
 				cardsByKey,
 				cardsByPostUri,
 				connectors,
-				boardWidth,
-				boardHeight,
-				canvasOffsetY
+				connectorIndex: buildConnectorIndex(connectors, CARD_WIDTH),
+				boardWidth: boardRightEdge + PADDING_X,
+				minRow: minDepth,
+				maxRow: maxDepth
+			};
+		}
+
+		/** Row tops from measured heights. Only measured cards are visited, so a height
+		 * change costs O(measured cards + rows) instead of a full board rebuild. */
+		function computeRowLayout(model: BoardModel, heights: Record<string, number>): RowLayout {
+			const { minRow, maxRow } = model;
+			const rowCount = maxRow - minRow + 1;
+			const rowHeights = new Float64Array(rowCount).fill(CARD_HEIGHT);
+			for (const key in heights) {
+				const card = model.cardsByKey.get(key);
+				if (!card) continue;
+				const index = card.row - minRow;
+				if (heights[key] > rowHeights[index]) rowHeights[index] = heights[key];
+			}
+			const baseCardTop = PADDING_Y + LANE_MARKER_HEIGHT + LANE_MARKER_GAP;
+			const tops = new Float64Array(rowCount);
+			const zeroIndex = -minRow;
+			tops[zeroIndex] = baseCardTop;
+			for (let index = zeroIndex + 1; index < rowCount; index++) {
+				tops[index] = tops[index - 1] + rowHeights[index - 1] + CARD_GAP;
+			}
+			for (let index = zeroIndex - 1; index >= 0; index--) {
+				tops[index] = tops[index + 1] - rowHeights[index] - CARD_GAP;
+			}
+			const minRawY = tops[0];
+			const maxRawBottom = tops[rowCount - 1] + rowHeights[rowCount - 1];
+			const negativeExtent = minRow < 0 ? Math.max(0, baseCardTop - minRawY) : 0;
+			return {
+				minRow,
+				tops,
+				heights: rowHeights,
+				boardHeight: Math.max(
+					maxRawBottom + PADDING_Y,
+					PADDING_Y * 2 + LANE_MARKER_HEIGHT + LANE_MARKER_GAP + CARD_HEIGHT
+				),
+				canvasOffsetY: negativeExtent > 0 ? negativeExtent + DEPTH_HEADROOM_ROWS * STEP_Y : 0
 			};
 		}
 
@@ -1344,8 +1081,27 @@
 			Object.values(quoteLanes).sort((a, b) => a.loadedAt - b.loadedAt)
 		);
 
+		/** Returns `previous` when the items are unchanged, so entries that are only
+		 * loading or failing do not rebuild the board. */
+		function stableList<T>(previous: T[], next: T[]): T[] {
+			return previous.length === next.length && next.every((item, index) => item === previous[index])
+				? previous
+				: next;
+		}
+		let previousReadyQuoteLanes: ReadyQuoteLaneEntry[] = [];
+		let previousResolvedQuoteEntries: ResolvedQuoteLaneEntry[] = [];
+
 		let readyQuoteLanes = $derived.by(() =>
-			allQuoteEntries.filter(isReadyQuoteLaneEntry)
+			(previousReadyQuoteLanes = stableList(
+				previousReadyQuoteLanes,
+				allQuoteEntries.filter(isReadyQuoteLaneEntry)
+			))
+		);
+		let resolvedQuoteEntries = $derived.by(() =>
+			(previousResolvedQuoteEntries = stableList(
+				previousResolvedQuoteEntries,
+				allQuoteEntries.filter(isResolvedQuoteLaneEntry)
+			))
 		);
 
 		let fetchModePendingCount = $derived.by(() =>
@@ -1386,16 +1142,15 @@
 
 		let boardModel = $derived.by(() =>
 			buildBoardModel(
-				thread,
+				mainThread,
 				mainLaneAnchorUri,
 				readyQuoteLanes,
-				allQuoteEntries,
+				resolvedQuoteEntries,
 				laneActiveChainIds,
-				expandedLaneId,
-				cardHeights,
-				isBigMode
+				expandedLaneId
 			)
 		);
+		let rowLayout = $derived.by(() => computeRowLayout(boardModel, cardHeights));
 	let activeCard = $derived.by(
 		() =>
 			boardModel.cardsByKey.get(activeCardKey) ??
@@ -1404,7 +1159,19 @@
 			null
 	);
 	let activeLane = $derived.by(() => (activeCard ? boardModel.laneById.get(activeCard.laneId) ?? null : null));
-	let exportAllPosts = $derived.by(() => collectUniqueLanePosts(boardModel.lanes));
+	// Keyed on the set of lane threads only, so layout, height and selection changes
+	// never re-walk every post on the board.
+	let lastLaneRootPosts: ThreadPost[] = [];
+	let laneRootPosts = $derived.by(() => {
+		const roots = [mainThread.rootPost, ...readyQuoteLanes.map((entry) => entry.thread.rootPost)];
+		const previous = lastLaneRootPosts;
+		if (previous.length === roots.length && roots.every((root, index) => root === previous[index])) {
+			return previous;
+		}
+		lastLaneRootPosts = roots;
+		return roots;
+	});
+	let exportAllPosts = $derived.by(() => collectUniqueLanePosts(laneRootPosts));
 	let galleryImages = $derived.by(() => collectGalleryImages(exportAllPosts, postQuotes));
 	let visibleGalleryImages = $derived(
 		showGalleryAltFilter && galleryAltOnly
@@ -1452,10 +1219,8 @@
 	);
 	let expandedLaneTreeNavigation = $derived.by(() => {
 		const navigationByLaneId = new Map<string, LaneTreeNavigation>();
-		for (const lane of boardModel.lanes) {
-			if (!laneIsExpanded(lane.id)) continue;
-			navigationByLaneId.set(lane.id, buildLaneTreeNavigation(lane.thread.rootPost));
-		}
+		const lane = expandedLaneId ? boardModel.laneById.get(expandedLaneId) : undefined;
+		if (lane) navigationByLaneId.set(lane.id, getLaneTreeNavigationCached(lane.thread.rootPost));
 		return navigationByLaneId;
 	});
 
@@ -1558,55 +1323,60 @@
 	}
 
 	function getRenderedCardHeight(card: LaneCard): number {
-		return isBigMode ? Math.max(CARD_HEIGHT, cardHeights[card.key] ?? CARD_HEIGHT) : CARD_HEIGHT;
+		return Math.max(CARD_HEIGHT, cardHeights[card.key] ?? CARD_HEIGHT);
 	}
 
-	function setMeasuredCardHeight(cardKey: string, height: number) {
-		const nextHeight = Math.max(CARD_HEIGHT, Math.round(height));
-		if ((cardHeights[cardKey] ?? CARD_HEIGHT) === nextHeight) return;
-		cardHeights = {
-			...cardHeights,
-			[cardKey]: nextHeight
+	function cardTop(card: LaneCard): number {
+		return rowLayout.tops[card.row - rowLayout.minRow] ?? PADDING_Y + LANE_MARKER_HEIGHT + LANE_MARKER_GAP;
+	}
+
+	// Heights are batched into one state write per frame. They are kept after a card
+	// scrolls away, so rows never collapse and re-grow while scrolling.
+	const pendingCardHeights = new Map<string, number>();
+	let cardHeightFrame = 0;
+	const cardKeyByElement = new WeakMap<Element, string>();
+	let cardResizeObserver: ResizeObserver | null = null;
+
+	function flushCardHeights() {
+		cardHeightFrame = 0;
+		let nextHeights: Record<string, number> | null = null;
+		for (const [key, height] of pendingCardHeights) {
+			if ((cardHeights[key] ?? CARD_HEIGHT) === height) continue;
+			nextHeights ??= { ...cardHeights };
+			nextHeights[key] = height;
+		}
+		pendingCardHeights.clear();
+		if (nextHeights) cardHeights = nextHeights;
+	}
+
+	function getCardResizeObserver(): ResizeObserver {
+		cardResizeObserver ??= new ResizeObserver((entries) => {
+			for (const entry of entries) {
+				const key = cardKeyByElement.get(entry.target);
+				if (!key) continue;
+				const height = entry.borderBoxSize?.[0]?.blockSize ?? (entry.target as HTMLElement).offsetHeight;
+				pendingCardHeights.set(key, Math.max(CARD_HEIGHT, Math.round(height)));
+			}
+			if (pendingCardHeights.size && !cardHeightFrame) {
+				cardHeightFrame = requestAnimationFrame(flushCardHeights);
+			}
+		});
+		return cardResizeObserver;
+	}
+
+	function measureCardHeight(node: HTMLElement, params: { key: string; enabled: boolean }) {
+		let observing = false;
+		const apply = ({ key, enabled }: { key: string; enabled: boolean }) => {
+			cardKeyByElement.set(node, key);
+			if (enabled && !observing) getCardResizeObserver().observe(node);
+			if (!enabled && observing) cardResizeObserver?.unobserve(node);
+			observing = enabled;
 		};
-	}
-
-	function clearMeasuredCardHeight(cardKey: string) {
-		if (!(cardKey in cardHeights)) return;
-		const nextHeights = { ...cardHeights };
-		delete nextHeights[cardKey];
-		cardHeights = nextHeights;
-	}
-
-	function measureCardHeight(node: HTMLElement, cardKey: string) {
-		let currentKey = cardKey;
-		let frame = 0;
-
-		const updateHeight = () => {
-			if (frame) cancelAnimationFrame(frame);
-			frame = requestAnimationFrame(() => {
-				frame = 0;
-				setMeasuredCardHeight(currentKey, node.offsetHeight);
-			});
-		};
-
-		updateHeight();
-		const observer = new ResizeObserver(updateHeight);
-		observer.observe(node);
-
+		apply(params);
 		return {
-			update(nextKey: string) {
-				if (nextKey === currentKey) {
-					updateHeight();
-					return;
-				}
-				clearMeasuredCardHeight(currentKey);
-				currentKey = nextKey;
-				updateHeight();
-			},
+			update: apply,
 			destroy() {
-				observer.disconnect();
-				if (frame) cancelAnimationFrame(frame);
-				clearMeasuredCardHeight(currentKey);
+				if (observing) cardResizeObserver?.unobserve(node);
 			}
 		};
 	}
@@ -1846,7 +1616,7 @@
 	function getCardCenter(card: LaneCard) {
 		return {
 			x: card.x + CARD_WIDTH / 2,
-			y: card.y + getRenderedCardHeight(card) / 2
+			y: cardTop(card) + getRenderedCardHeight(card) / 2
 		};
 	}
 
@@ -2063,6 +1833,13 @@
 			return;
 		}
 
+		if (key === 'e' && activeLane && canLoadFullThread(activeLane.id)) {
+			event.preventDefault();
+			closeShortcutsHelp();
+			await loadFullThreadForLane(activeLane.id);
+			return;
+		}
+
 		if (key === '/' && searchLane) {
 			event.preventDefault();
 			closeShortcutsHelp();
@@ -2074,13 +1851,6 @@
 			event.preventDefault();
 			closeShortcutsHelp();
 			await focusTreeSearchInput('author');
-			return;
-		}
-
-		if (key === 'm') {
-			event.preventDefault();
-			closeShortcutsHelp();
-			isBigMode = !isBigMode;
 			return;
 		}
 
@@ -2309,20 +2079,22 @@
 	function buildLaneRailPath(cards: LaneCard[]): string {
 		if (cards.length === 0) return '';
 		const x = cards[0].x + CARD_WIDTH / 2;
-		const startY = cards[0].y - 22;
-		const endY = cards[cards.length - 1].y + getRenderedCardHeight(cards[cards.length - 1]) + 18;
+		const startY = cardTop(cards[0]) - 22;
+		const endY = cardTop(cards[cards.length - 1]) + getRenderedCardHeight(cards[cards.length - 1]) + 18;
 		return `M${x},${startY} L${x},${endY}`;
 	}
 
 	function buildConnectorPath(connector: LaneConnector): string {
 		const fromHeight = getRenderedCardHeight(connector.from);
 		const toHeight = getRenderedCardHeight(connector.to);
+		const fromY = cardTop(connector.from);
+		const toY = cardTop(connector.to);
 
 		if (connector.kind === 'tree') {
 			const startX = connector.from.x + CARD_WIDTH / 2;
-			const startY = connector.from.y + fromHeight - 12;
+			const startY = fromY + fromHeight - 12;
 			const endX = connector.to.x + CARD_WIDTH / 2;
-			const endY = connector.to.y + 12;
+			const endY = toY + 12;
 			const middleY = startY + (endY - startY) * 0.5;
 			return `M${startX},${startY} C${startX},${middleY} ${endX},${middleY} ${endX},${endY}`;
 		}
@@ -2330,17 +2102,17 @@
 		if (connector.kind === 'spawn') {
 			const flowsLeft = connector.to.x < connector.from.x;
 			const startX = flowsLeft ? connector.from.x : connector.from.x + CARD_WIDTH;
-			const startY = connector.from.y + fromHeight * 0.56;
+			const startY = fromY + fromHeight * 0.56;
 			const endX = flowsLeft ? connector.to.x + CARD_WIDTH + 8 : connector.to.x - 8;
-			const endY = connector.to.y + toHeight * 0.48;
+			const endY = toY + toHeight * 0.48;
 			const bendX = startX + (endX - startX) * 0.48;
 			return `M${startX},${startY} C${bendX},${startY} ${bendX},${endY} ${endX},${endY}`;
 		}
 
 		const startX = connector.from.x + CARD_WIDTH * 0.84;
-		const startY = connector.from.y + fromHeight * 0.18;
+		const startY = fromY + fromHeight * 0.18;
 		const endX = connector.to.x + CARD_WIDTH * 0.18;
-		const endY = connector.to.y + toHeight * 0.18;
+		const endY = toY + toHeight * 0.18;
 		const direction = endX >= startX ? 1 : -1;
 		const controlOffset = Math.max(64, Math.abs(endX - startX) * 0.35);
 		const controlX1 = startX + controlOffset * direction;
@@ -2349,31 +2121,25 @@
 	}
 
 	function countPosts(post: ThreadPost): number {
-		let count = 1;
-		for (const child of post.children) {
-			count += countPosts(child);
-		}
-		return count;
+		return getPostDepthMapCached(post).size;
 	}
 
-	function collectUniqueLanePosts(lanes: LaneRenderModel[]): ThreadPost[] {
+	function collectUniqueLanePosts(rootPosts: ThreadPost[]): ThreadPost[] {
 		const posts: ThreadPost[] = [];
 		const seen = new Set<string>();
-
-		function visit(post: ThreadPost) {
-			if (!seen.has(post.uri)) {
-				seen.add(post.uri);
-				posts.push(post);
-			}
-			for (const child of post.children) {
-				visit(child);
+		for (const rootPost of rootPosts) {
+			const stack = [rootPost];
+			while (stack.length) {
+				const post = stack.pop()!;
+				if (!seen.has(post.uri)) {
+					seen.add(post.uri);
+					posts.push(post);
+				}
+				for (let index = post.children.length - 1; index >= 0; index--) {
+					stack.push(post.children[index]);
+				}
 			}
 		}
-
-		for (const lane of lanes) {
-			visit(lane.thread.rootPost);
-		}
-
 		return posts;
 	}
 
@@ -2776,61 +2542,338 @@
 				return;
 			}
 			openQuotePickerCardKey = card.key;
+			quotePickerRenderLimit = QUOTE_PICKER_PAGE;
 			const state = getQuoteFeedState(card.post);
 			if (state.status === 'idle' && card.post.quoteCount > 0) {
 				await loadQuotesForPost(card.post);
 			}
 		}
 
+		// ---- Shared loading: one request queue, shared conversations, resumable quote pages ----
+
+		const EMPTY_LOAD_SNAPSHOT: SchedulerSnapshot = {
+			running: [],
+			queued: 0,
+			queuedByKind: { quotes: 0, thread: 0 },
+			completed: 0,
+			failed: 0,
+			cancelled: 0,
+			retried: 0,
+			concurrency: 0,
+			maxConcurrency: 0,
+			pausedUntil: 0
+		};
+		let loadSnapshot = $state.raw<SchedulerSnapshot>(EMPTY_LOAD_SNAPSHOT);
+		let loadSnapshotFrame = 0;
+		const requestScheduler = new RequestScheduler({
+			maxConcurrency: 6,
+			initialConcurrency: 4,
+			onChange: publishLoadSnapshot
+		});
+
+		function publishLoadSnapshot() {
+			if (typeof window === 'undefined' || loadSnapshotFrame) return;
+			loadSnapshotFrame = requestAnimationFrame(() => {
+				loadSnapshotFrame = 0;
+				loadSnapshot = requestScheduler.snapshot();
+			});
+		}
+
+		/** Every post of every loaded conversation, so later requests for any post in it
+		 * reuse the tree instead of fetching it again. A full conversation is never
+		 * replaced by a partial one. */
+		const loadedThreadByPostUri = new Map<string, BoardThread>();
+		const fullThreads = new WeakSet<BoardThread>();
+
+		function rememberThread(boardThread: BoardThread, full: boolean) {
+			if (full) fullThreads.add(boardThread);
+			const stack = [boardThread.rootPost];
+			while (stack.length) {
+				const post = stack.pop()!;
+				const existing = loadedThreadByPostUri.get(post.uri);
+				if (full || !existing || !fullThreads.has(existing)) loadedThreadByPostUri.set(post.uri, boardThread);
+				for (const child of post.children) stack.push(child);
+			}
+		}
+
+		function threadContainsPost(boardThread: BoardThread, uri: string): boolean {
+			return getPostDepthMapCached(boardThread.rootPost).has(uri);
+		}
+
+		/** Lane in the same conversation that already contains `uri`. */
+		function findLaneForConversation(boardThread: BoardThread, uri: string): string | null {
+			const rootUri = boardThread.rootUri || boardThread.rootPost.uri;
+			for (const lane of boardModel.lanes) {
+				if (lane.id === uri) continue;
+				if ((lane.thread.rootUri || lane.thread.rootPost.uri) !== rootUri) continue;
+				if (threadContainsPost(lane.thread, uri)) return lane.id;
+			}
+			return null;
+		}
+
+		function shortHandle(handle: string | undefined): string {
+			return handle ? `@${handle}` : 'a post';
+		}
+
+		/** New lanes load the post, its parents and its replies (one request). `full` loads the whole
+		 * conversation, which is much more expensive and only happens on request. */
+		async function loadBoardThread(
+			uri: string,
+			options: { signal?: AbortSignal; priority?: RequestPriority; handle?: string; full?: boolean } = {}
+		): Promise<BoardThread> {
+			const full = Boolean(options.full);
+			const cachedUsable = () => {
+				const cached = loadedThreadByPostUri.get(uri);
+				return cached && (!full || fullThreads.has(cached)) ? cached : undefined;
+			};
+			const cached = cachedUsable();
+			if (cached) return cached;
+			return requestScheduler.schedule({
+				kind: 'thread',
+				key: `${full ? 'full-thread' : 'thread'}:${uri}`,
+				label: `${full ? 'Full thread' : 'Post'} by ${shortHandle(options.handle)}`,
+				priority: options.priority ?? 1,
+				signal: options.signal,
+				run: async (signal) => {
+					// Another load may have fetched this conversation while we queued.
+					const loaded = cachedUsable();
+					if (loaded) return loaded;
+					const boardThread = await fetchBoardThread(uri, signal, full);
+					rememberThread(boardThread, full || !boardThread.isTruncated);
+					return boardThread;
+				}
+			});
+		}
+
+		class WorkerUnavailableError extends Error {}
+
+		async function fetchBoardThread(uri: string, signal: AbortSignal, full: boolean): Promise<BoardThread> {
+			if (!full && platform.loadPostContext) {
+				return platform.loadPostContext(uri, { signal });
+			}
+			if (canHydrateThreadsInFetchModeWorker()) {
+				try {
+					return await hydrateThreadInFetchModeWorker(uri, signal);
+				} catch (error) {
+					// Only a missing or crashed worker falls back; cancellations and
+					// network errors must not start a second request.
+					if (!(error instanceof WorkerUnavailableError)) throw error;
+				}
+			}
+			const loadThread = platform.loadThread;
+			if (!loadThread) {
+				throw new Error(`Quoted thread loading is unavailable for ${platform.name}.`);
+			}
+			return loadThread(uri, { signal });
+		}
+
+		type FullThreadLoad = { status: 'loading' | 'loaded' | 'error'; error?: string };
+		let fullThreadLoads = $state.raw<Record<string, FullThreadLoad>>({});
+
+		function setFullThreadLoad(laneId: string, load: FullThreadLoad | null) {
+			const next = { ...fullThreadLoads };
+			if (load) next[laneId] = load;
+			else delete next[laneId];
+			fullThreadLoads = next;
+		}
+
+		function canLoadFullThread(laneId: string): boolean {
+			const lane = boardModel.laneById.get(laneId);
+			if (!lane || !platform.loadThread) return false;
+			const load = fullThreadLoads[laneId];
+			if (load?.status === 'loaded') return false;
+			return Boolean(lane.thread.isTruncated) || load?.status === 'loading' || load?.status === 'error';
+		}
+
+		function getFullThreadButtonLabel(laneId: string): string {
+			const load = fullThreadLoads[laneId];
+			if (load?.status === 'loading') return 'Loading thread...';
+			if (load?.status === 'error') return 'Retry full thread';
+			return 'Full thread';
+		}
+
+		/** Replaces a lane's partial tree (post, parents, replies) with the whole conversation. */
+		async function loadFullThreadForLane(laneId: string) {
+			const lane = boardModel.laneById.get(laneId);
+			if (!lane || fullThreadLoads[laneId]?.status === 'loading') return;
+			const boardRootUri = thread.rootPost.uri;
+			setFullThreadLoad(laneId, { status: 'loading' });
+			try {
+				const full = await loadBoardThread(lane.anchorUri, { priority: 0, handle: lane.handle, full: true });
+				if (thread.rootPost.uri !== boardRootUri) return;
+				if (laneId === MAIN_LANE_ID) {
+					mainThreadOverride = full;
+				} else {
+					const entry = quoteLanes[laneId];
+					if (!entry || !isReadyQuoteLaneEntry(entry)) {
+						setFullThreadLoad(laneId, null);
+						return;
+					}
+					quoteLanes = { ...quoteLanes, [laneId]: { ...entry, thread: full } };
+				}
+				const preferredChainId = getLaneAnchorActiveChainId(full.rootPost, lane.anchorUri);
+				if (preferredChainId) laneActiveChainIds = { ...laneActiveChainIds, [laneId]: preferredChainId };
+				setFullThreadLoad(laneId, { status: 'loaded' });
+			} catch (error) {
+				if (thread.rootPost.uri !== boardRootUri) return;
+				setFullThreadLoad(
+					laneId,
+					isAbortError(error)
+						? null
+						: { status: 'error', error: error instanceof Error ? error.message : 'Could not load the full thread.' }
+				);
+			}
+		}
+
+		function setQuoteFeedState(uri: string, state: QuotePostFeedState) {
+			postQuotes = { ...postQuotes, [uri]: state };
+		}
+
+		const quoteLoadsInFlight = new Map<string, { promise: Promise<ThreadPost[] | null>; fetchAll: boolean }>();
+
+		/** Loads one page (picker) or every page (`fetchAll`). Concurrent callers share the
+		 * active request; a page request upgraded to fetch-all continues from its cursor.
+		 * `onPage` receives each batch of new posts as it arrives, including posts that a
+		 * resumed load already had. */
 		async function loadQuotesForPost(
 			post: ThreadPost,
-			options: { fetchAll?: boolean } = {}
+			options: {
+				fetchAll?: boolean;
+				onPage?: (posts: ThreadPost[]) => void | Promise<void>;
+				signal?: AbortSignal;
+				priority?: RequestPriority;
+			} = {}
 		): Promise<ThreadPost[] | null> {
 			const { fetchAll = false } = options;
-			const existing = postQuotes[post.uri];
-			if (existing?.status === 'loading') return existing.posts ?? null;
-
-			postQuotes = {
-				...postQuotes,
-				[post.uri]: {
-					status: 'loading',
-					posts: existing?.posts ?? [],
-					hasMore: existing?.hasMore,
-					loadedAll: existing?.loadedAll,
-					loadingMode: fetchAll ? 'all' : 'page'
+			const inFlight = quoteLoadsInFlight.get(post.uri);
+			if (inFlight) {
+				const result = await inFlight.promise;
+				if (!fetchAll || inFlight.fetchAll || !result) {
+					if (result && options.onPage) await options.onPage(result);
+					return result;
 				}
-			};
+			}
+			const record = { promise: runQuoteLoad(post, options), fetchAll };
+			quoteLoadsInFlight.set(post.uri, record);
+			try {
+				return await record.promise;
+			} finally {
+				if (quoteLoadsInFlight.get(post.uri) === record) quoteLoadsInFlight.delete(post.uri);
+			}
+		}
+
+		async function runQuoteLoad(
+			post: ThreadPost,
+			options: {
+				fetchAll?: boolean;
+				onPage?: (posts: ThreadPost[]) => void | Promise<void>;
+				signal?: AbortSignal;
+				priority?: RequestPriority;
+			}
+		): Promise<ThreadPost[] | null> {
+			const { fetchAll = false, onPage, signal, priority = 0 } = options;
+			const existing = postQuotes[post.uri];
+			const resume = Boolean(fetchAll && existing?.cursor && !existing.loadedAll && existing.posts.length);
+			let posts: ThreadPost[] = resume ? existing!.posts : [];
+			let cursor = resume ? existing!.cursor : undefined;
+			let pages = resume ? (existing!.pages ?? 0) : 0;
+			const seenUris = new Set(posts.map((quotePost) => quotePost.uri));
+			const seenCursors = new Set<string>(cursor ? [cursor] : []);
+			const base = { expected: post.quoteCount, handle: post.author.handle };
+			const limit = fetchAll ? 100 : 12;
+
+			setQuoteFeedState(post.uri, {
+				...base,
+				status: 'loading',
+				posts: existing?.posts ?? [],
+				hasMore: existing?.hasMore,
+				loadedAll: existing?.loadedAll,
+				loadingMode: fetchAll ? 'all' : 'page',
+				cursor: existing?.cursor,
+				pages: existing?.pages
+			});
 
 			try {
-				const fetchQuotePosts = platform.fetchQuotePosts;
-				if (!fetchQuotePosts) {
-					throw new Error(`Quote lookup is unavailable for ${platform.name}.`);
-				}
-				const result = await fetchQuotePosts(
-					post.uri,
-					fetchAll ? { limit: 100, fetchAll: true } : { limit: 12 }
-				);
-				postQuotes = {
-					...postQuotes,
-					[post.uri]: {
+				if (resume && onPage) await onPage(posts);
+				const pageLoader = platform.fetchQuotePostsPage;
+				if (!pageLoader) {
+					const fetchQuotePosts = platform.fetchQuotePosts;
+					if (!fetchQuotePosts) {
+						throw new Error(`Quote lookup is unavailable for ${platform.name}.`);
+					}
+					const result = await requestScheduler.schedule({
+						kind: 'quotes',
+						key: `quotes:${post.uri}:${fetchAll ? 'all' : 'page'}`,
+						label: `Quotes of ${shortHandle(post.author.handle)}`,
+						priority,
+						signal,
+						run: () => fetchQuotePosts(post.uri, fetchAll ? { limit: 100, fetchAll: true } : { limit: 12 })
+					});
+					setQuoteFeedState(post.uri, {
+						...base,
 						status: 'ready',
 						posts: result.posts,
 						hasMore: result.hasMore,
-						loadedAll: fetchAll || !result.hasMore
-					}
-				};
-				return result.posts;
+						loadedAll: fetchAll || !result.hasMore,
+						pages: 1
+					});
+					if (onPage && result.posts.length) await onPage(result.posts);
+					return result.posts;
+				}
+
+				do {
+					const pageCursor = cursor;
+					const page = await requestScheduler.schedule({
+						kind: 'quotes',
+						key: `quotes:${post.uri}:${limit}:${pageCursor ?? ''}`,
+						label: `Quotes of ${shortHandle(post.author.handle)} · page ${pages + 1}`,
+						priority,
+						signal,
+						run: (requestSignal) =>
+							pageLoader(post.uri, { cursor: pageCursor, limit, signal: requestSignal })
+					});
+					pages += 1;
+					const fresh = page.posts.filter((quotePost) => {
+						if (seenUris.has(quotePost.uri)) return false;
+						seenUris.add(quotePost.uri);
+						return true;
+					});
+					posts = fresh.length ? posts.concat(fresh) : posts;
+					cursor = page.cursor;
+					// A repeated cursor would page forever.
+					if (cursor && seenCursors.has(cursor)) cursor = undefined;
+					if (cursor) seenCursors.add(cursor);
+					const more = Boolean(cursor);
+					setQuoteFeedState(post.uri, {
+						...base,
+						status: fetchAll && more ? 'loading' : 'ready',
+						posts,
+						hasMore: more,
+						loadedAll: !more,
+						loadingMode: fetchAll ? 'all' : 'page',
+						cursor,
+						pages
+					});
+					if (onPage && fresh.length) await onPage(fresh);
+				} while (fetchAll && cursor);
+				return posts;
 			} catch (error) {
-				postQuotes = {
-					...postQuotes,
-					[post.uri]: {
-						status: 'error',
-						posts: existing?.posts ?? [],
-						hasMore: existing?.hasMore,
-						loadedAll: existing?.loadedAll,
-						error: error instanceof Error ? error.message : 'Could not load quote posts.'
-					}
-				};
+				const cancelled = isAbortError(error) || signal?.aborted;
+				// Keep what arrived and where it stopped; the next "load all" resumes there.
+				setQuoteFeedState(post.uri, {
+					...base,
+					status: cancelled ? (posts.length ? 'ready' : 'idle') : 'error',
+					posts,
+					hasMore: Boolean(cursor) || !pages,
+					loadedAll: false,
+					cursor,
+					pages,
+					error: cancelled
+						? undefined
+						: error instanceof Error
+							? error.message
+							: 'Could not load quote posts.'
+				});
 				return null;
 			}
 		}
@@ -2843,7 +2886,8 @@
 				direction: QuoteLaneDirection;
 				suppressFocus?: boolean;
 				prefetchedPost?: ThreadPost;
-				loadThread?: (uri: string) => Promise<BoardThread>;
+				signal?: AbortSignal;
+				priority?: RequestPriority;
 			}) {
 			const existing = quoteLanes[options.quotedUri];
 			if (existing?.status === 'loading') {
@@ -2925,19 +2969,30 @@
 			) {
 				quotedThread = buildSinglePostBoardThread(prefetchedPost);
 			} else {
-				const loadThread = options.loadThread ?? platform.loadThread;
-				if (!loadThread) {
-					throw new Error(`Quoted thread loading is unavailable for ${platform.name}.`);
-				}
-				quotedThread = await loadThread(options.quotedUri);
+				quotedThread = await loadBoardThread(options.quotedUri, {
+					signal: options.signal,
+					priority: options.priority ?? 0,
+					handle: options.quotedHandle
+				});
+			}
+			// The conversation may already be on the board through another quote post:
+			// link to it instead of drawing the same tree twice.
+			const sharedLaneId = findLaneForConversation(quotedThread, options.quotedUri);
+			if (sharedLaneId && boardModel.cardsByKey.has(`${sharedLaneId}:${options.quotedUri}`)) {
+				const linkedEntry: LinkedQuoteLaneEntry = {
+					...baseEntry,
+					status: 'linked',
+					targetLaneId: sharedLaneId,
+					targetPostUri: options.quotedUri
+				};
+				quoteLanes = { ...quoteLanes, [options.quotedUri]: linkedEntry };
+				if (!options.suppressFocus) await focusQuoteEntry(linkedEntry);
+				return;
 			}
 			const didReachTargetThread = Boolean(
 				targetUri && findFirstMatchingPost(quotedThread.rootPost, (post) => post.uri === targetUri)
 			);
-			const preferredChainId = getLaneAnchorActiveChainId(
-				getLaneChainsCached(quotedThread.rootPost),
-				options.quotedUri
-				);
+			const preferredChainId = getLaneAnchorActiveChainId(quotedThread.rootPost, options.quotedUri);
 				if (preferredChainId) {
 					laneActiveChainIds = {
 						...laneActiveChainIds,
@@ -2972,6 +3027,13 @@
 				await focusCard(`${options.quotedUri}:${options.quotedUri}`);
 			}
 		} catch (error) {
+				if (isAbortError(error)) {
+					// Cancelled, not failed: drop the placeholder so it can be requested again.
+					const nextQuoteLanes = { ...quoteLanes };
+					if (nextQuoteLanes[options.quotedUri]?.status === 'loading') delete nextQuoteLanes[options.quotedUri];
+					quoteLanes = nextQuoteLanes;
+					return;
+				}
 				quoteLanes = {
 					...quoteLanes,
 					[options.quotedUri]: {
@@ -3164,20 +3226,183 @@
 			return { instantEntries, instantReadyUris, postsToFetch, baseByUri };
 		}
 
-		async function openQuoteLanesInBulk(sourceCard: LaneCard, quotePosts: ThreadPost[]) {
-			const { instantEntries, postsToFetch, baseByUri } = partitionQuoteLaneCandidates(
-				sourceCard,
-				quotePosts,
-				{ markLoading: true }
-			);
+		type LaneJobItem = { uri: string; handle: string; status: 'done' | 'linked' | 'error'; error?: string };
+		type LaneCreationJob = {
+			id: number;
+			sourceKey: string;
+			sourceUri: string;
+			label: string;
+			detail: string;
+			phase: 'discovering' | 'creating' | 'done' | 'cancelled' | 'error';
+			/** Quote posts found so far, and the count the source post advertises. */
+			discovered: number;
+			expected: number;
+			discoveryDone: boolean;
+			/** Lanes: every candidate found so far, finished ones, and the failures among them. */
+			total: number;
+			completed: number;
+			failed: number;
+			loading: number;
+			recent: LaneJobItem[];
+			error?: string;
+		};
+		type LiveLaneJob = LaneCreationJob & { controller: AbortController };
+		const LANE_JOB_RECENT_ITEMS = 5;
+		// Quote discovery pauses while this many thread loads of one job are outstanding.
+		const BULK_LANE_BACKLOG = 150;
 
-			if (Object.keys(instantEntries).length > 0) {
-				quoteLanes = { ...quoteLanes, ...instantEntries };
-				await yieldToBrowser();
+		// Jobs mutate in place; the panel receives a snapshot at most once per frame.
+		const laneJobs = new Map<number, LiveLaneJob>();
+		let nextLaneJobId = 1;
+		let laneJobFrame = 0;
+		let laneCreationJobs = $state.raw<LaneCreationJob[]>([]);
+		let showLoadingPanel = $state(true);
+
+		function publishLaneJobs() {
+			if (typeof window === 'undefined') return;
+			if (laneJobFrame) return;
+			laneJobFrame = requestAnimationFrame(() => {
+				laneJobFrame = 0;
+				laneCreationJobs = Array.from(laneJobs.values(), ({ controller: _controller, ...job }) => ({
+					...job,
+					recent: job.recent.slice()
+				}));
+			});
+		}
+
+		function startLaneJob(sourceCard: LaneCard): LiveLaneJob {
+			const job: LiveLaneJob = {
+				id: nextLaneJobId++,
+				sourceKey: sourceCard.key,
+				sourceUri: sourceCard.post.uri,
+				label: `Quotes of @${sourceCard.post.author.handle}`,
+				detail: previewText(sourceCard.post.text, 64),
+				phase: 'discovering',
+				discovered: 0,
+				expected: sourceCard.post.quoteCount,
+				discoveryDone: false,
+				total: 0,
+				completed: 0,
+				failed: 0,
+				loading: 0,
+				recent: [],
+				controller: new AbortController()
+			};
+			laneJobs.set(job.id, job);
+			showLoadingPanel = true;
+			publishLaneJobs();
+			return job;
+		}
+
+		function recordLaneJobItem(job: LiveLaneJob, item: LaneJobItem) {
+			job.recent = [item, ...job.recent].slice(0, LANE_JOB_RECENT_ITEMS);
+			job.completed += 1;
+			if (item.status === 'error') job.failed += 1;
+			publishLaneJobs();
+		}
+
+		function cancelLaneJob(jobId: number) {
+			const job = laneJobs.get(jobId);
+			if (!job || job.phase === 'done' || job.phase === 'cancelled' || job.phase === 'error') return;
+			job.controller.abort();
+			publishLaneJobs();
+		}
+
+		function dismissLaneJob(jobId: number) {
+			const job = laneJobs.get(jobId);
+			if (job && (job.phase === 'discovering' || job.phase === 'creating')) return;
+			laneJobs.delete(jobId);
+			publishLaneJobs();
+		}
+
+		function clearFinishedLaneJobs() {
+			for (const [id, job] of laneJobs) {
+				if (job.phase !== 'discovering' && job.phase !== 'creating') laneJobs.delete(id);
 			}
+			publishLaneJobs();
+		}
 
-			if (postsToFetch.length === 0) return;
+		function laneJobIsActive(job: LaneCreationJob): boolean {
+			return job.phase === 'discovering' || job.phase === 'creating';
+		}
 
+		function getLaneJobStatusLabel(job: LaneCreationJob): string {
+			if (job.phase === 'error') return job.error || 'Could not load quote posts.';
+			const counts = `${formatCount(job.completed)} / ${formatCount(job.total)} lanes`;
+			if (job.phase === 'cancelled') return `Stopped at ${counts}`;
+			if (job.phase === 'done') return `Done: ${counts}`;
+			return counts;
+		}
+
+		function getLaneJobDiscoveryLabel(job: LaneCreationJob): string {
+			if (job.discoveryDone) return `${formatCount(job.discovered)} quote posts found`;
+			return job.expected > 0
+				? `Finding quote posts: ${formatCount(job.discovered)} / ~${formatCount(job.expected)}`
+				: `Finding quote posts: ${formatCount(job.discovered)}`;
+		}
+
+		let activeLaneJobCount = $derived(laneCreationJobs.filter(laneJobIsActive).length);
+
+		let loadRequestDone = $derived(loadSnapshot.completed + loadSnapshot.failed + loadSnapshot.cancelled);
+		let loadRequestTotal = $derived(loadRequestDone + loadSnapshot.running.length + loadSnapshot.queued);
+		let loadClock = $state(Date.now());
+		let rateLimitSecondsLeft = $derived(
+			loadSnapshot.pausedUntil > loadClock ? Math.ceil((loadSnapshot.pausedUntil - loadClock) / 1000) : 0
+		);
+		$effect(() => {
+			if (!loadSnapshot.pausedUntil) return;
+			loadClock = Date.now();
+			const timer = setInterval(() => {
+				loadClock = Date.now();
+				if (loadClock >= loadSnapshot.pausedUntil) publishLoadSnapshot();
+			}, 500);
+			return () => clearInterval(timer);
+		});
+
+		/** "Load all" quote scans not already shown under a lane job. */
+		let quoteDiscoveries = $derived.by(() => {
+			const jobSources = new Set(
+				laneCreationJobs.filter(laneJobIsActive).map((job) => job.sourceUri)
+			);
+			return Object.entries(postQuotes)
+				.filter(([uri, state]) => state.status === 'loading' && state.loadingMode === 'all' && !jobSources.has(uri))
+				.map(([uri, state]) => ({
+					uri,
+					handle: state.handle ?? 'unknown',
+					found: state.posts.length,
+					expected: state.expected ?? 0,
+					pages: state.pages ?? 0
+				}));
+		});
+
+		let fetchModeRemainingCount = $derived(fetchModePendingCount + fetchModeActiveCount);
+		let fetchModeProgressPercent = $derived.by(() => {
+			const total = fetchModeProcessedCount + fetchModeRemainingCount;
+			return total > 0 ? (fetchModeProcessedCount / total) * 100 : 0;
+		});
+
+		let showLoadingActivity = $derived(
+			laneCreationJobs.length > 0 ||
+				loadSnapshot.running.length > 0 ||
+				loadSnapshot.queued > 0 ||
+				quoteDiscoveries.length > 0
+		);
+
+		let loadingHeadline = $derived.by(() => {
+			const busy = loadSnapshot.running.length + loadSnapshot.queued;
+			if (rateLimitSecondsLeft > 0) return `Waiting out a rate limit (${rateLimitSecondsLeft}s)`;
+			if (busy > 0) {
+				return `${formatCount(busy)} request${busy === 1 ? '' : 's'} left · ${loadSnapshot.concurrency} at a time`;
+			}
+			return activeLaneJobCount > 0 ? 'Finishing up…' : 'Everything loaded';
+		});
+
+		/** Creates lanes for quote posts as they stream in. Standalone quotes become lanes
+		 * immediately; threads load through the shared queue while discovery continues. */
+		function createBulkLaneLoader(sourceCard: LaneCard, job: LiveLaneJob) {
+			const seenUris = new Set<string>();
+			const outstanding = new Set<Promise<void>>();
+			const placeholderUris = new Set<string>();
 			let pendingEntries: Record<string, QuoteLaneEntry> = {};
 			let pendingChainIds: Record<string, string> = {};
 			let lastFlushAt = Date.now();
@@ -3187,38 +3412,58 @@
 				if (pendingCount === 0) return;
 				// Board rebuilds get pricier as lanes pile up, so flush in
 				// growing batches instead of at a fixed cadence.
-				const laneCount = Object.keys(quoteLanes).length;
+				const laneCount = readyQuoteLanes.length;
 				const flushSize = Math.max(BULK_LANE_FLUSH_SIZE, Math.floor(laneCount / 8));
 				const flushMs = Math.min(2000, BULK_LANE_FLUSH_MS + laneCount * 2);
 				if (!force && pendingCount < flushSize && Date.now() - lastFlushAt < flushMs) {
 					return;
 				}
-				quoteLanes = { ...quoteLanes, ...pendingEntries };
-				if (Object.keys(pendingChainIds).length > 0) {
-					laneActiveChainIds = { ...laneActiveChainIds, ...pendingChainIds };
-				}
+				const entries = pendingEntries;
+				const chainIds = pendingChainIds;
 				pendingEntries = {};
 				pendingChainIds = {};
 				lastFlushAt = Date.now();
+				// Skip entries the user closed or retried meanwhile.
+				const nextQuoteLanes = { ...quoteLanes };
+				for (const [uri, entry] of Object.entries(entries)) {
+					if (nextQuoteLanes[uri]?.status === 'loading') nextQuoteLanes[uri] = entry;
+				}
+				quoteLanes = nextQuoteLanes;
+				if (Object.keys(chainIds).length > 0) {
+					laneActiveChainIds = { ...laneActiveChainIds, ...chainIds };
+				}
 				await yieldToBrowser();
 			};
 
-			let nextIndex = 0;
-			const runLoader = async () => {
-				while (nextIndex < postsToFetch.length) {
-					const quotePost = postsToFetch[nextIndex];
-					nextIndex += 1;
-					const base = baseByUri.get(quotePost.uri);
-					if (!base) continue;
-					try {
-						const quotedThread = await loadThreadForFetchMode(quotePost.uri);
-						const preferredChainId = getLaneAnchorActiveChainId(
-							getLaneChainsCached(quotedThread.rootPost),
-							quotePost.uri
-						);
-						if (preferredChainId) {
-							pendingChainIds[quotePost.uri] = preferredChainId;
-						}
+			// Conversations resolved in this job but not yet flushed to the board.
+			const pendingLaneByRootUri = new Map<string, { laneId: string; thread: BoardThread }>();
+
+			const loadOne = async (quotePost: ThreadPost, base: QuoteLaneEntryBase) => {
+				const handle = quotePost.author.handle || 'unknown';
+				try {
+					const quotedThread = await loadBoardThread(quotePost.uri, {
+						signal: job.controller.signal,
+						priority: 1,
+						handle
+					});
+					const rootUri = quotedThread.rootUri || quotedThread.rootPost.uri;
+					const pendingLane = pendingLaneByRootUri.get(rootUri);
+					const sharedLaneId =
+						pendingLane && threadContainsPost(pendingLane.thread, quotePost.uri)
+							? pendingLane.laneId
+							: findLaneForConversation(quotedThread, quotePost.uri);
+					if (sharedLaneId) {
+						pendingEntries[quotePost.uri] = {
+							...base,
+							status: 'linked',
+							targetLaneId: sharedLaneId,
+							targetPostUri: quotePost.uri
+						};
+						recordLaneJobItem(job, { uri: quotePost.uri, handle, status: 'linked' });
+					} else {
+						pendingLaneByRootUri.set(rootUri, { laneId: quotePost.uri, thread: quotedThread });
+						const preferredChainId = getLaneAnchorActiveChainId(quotedThread.rootPost, quotePost.uri);
+						if (preferredChainId) pendingChainIds[quotePost.uri] = preferredChainId;
 						pendingEntries[quotePost.uri] = {
 							...base,
 							status: 'ready',
@@ -3226,22 +3471,73 @@
 							targetLaneId: quotePost.uri,
 							targetPostUri: quotePost.uri
 						};
-					} catch (error) {
-						pendingEntries[quotePost.uri] = {
-							...base,
-							status: 'error',
-							error:
-								error instanceof Error ? error.message : 'Could not load this quoted thread.'
-						};
+						recordLaneJobItem(job, { uri: quotePost.uri, handle, status: 'done' });
 					}
-					await flushPending();
+					placeholderUris.delete(quotePost.uri);
+				} catch (error) {
+					if (isAbortError(error)) return;
+					const message = error instanceof Error ? error.message : 'Could not load this quoted thread.';
+					pendingEntries[quotePost.uri] = { ...base, status: 'error', error: message };
+					placeholderUris.delete(quotePost.uri);
+					recordLaneJobItem(job, { uri: quotePost.uri, handle, status: 'error', error: message });
+				}
+				await flushPending();
+			};
+
+			const add = async (quotePosts: ThreadPost[]) => {
+				if (job.controller.signal.aborted) return;
+				const fresh = quotePosts.filter((post) => {
+					if (seenUris.has(post.uri)) return false;
+					seenUris.add(post.uri);
+					return true;
+				});
+				job.discovered = seenUris.size;
+				const { instantEntries, postsToFetch, baseByUri } = partitionQuoteLaneCandidates(
+					sourceCard,
+					fresh,
+					{ markLoading: true }
+				);
+				const instantCount = Object.values(instantEntries).filter((entry) => entry.status !== 'loading').length;
+				job.phase = 'creating';
+				job.total += instantCount + postsToFetch.length;
+				job.completed += instantCount;
+				if (Object.keys(instantEntries).length > 0) {
+					quoteLanes = { ...quoteLanes, ...instantEntries };
+				}
+				for (const quotePost of postsToFetch) {
+					const base = baseByUri.get(quotePost.uri);
+					if (!base) continue;
+					placeholderUris.add(quotePost.uri);
+					const pending = loadOne(quotePost, base).finally(() => {
+						outstanding.delete(pending);
+						job.loading = outstanding.size;
+						publishLaneJobs();
+					});
+					outstanding.add(pending);
+				}
+				job.loading = outstanding.size;
+				publishLaneJobs();
+				await yieldToBrowser();
+				// Backpressure: let hydration catch up before asking for more quote pages.
+				while (outstanding.size > BULK_LANE_BACKLOG && !job.controller.signal.aborted) {
+					await Promise.race(outstanding);
 				}
 			};
 
-			await Promise.all(
-				Array.from({ length: Math.min(BULK_LANE_CONCURRENCY, postsToFetch.length) }, runLoader)
-			);
-			await flushPending(true);
+			const finish = async () => {
+				while (outstanding.size) await Promise.all([...outstanding]);
+				await flushPending(true);
+				if (placeholderUris.size) {
+					// Cancelled lanes stay off the board instead of showing "Loading...".
+					const nextQuoteLanes = { ...quoteLanes };
+					for (const uri of placeholderUris) {
+						if (nextQuoteLanes[uri]?.status === 'loading') delete nextQuoteLanes[uri];
+					}
+					quoteLanes = nextQuoteLanes;
+				}
+			};
+
+			return { add, finish };
 		}
 
 		async function loadAllQuotePostLanes(sourceCard: LaneCard) {
@@ -3251,20 +3547,41 @@
 				...bulkQuoteLaneLoads,
 				[sourceCard.post.uri]: true
 			};
+			const job = startLaneJob(sourceCard);
+			const lanes = createBulkLaneLoader(sourceCard, job);
 
 			try {
 				const quoteState = getQuoteFeedState(sourceCard.post);
-				const quotePosts =
-					quoteState.loadedAll && quoteState.posts.length > 0
-						? quoteState.posts
-						: await loadQuotesForPost(sourceCard.post, { fetchAll: true });
-
-				if (!quotePosts?.length) {
-					return;
+				if (quoteState.loadedAll && quoteState.posts.length > 0) {
+					await lanes.add(quoteState.posts);
+				} else {
+					const quotePosts = await loadQuotesForPost(sourceCard.post, {
+						fetchAll: true,
+						onPage: lanes.add,
+						signal: job.controller.signal,
+						priority: 1
+					});
+					if (!quotePosts && !job.controller.signal.aborted) {
+						job.phase = 'error';
+						job.error = getQuoteFeedState(sourceCard.post).error;
+					}
 				}
-
-				await openQuoteLanesInBulk(sourceCard, quotePosts);
+				job.discoveryDone = true;
+				publishLaneJobs();
+				await lanes.finish();
+			} catch (error) {
+				if (!isAbortError(error)) {
+					job.phase = 'error';
+					job.error = error instanceof Error ? error.message : 'Could not create quote lanes.';
+				}
+				await lanes.finish();
 			} finally {
+				if (laneJobIsActive(job)) {
+					job.phase = job.controller.signal.aborted ? 'cancelled' : 'done';
+				}
+				job.discoveryDone = true;
+				job.loading = 0;
+				publishLaneJobs();
 				bulkQuoteLaneLoads = {
 					...bulkQuoteLaneLoads,
 					[sourceCard.post.uri]: false
@@ -3308,20 +3625,34 @@
 					type: 'module'
 				});
 				worker.onmessage = handleFetchModeWorkerMessage;
-				worker.onerror = () => {
-					fetchModeStatusMessage = 'Fetch mode worker failed.';
-					fetchModeRunning = false;
-					fetchModePaused = false;
-				};
+				worker.onerror = handleFetchModeWorkerFailure;
 				fetchModeWorker = worker;
 				return worker;
+			}
+
+			/** A crashed worker takes its dispatch queue and every hydration with it. Pending
+			 * hydrations reject as infrastructure failures, so they retry on the main thread. */
+			function handleFetchModeWorkerFailure() {
+				fetchModeWorker?.terminate();
+				fetchModeWorker = null;
+				for (const request of fetchModeHydrationRequests.values()) {
+					request.reject(new WorkerUnavailableError('Fetch mode worker failed.'));
+				}
+				fetchModeHydrationRequests.clear();
+				if (fetchModeRunning) {
+					fetchModeAbort?.abort();
+					advanceFetchModeRunId();
+					fetchModeRunning = false;
+					fetchModePaused = false;
+					fetchModeStatusMessage = 'Fetch mode worker failed.';
+				}
 			}
 
 			function teardownFetchModeWorker() {
 				fetchModeWorker?.terminate();
 				fetchModeWorker = null;
 				for (const request of fetchModeHydrationRequests.values()) {
-					request.reject(new Error('Fetch mode worker stopped.'));
+					request.reject(abortError());
 				}
 				fetchModeHydrationRequests.clear();
 			}
@@ -3334,33 +3665,34 @@
 				return platform.name === defaultBoardPlatform.name && platform.loadThread === getBlueskyFullThread;
 			}
 
-			function hydrateThreadInFetchModeWorker(uri: string): Promise<BoardThread> {
+			/** Parses large threads off the main thread. Aborting cancels the worker's request. */
+			function hydrateThreadInFetchModeWorker(uri: string, signal: AbortSignal): Promise<BoardThread> {
+				if (signal.aborted) return Promise.reject(abortError());
 				const worker = ensureFetchModeWorker();
 				if (!worker) {
-					return Promise.reject(new Error('Fetch mode worker is unavailable.'));
+					return Promise.reject(new WorkerUnavailableError('Fetch mode worker is unavailable.'));
 				}
 				const requestId = nextFetchModeHydrationRequestId;
 				nextFetchModeHydrationRequestId += 1;
 				return new Promise((resolve, reject) => {
-					fetchModeHydrationRequests.set(requestId, { resolve, reject });
+					const onAbort = () => {
+						if (!fetchModeHydrationRequests.delete(requestId)) return;
+						worker.postMessage({ type: 'cancel-hydrate', requestId });
+						reject(abortError());
+					};
+					fetchModeHydrationRequests.set(requestId, {
+						resolve: (value) => {
+							signal.removeEventListener('abort', onAbort);
+							resolve(value);
+						},
+						reject: (error) => {
+							signal.removeEventListener('abort', onAbort);
+							reject(error);
+						}
+					});
+					signal.addEventListener('abort', onAbort, { once: true });
 					worker.postMessage({ type: 'hydrate-thread', requestId, uri });
 				});
-			}
-
-			async function loadThreadForFetchMode(uri: string): Promise<BoardThread> {
-				if (canHydrateThreadsInFetchModeWorker()) {
-					try {
-						return await hydrateThreadInFetchModeWorker(uri);
-					} catch {
-						// Fall through to the platform loader if the worker cannot hydrate this thread.
-					}
-				}
-
-				const loadThread = platform.loadThread;
-				if (!loadThread) {
-					throw new Error(`Quoted thread loading is unavailable for ${platform.name}.`);
-				}
-				return loadThread(uri);
 			}
 
 			function handleFetchModeWorkerMessage(event: MessageEvent) {
@@ -3371,6 +3703,8 @@
 					requestId?: number;
 					thread?: BoardThread;
 					error?: string;
+					status?: number;
+					aborted?: boolean;
 				};
 				if (message.type === 'thread-hydrated' && message.requestId && message.thread) {
 					fetchModeHydrationRequests.get(message.requestId)?.resolve(message.thread);
@@ -3378,9 +3712,13 @@
 					return;
 				}
 				if (message.type === 'thread-error' && message.requestId) {
-					fetchModeHydrationRequests
-						.get(message.requestId)
-						?.reject(new Error(message.error || 'Could not hydrate thread.'));
+					// Keep the HTTP status so the request queue can recognise rate limits.
+					const error = message.aborted
+						? abortError()
+						: Object.assign(new Error(message.error || 'Could not hydrate thread.'), {
+								status: message.status
+							});
+					fetchModeHydrationRequests.get(message.requestId)?.reject(error);
 					fetchModeHydrationRequests.delete(message.requestId);
 					return;
 				}
@@ -3421,7 +3759,9 @@
 				const runId = fetchModeRunId;
 				postFetchModeWorkerMessage({ type: 'stop', runId });
 				advanceFetchModeRunId();
-				teardownFetchModeWorker();
+				// Cancels this run's queued and in-flight requests. The worker stays alive
+				// because other loads (bulk lanes) may be hydrating through it.
+				fetchModeAbort?.abort();
 				fetchModeRunning = false;
 				fetchModePaused = false;
 				fetchModeStatusMessage = 'Fetch mode stopped.';
@@ -3433,6 +3773,7 @@
 		}
 
 		function resetFetchModeState() {
+			fetchModeAbort?.abort();
 			postFetchModeWorkerMessage({ type: 'stop', runId: fetchModeRunId });
 			advanceFetchModeRunId();
 			fetchModeRunning = false;
@@ -3507,8 +3848,8 @@
 			placement: 'front' | 'back' = 'back'
 		): boolean {
 			if (fetchModeQueuedScanUris.has(card.post.uri)) return false;
-			fetchModeQueuedScanUris.add(card.post.uri);
-			return enqueueFetchModeTask(
+			// Only a task the queue accepted marks its post; a rejected one can be retried later.
+			const accepted = enqueueFetchModeTask(
 				{
 					id: `scan:${card.post.uri}`,
 					kind: 'scan-post',
@@ -3521,6 +3862,8 @@
 				notifyWorker,
 				placement
 			);
+			if (accepted) fetchModeQueuedScanUris.add(card.post.uri);
+			return accepted;
 		}
 
 		function enqueueLaneTask(
@@ -3537,8 +3880,7 @@
 		): boolean {
 			if (!options.quotedUri || options.quotedUri === options.sourceCard.post.uri) return false;
 			if (fetchModeQueuedLaneTargets.has(options.quotedUri)) return false;
-			fetchModeQueuedLaneTargets.add(options.quotedUri);
-			return enqueueFetchModeTask(
+			const accepted = enqueueFetchModeTask(
 				{
 					id: `open:${options.quotedUri}`,
 					kind: 'open-lane',
@@ -3554,6 +3896,8 @@
 				notifyWorker,
 				placement
 			);
+			if (accepted) fetchModeQueuedLaneTargets.add(options.quotedUri);
+			return accepted;
 		}
 
 		function getFetchModeStartCards(): LaneCard[] {
@@ -3595,6 +3939,8 @@
 			}
 
 			const runId = advanceFetchModeRunId();
+			fetchModeAbort?.abort();
+			fetchModeAbort = new AbortController();
 			fetchModeRunning = true;
 			fetchModePaused = false;
 			showFetchModePanel = true;
@@ -3656,7 +4002,11 @@
 							const quotePosts =
 								quoteState.loadedAll && quoteState.posts.length > 0
 									? quoteState.posts
-									: await loadQuotesForPost(sourceCard.post, { fetchAll: true });
+									: await loadQuotesForPost(sourceCard.post, {
+											fetchAll: true,
+											signal: fetchModeAbort?.signal,
+											priority: 2
+										});
 							if (!isFetchModeRunActive(runId)) return;
 							if (!quotePosts && sourceCard.post.quoteCount > 0) {
 								throw new Error(getQuoteFeedState(sourceCard.post).error || 'Could not load quote posts.');
@@ -3713,7 +4063,8 @@
 						sourceLaneId: task.sourceLaneId,
 						direction: task.direction ?? 'outbound',
 						suppressFocus: true,
-						loadThread: loadThreadForFetchMode
+						signal: fetchModeAbort?.signal,
+						priority: 2
 					});
 					if (!isFetchModeRunActive(runId)) return;
 					await tick();
@@ -3798,6 +4149,11 @@
 			}
 			quoteLanes = nextQuoteLanes;
 			laneActiveChainIds = nextLaneActiveChainIds;
+			if (Object.keys(fullThreadLoads).some((laneId) => family.has(laneId))) {
+				fullThreadLoads = Object.fromEntries(
+					Object.entries(fullThreadLoads).filter(([laneId]) => !family.has(laneId))
+				);
+			}
 			if (detailModalTarget && family.has(detailModalTarget.laneId)) {
 				detailModalTarget = null;
 			}
@@ -3806,7 +4162,7 @@
 		}
 		if (family.has(activeLaneId)) {
 			activeLaneId = MAIN_LANE_ID;
-			activeCardKey = `${MAIN_LANE_ID}:${thread.rootPost.uri}`;
+			activeCardKey = `${MAIN_LANE_ID}:${mainThread.rootPost.uri}`;
 		}
 	}
 
@@ -3844,41 +4200,71 @@
 			boardEl?.releasePointerCapture(event.pointerId);
 		}
 
+		// The minimap background only changes with the board; scrolling just moves the
+		// viewport box and the selection is a separate overlay, so neither redraws cards.
+		let minimapOrigin = $state({ x: 0, y: 0 });
+		let minimapDrawTimer = 0;
+		let lastMinimapDrawAt = 0;
+		let minimapViewportFrame = 0;
+
 		function scheduleMinimapRefresh() {
-			if (typeof window === 'undefined') return;
-			if (minimapFrame) {
-				cancelAnimationFrame(minimapFrame);
-			}
-			minimapFrame = requestAnimationFrame(async () => {
-				minimapFrame = 0;
-				await tick();
-				updateMinimap();
+			if (typeof window === 'undefined' || minimapDrawTimer || minimapFrame) return;
+			const wait = Math.max(0, lastMinimapDrawAt + MINIMAP_REDRAW_MS - performance.now());
+			minimapDrawTimer = window.setTimeout(() => {
+				minimapDrawTimer = 0;
+				minimapFrame = requestAnimationFrame(() => {
+					minimapFrame = 0;
+					updateMinimap();
+				});
+			}, wait);
+		}
+
+		function scheduleMinimapViewportUpdate() {
+			if (typeof window === 'undefined' || minimapViewportFrame) return;
+			minimapViewportFrame = requestAnimationFrame(() => {
+				minimapViewportFrame = 0;
+				updateMinimapViewport();
 			});
 		}
 
+		function updateMinimapViewport() {
+			if (!boardEl) return;
+			minimapViewport = {
+				x: boardEl.scrollLeft * minimapScale,
+				y: boardEl.scrollTop * minimapScale,
+				w: boardEl.clientWidth * minimapScale,
+				h: boardEl.clientHeight * minimapScale
+			};
+		}
+
+		let minimapActiveRect = $derived.by(() => {
+			if (!activeCard) return null;
+			const scale = minimapScale * (zoom || 1);
+			return {
+				x: minimapOrigin.x * minimapScale + activeCard.x * scale,
+				y: minimapOrigin.y * minimapScale + (rowLayout.canvasOffsetY + cardTop(activeCard)) * scale,
+				w: CARD_WIDTH * scale,
+				h: getRenderedCardHeight(activeCard) * scale
+			};
+		});
+
 		function updateMinimap() {
-			if (typeof window === 'undefined' || !boardEl || !minimapCanvas) return;
+			if (typeof window === 'undefined' || !boardEl || !minimapCanvas || !boardCanvasEl) return;
+			lastMinimapDrawAt = performance.now();
 			const board = boardEl;
+			const stage = boardCanvasEl.parentElement as HTMLElement;
 
 			const scrollWidth = Math.max(board.scrollWidth, 1);
 			const scrollHeight = Math.max(board.scrollHeight, 1);
-			const clientWidth = board.clientWidth;
-			const clientHeight = board.clientHeight;
-
 			const maxWidth = 280;
 			const maxHeight = 210;
-			minimapScale = Math.min(maxWidth / scrollWidth, maxHeight / scrollHeight, 0.18);
-			if (!Number.isFinite(minimapScale) || minimapScale <= 0) {
-				minimapScale = 0.05;
-			}
-			minimapW = Math.max(Math.round(scrollWidth * minimapScale), 132);
-			minimapH = Math.max(Math.round(scrollHeight * minimapScale), 92);
-			minimapViewport = {
-				x: board.scrollLeft * minimapScale,
-				y: board.scrollTop * minimapScale,
-				w: clientWidth * minimapScale,
-				h: clientHeight * minimapScale
-			};
+			let scale = Math.min(maxWidth / scrollWidth, maxHeight / scrollHeight, 0.18);
+			if (!Number.isFinite(scale) || scale <= 0) scale = 0.05;
+			minimapScale = scale;
+			minimapW = Math.max(Math.round(scrollWidth * scale), 132);
+			minimapH = Math.max(Math.round(scrollHeight * scale), 92);
+			minimapOrigin = { x: stage.offsetLeft, y: stage.offsetTop };
+			updateMinimapViewport();
 
 			const dpr = window.devicePixelRatio || 1;
 			minimapCanvas.width = Math.round(minimapW * dpr);
@@ -3891,59 +4277,51 @@
 			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 			ctx.clearRect(0, 0, minimapW, minimapH);
 
-			const boardRect = board.getBoundingClientRect();
-			const canvasRect = boardCanvasEl?.getBoundingClientRect();
-			const cardRects = new Map<
-				string,
-				{ x: number; y: number; w: number; h: number; card: LaneCard }
-			>();
-			const canvasScale = zoom || 1;
-			const originX = canvasRect ? canvasRect.left - boardRect.left + board.scrollLeft : 0;
-			const originY = canvasRect ? canvasRect.top - boardRect.top + board.scrollTop : 0;
-			for (const card of boardModel.cardsByKey.values()) {
-				cardRects.set(card.key, {
-					x: (originX + card.x * canvasScale) * minimapScale,
-					y: (originY + card.y * canvasScale) * minimapScale,
-					w: CARD_WIDTH * canvasScale * minimapScale,
-					h: getRenderedCardHeight(card) * canvasScale * minimapScale,
-					card
-				});
-			}
+			const model = boardModel;
+			const layout = rowLayout;
+			const canvasScale = (zoom || 1) * scale;
+			const originX = stage.offsetLeft * scale;
+			const originY = stage.offsetTop * scale + layout.canvasOffsetY * canvasScale;
+			const cardW = CARD_WIDTH * canvasScale;
+			const rectOf = (card: LaneCard) => ({
+				x: originX + card.x * canvasScale,
+				y: originY + cardTop(card) * canvasScale,
+				w: cardW,
+				h: getRenderedCardHeight(card) * canvasScale
+			});
 
 			ctx.lineCap = 'round';
 			ctx.lineJoin = 'round';
 
-			for (const lane of boardModel.lanes) {
+			// One path per style keeps drawing cost flat even with very many cards.
+			const railPaths = { main: new Path2D(), quoted: new Path2D() };
+			for (const lane of model.lanes) {
 				if (laneIsExpanded(lane.id)) continue;
 				const firstCard = lane.activeCards[0];
 				const lastCard = lane.activeCards[lane.activeCards.length - 1];
 				if (!firstCard || !lastCard) continue;
-				const firstRect = cardRects.get(firstCard.key);
-				const lastRect = cardRects.get(lastCard.key);
-				if (!firstRect || !lastRect) continue;
-				ctx.strokeStyle =
-					lane.kind === 'main' ? 'rgba(124, 85, 158, 0.74)' : 'rgba(149, 108, 182, 0.6)';
-				ctx.lineWidth = Math.max(3, firstRect.w * 0.14);
-				ctx.beginPath();
-				ctx.moveTo(firstRect.x + firstRect.w / 2, Math.max(2, firstRect.y - firstRect.h * 0.08));
-				ctx.lineTo(lastRect.x + lastRect.w / 2, lastRect.y + lastRect.h + firstRect.h * 0.08);
-				ctx.stroke();
+				const firstRect = rectOf(firstCard);
+				const lastRect = rectOf(lastCard);
+				const path = lane.kind === 'main' ? railPaths.main : railPaths.quoted;
+				path.moveTo(firstRect.x + firstRect.w / 2, Math.max(2, firstRect.y - firstRect.h * 0.08));
+				path.lineTo(lastRect.x + lastRect.w / 2, lastRect.y + lastRect.h + firstRect.h * 0.08);
 			}
+			ctx.lineWidth = Math.max(3, cardW * 0.14);
+			ctx.strokeStyle = 'rgba(124, 85, 158, 0.74)';
+			ctx.stroke(railPaths.main);
+			ctx.strokeStyle = 'rgba(149, 108, 182, 0.6)';
+			ctx.stroke(railPaths.quoted);
 
-			ctx.globalAlpha = 0.82;
-			for (const connector of boardModel.connectors) {
-				const fromRect = cardRects.get(connector.from.key);
-				const toRect = cardRects.get(connector.to.key);
-				if (!fromRect || !toRect) continue;
-				ctx.beginPath();
-				ctx.strokeStyle =
-					connector.kind === 'spawn'
-						? 'rgba(61, 49, 76, 0.72)'
-						: connector.kind === 'tree'
-							? 'rgba(123, 93, 177, 0.72)'
-							: 'rgba(198, 214, 255, 0.78)';
-				ctx.lineWidth = connector.kind === 'spawn' ? 1.8 : connector.kind === 'tree' ? 1.6 : 1.2;
-				ctx.globalAlpha = connectorIsMuted(connector) ? 0.24 : connector.kind === 'tree' ? 0.68 : 0.82;
+			const connectorPaths = new Map<string, Path2D>();
+			for (const connector of model.connectors) {
+				const fromRect = rectOf(connector.from);
+				const toRect = rectOf(connector.to);
+				const styleKey = `${connector.kind}:${connectorIsMuted(connector) ? 1 : 0}`;
+				let path = connectorPaths.get(styleKey);
+				if (!path) {
+					path = new Path2D();
+					connectorPaths.set(styleKey, path);
+				}
 				if (connector.kind === 'spawn') {
 					const flowsLeft = toRect.x < fromRect.x;
 					const startX = flowsLeft ? fromRect.x : fromRect.x + fromRect.w;
@@ -3951,16 +4329,16 @@
 					const endX = flowsLeft ? toRect.x + toRect.w : toRect.x;
 					const endY = toRect.y + toRect.h * 0.48;
 					const bendX = startX + (endX - startX) * 0.48;
-					ctx.moveTo(startX, startY);
-					ctx.bezierCurveTo(bendX, startY, bendX, endY, endX, endY);
+					path.moveTo(startX, startY);
+					path.bezierCurveTo(bendX, startY, bendX, endY, endX, endY);
 				} else if (connector.kind === 'tree') {
 					const startX = fromRect.x + fromRect.w / 2;
 					const startY = fromRect.y + fromRect.h;
 					const endX = toRect.x + toRect.w / 2;
 					const endY = toRect.y;
 					const middleY = startY + (endY - startY) * 0.5;
-					ctx.moveTo(startX, startY);
-					ctx.bezierCurveTo(startX, middleY, endX, middleY, endX, endY);
+					path.moveTo(startX, startY);
+					path.bezierCurveTo(startX, middleY, endX, middleY, endX, endY);
 				} else {
 					const startX = fromRect.x + fromRect.w * 0.84;
 					const startY = fromRect.y + fromRect.h * 0.18;
@@ -3968,41 +4346,54 @@
 					const endY = toRect.y + toRect.h * 0.18;
 					const direction = endX >= startX ? 1 : -1;
 					const controlOffset = Math.max(10, Math.abs(endX - startX) * 0.35);
-					const controlX1 = startX + controlOffset * direction;
-					const controlX2 = endX - controlOffset * direction;
-					ctx.moveTo(startX, startY);
-					ctx.bezierCurveTo(controlX1, startY, controlX2, endY, endX, endY);
+					path.moveTo(startX, startY);
+					path.bezierCurveTo(
+						startX + controlOffset * direction, startY, endX - controlOffset * direction, endY, endX, endY
+					);
 				}
-				ctx.stroke();
+			}
+			for (const [styleKey, path] of connectorPaths) {
+				const [kind, muted] = styleKey.split(':');
+				ctx.strokeStyle =
+					kind === 'spawn'
+						? 'rgba(61, 49, 76, 0.72)'
+						: kind === 'tree'
+							? 'rgba(123, 93, 177, 0.72)'
+							: 'rgba(198, 214, 255, 0.78)';
+				ctx.lineWidth = kind === 'spawn' ? 1.8 : kind === 'tree' ? 1.6 : 1.2;
+				ctx.globalAlpha = muted === '1' ? 0.24 : kind === 'tree' ? 0.68 : 0.82;
+				ctx.stroke(path);
 			}
 			ctx.globalAlpha = 1;
 
-				for (const lane of boardModel.lanes) {
+			const cardStyles = {
+				ghosted: { fill: 'rgba(222, 214, 234, 0.54)', stroke: 'rgba(111, 97, 139, 0.34)', path: new Path2D() },
+				shadow: { fill: 'rgba(218, 207, 236, 0.88)', stroke: 'rgba(128, 112, 162, 0.68)', path: new Path2D() },
+				quotedRoot: { fill: '#e9d38e', stroke: '#9a7a2f', path: new Path2D() },
+				main: { fill: '#f7eedb', stroke: 'rgba(60, 49, 78, 0.72)', path: new Path2D() },
+				quoted: { fill: '#f7eedb', stroke: 'rgba(130, 96, 169, 0.72)', path: new Path2D() }
+			};
+			for (const lane of model.lanes) {
 				for (const card of lane.cards) {
-					const rect = cardRects.get(card.key);
-					if (!rect) continue;
-					const isActive = card.key === activeCardKey;
-					if (isActive) {
-						ctx.fillStyle = '#6f61ff';
-						ctx.strokeStyle = '#3223c6';
-					} else if (cardIsGhosted(card)) {
-						ctx.fillStyle = 'rgba(222, 214, 234, 0.54)';
-						ctx.strokeStyle = 'rgba(111, 97, 139, 0.34)';
-					} else if (card.visibility === 'shadow') {
-						ctx.fillStyle = 'rgba(218, 207, 236, 0.88)';
-						ctx.strokeStyle = 'rgba(128, 112, 162, 0.68)';
-					} else if (card.isLaneRoot && card.laneKind === 'quoted') {
-						ctx.fillStyle = '#e9d38e';
-						ctx.strokeStyle = '#9a7a2f';
-					} else {
-						ctx.fillStyle = '#f7eedb';
-						ctx.strokeStyle =
-							card.laneKind === 'main' ? 'rgba(60, 49, 78, 0.72)' : 'rgba(130, 96, 169, 0.72)';
-					}
-					ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
-					ctx.lineWidth = isActive ? 1.8 : 0.85;
-					ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+					const style = cardIsGhosted(card)
+						? cardStyles.ghosted
+						: card.visibility === 'shadow'
+							? cardStyles.shadow
+							: card.isLaneRoot && card.laneKind === 'quoted'
+								? cardStyles.quotedRoot
+								: card.laneKind === 'main'
+									? cardStyles.main
+									: cardStyles.quoted;
+					const rect = rectOf(card);
+					style.path.rect(rect.x, rect.y, rect.w, rect.h);
 				}
+			}
+			ctx.lineWidth = 0.85;
+			for (const style of Object.values(cardStyles)) {
+				ctx.fillStyle = style.fill;
+				ctx.fill(style.path);
+				ctx.strokeStyle = style.stroke;
+				ctx.stroke(style.path);
 			}
 		}
 
@@ -4084,61 +4475,100 @@
 			});
 		}
 
-		function rectIntersectsViewport(minX: number, maxX: number, minY: number, maxY: number): boolean {
-			const vp = viewportRect;
-			if (vp.width <= 0 || vp.height <= 0) return true;
-			const margin = VIEWPORT_CULL_MARGIN;
-			return (
-				maxX >= vp.left - margin &&
-				minX <= vp.left + vp.width + margin &&
-				maxY >= vp.top - margin &&
-				minY <= vp.top + vp.height + margin
-			);
-		}
+		// Row range touched by the viewport (plus margin). Primitive deriveds, so a height
+		// flush that leaves the range unchanged does not re-query cards.
+		// Before the first measurement, assume a typical viewport at the origin rather than
+		// mounting every card on the board.
+		let cullViewport = $derived(
+			viewportRect.width > 0 && viewportRect.height > 0
+				? viewportRect
+				: { left: 0, top: 0, width: 1600, height: 1200 }
+		);
+		let visibleRowLo = $derived.by(() => {
+			const vp = cullViewport;
+			const index = lastIndexAtOrBelow(rowLayout.tops, vp.top - VIEWPORT_CULL_MARGIN);
+			return rowLayout.minRow + Math.max(0, index);
+		});
+		let visibleRowHi = $derived.by(() => {
+			const vp = cullViewport;
+			const index = lastIndexAtOrBelow(rowLayout.tops, vp.top + vp.height + VIEWPORT_CULL_MARGIN);
+			return rowLayout.minRow + Math.max(0, index);
+		});
+		let visibleXLo = $derived(cullViewport.left - VIEWPORT_CULL_MARGIN);
+		let visibleXHi = $derived(cullViewport.left + cullViewport.width + VIEWPORT_CULL_MARGIN);
 
-		function cardShouldRender(card: LaneCard): boolean {
-			if (card.key === activeCardKey || card.key === openQuotePickerCardKey) return true;
-			if (
-				detailModalTarget &&
-				card.key === `${detailModalTarget.laneId}:${detailModalTarget.postUri}`
+		/** Lanes whose column overlaps the viewport, found by binary search on lane x. */
+		let visibleLanes = $derived.by(() => {
+			const lanes = boardModel.lanesByX;
+			const lanesInView: LaneRenderModel[] = [];
+			for (
+				let index = firstIndexAtOrAbove(lanes, visibleXLo - CARD_WIDTH, (lane) => lane.x);
+				index < lanes.length && lanes[index].x <= visibleXHi;
+				index++
 			) {
-				return true;
+				lanesInView.push(lanes[index]);
 			}
-			if (treeBoardTarget && card.key === `${treeBoardTarget.laneId}:${treeBoardTarget.postUri}`) {
-				return true;
+			return lanesInView;
+		});
+
+		let lanesWithVisibleRails = $derived(
+			visibleLanes.filter((lane) => {
+				if (!lane.activeCards.length || laneIsExpanded(lane.id)) return false;
+				const firstRow = lane.activeCards[0].row;
+				const lastRow = lane.activeCards[lane.activeCards.length - 1].row;
+				return firstRow <= visibleRowHi && lastRow >= visibleRowLo;
+			})
+		);
+
+		let laneMarkersVisible = $derived(cullViewport.top - VIEWPORT_CULL_MARGIN <= PADDING_Y + LANE_MARKER_HEIGHT);
+
+		function pushLaneCardsInView(lane: LaneRenderModel, target: LaneCard[], checkX: boolean) {
+			const cards = lane.cards;
+			for (
+				let index = firstIndexAtOrAbove(cards, visibleRowLo, (card) => card.row);
+				index < cards.length && cards[index].row <= visibleRowHi;
+				index++
+			) {
+				const card = cards[index];
+				if (card.visibility === 'shadow' && card.stackIndex >= SHADOW_STACK_RENDER_LIMIT) continue;
+				if (checkX && (card.x + CARD_WIDTH < visibleXLo || card.x > visibleXHi)) continue;
+				target.push(card);
 			}
-			return rectIntersectsViewport(
-				card.x,
-				card.x + CARD_WIDTH,
-				card.y,
-				card.y + getRenderedCardHeight(card)
-			);
 		}
 
-		function visibleLaneCards(lane: LaneRenderModel): LaneCard[] {
-			return lane.cards.filter(cardShouldRender);
-		}
+		/** Cards to mount: lane columns in view × row range in view, plus pinned cards
+		 * (selection, open picker, open modals) so focus and scroll targets always exist. */
+		let visibleCards = $derived.by(() => {
+			const cards: LaneCard[] = [];
+			const expandedLane = expandedLaneId ? boardModel.laneById.get(expandedLaneId) : undefined;
+			for (const lane of visibleLanes) {
+				if (lane !== expandedLane) pushLaneCardsInView(lane, cards, false);
+			}
+			// A tree fan spreads beyond its column, so its cards are filtered individually.
+			if (expandedLane) pushLaneCardsInView(expandedLane, cards, true);
+			const pinnedKeys = [
+				activeCardKey,
+				openQuotePickerCardKey,
+				detailModalTarget ? `${detailModalTarget.laneId}:${detailModalTarget.postUri}` : null,
+				treeBoardTarget ? `${treeBoardTarget.laneId}:${treeBoardTarget.postUri}` : null
+			];
+			for (const key of pinnedKeys) {
+				const card = key ? boardModel.cardsByKey.get(key) : undefined;
+				if (card && !cards.includes(card)) cards.push(card);
+			}
+			return cards;
+		});
 
-		function connectorShouldRender(connector: LaneConnector): boolean {
-			return rectIntersectsViewport(
-				Math.min(connector.from.x, connector.to.x),
-				Math.max(connector.from.x, connector.to.x) + CARD_WIDTH,
-				Math.min(connector.from.y, connector.to.y),
-				Math.max(connector.from.y, connector.to.y) +
-					Math.max(getRenderedCardHeight(connector.from), getRenderedCardHeight(connector.to))
-			);
-		}
+		let visibleConnectors = $derived(
+			queryConnectorIndex(boardModel.connectorIndex, visibleXLo, visibleXHi, visibleRowLo, visibleRowHi)
+		);
 
-		function laneIsNearViewportX(lane: LaneRenderModel): boolean {
-			const vp = viewportRect;
-			if (vp.width <= 0) return true;
-			const margin = VIEWPORT_CULL_MARGIN;
-			return lane.x + CARD_WIDTH >= vp.left - margin && lane.x <= vp.left + vp.width + margin;
-		}
+		let lowDetailCards = $derived(zoom < LOW_DETAIL_ZOOM);
 
 		$effect(() => {
 			void zoom;
 			void boardModel;
+			void rowLayout;
 			scheduleViewportRefresh();
 		});
 
@@ -4153,7 +4583,7 @@
 		});
 
 		function handleBoardScroll() {
-			scheduleMinimapRefresh();
+			scheduleMinimapViewportUpdate();
 			scheduleViewportRefresh();
 		}
 
@@ -4162,10 +4592,19 @@
 			if (!rootUri) return;
 			const initialQuoteLanes = buildSeedQuoteLaneMap(seedQuoteLanes);
 			const initialMainAnchorUri = resolveLaneAnchorUri(thread, mainLaneAnchorUri ?? rootUri);
+			mainThreadOverride = null;
+			fullThreadLoads = {};
 			quoteLanes = initialQuoteLanes;
 			postQuotes = {};
 			openQuotePickerCardKey = null;
 			untrack(resetFetchModeState);
+			untrack(() => {
+				for (const job of laneJobs.values()) job.controller.abort();
+				laneJobs.clear();
+				publishLaneJobs();
+				requestScheduler.cancelAll();
+				loadedThreadByPostUri.clear();
+			});
 			laneActiveChainIds = buildSeedLaneActiveChainIds(seedQuoteLanes);
 			expandedLaneId = null;
 			activeLaneId = MAIN_LANE_ID;
@@ -4198,39 +4637,46 @@
 			syncZoomInput();
 		});
 
+		// Keep the content under the viewport still when rows above it grow (cards being
+		// measured) or the canvas gains headroom for rows above depth zero.
+		let previousRowLayout: RowLayout | null = null;
+		let previousRowLayoutZoom = 1;
 		$effect(() => {
-			const offsetY = boardModel.canvasOffsetY;
-			if (!boardEl) {
-				lastCanvasOffsetY = offsetY;
-				return;
-			}
-
-			const delta = offsetY - lastCanvasOffsetY;
-			lastCanvasOffsetY = offsetY;
-			if (delta === 0) return;
-
-			boardEl.scrollTop += delta * zoom;
-			scheduleMinimapRefresh();
+			const layout = rowLayout;
+			const scale = zoom || 1;
+			untrack(() => {
+				const previous = previousRowLayout;
+				const previousScale = previousRowLayoutZoom;
+				previousRowLayout = layout;
+				previousRowLayoutZoom = scale;
+				if (!boardEl || !previous || previous === layout || previousScale !== scale) return;
+				const viewportTop = boardEl.scrollTop / scale - previous.canvasOffsetY;
+				const anchorIndex = Math.max(0, lastIndexAtOrBelow(previous.tops, viewportTop));
+				const anchorRow = previous.minRow + anchorIndex;
+				const nextIndex = anchorRow - layout.minRow;
+				const previousY = previous.canvasOffsetY + previous.tops[anchorIndex];
+				const nextY =
+					layout.canvasOffsetY +
+					(nextIndex >= 0 && nextIndex < layout.tops.length ? layout.tops[nextIndex] : previous.tops[anchorIndex]);
+				const delta = nextY - previousY;
+				if (delta !== 0) boardEl.scrollTop += delta * scale;
+			});
 		});
 
-			$effect(() => {
-				boardModel;
-				zoom;
-				activeCardKey;
-				if (!boardEl) return;
-				scheduleMinimapRefresh();
-			});
+		$effect(() => {
+			void boardModel;
+			void rowLayout;
+			void zoom;
+			void expandedLaneId;
+			if (!boardEl) return;
+			untrack(scheduleMinimapRefresh);
+		});
 
 	$effect(() => {
-		const availableKeys = boardModel.lanes.flatMap((lane) => lane.cards.map((card) => card.key));
-		if (availableKeys.length === 0) {
-			activeCardKey = '';
-			return;
-		}
-		if (!availableKeys.includes(activeCardKey)) {
-			activeCardKey = availableKeys[0];
-			activeLaneId = boardModel.lanes[0]?.id ?? MAIN_LANE_ID;
-		}
+		if (boardModel.cardsByKey.has(activeCardKey)) return;
+		const firstCard = boardModel.lanes[0]?.cards[0];
+		activeCardKey = firstCard?.key ?? '';
+		if (firstCard) activeLaneId = boardModel.lanes[0].id;
 	});
 
 	$effect(() => {
@@ -4347,6 +4793,7 @@
 		};
 		const resizeObserver = new ResizeObserver(() => {
 			scheduleMinimapRefresh();
+			scheduleViewportRefresh();
 		});
 		document.addEventListener('pointerdown', handleDocumentPointerDown);
 		document.addEventListener('fullscreenchange', handleFullscreenChange);
@@ -4374,6 +4821,14 @@
 				cancelAnimationFrame(minimapFrame);
 				minimapFrame = 0;
 			}
+			if (minimapViewportFrame) cancelAnimationFrame(minimapViewportFrame);
+			if (minimapDrawTimer) window.clearTimeout(minimapDrawTimer);
+			if (cardHeightFrame) cancelAnimationFrame(cardHeightFrame);
+			if (laneJobFrame) cancelAnimationFrame(laneJobFrame);
+			for (const job of laneJobs.values()) job.controller.abort();
+			requestScheduler.dispose();
+			if (loadSnapshotFrame) cancelAnimationFrame(loadSnapshotFrame);
+			cardResizeObserver?.disconnect();
 		};
 		});
 	</script>
@@ -4381,29 +4836,19 @@
 <div class="parallel-board-layout" bind:this={parallelBoardLayoutEl}>
 	<div class="parallel-board-info">
 		<span class="dimension-pill">1 present lane</span>
-		<span class="dimension-meta">{countPosts(thread.rootPost)} posts on the board</span>
+		<span class="dimension-meta">{countPosts(mainThread.rootPost)} posts on the board</span>
 		<span class="dimension-meta">click a card to inspect it below</span>
 		{#if readyQuoteLanes.length > 0}
 			<span class="dimension-meta">{readyQuoteLanes.length} parallel lane{readyQuoteLanes.length === 1 ? '' : 's'}</span>
 		{/if}
 		{#if showExport}
 			<ThreadExportButton
-				{thread}
+				thread={mainThread}
 				selectedPost={activeCard?.post ?? null}
 				allPosts={exportAllPosts}
 				compact
 			/>
 		{/if}
-		<button
-			type="button"
-			class="board-mode-btn"
-			class:board-mode-btn-active={isBigMode}
-			onclick={() => {
-				isBigMode = !isBigMode;
-			}}
-			>
-				{isBigMode ? 'Square mode (`m`)' : 'Big mode (`m`)'}
-			</button>
 			<button
 					type="button"
 					class="board-mode-btn"
@@ -4464,58 +4909,190 @@
 			</div>
 
 			<div class="board-overlay-panels">
-				{#if fetchModeQueue.length > 0 || fetchModeStatusMessage}
-					{#if showFetchModePanel}
-						<section class="fetch-mode-panel wobbly-border-light" aria-live="polite">
+				{#if showLoadingActivity}
+					{#if showLoadingPanel}
+						<section class="fetch-mode-panel loading-panel wobbly-border-light" aria-live="polite" aria-label="Loading queue">
 							<div class="fetch-mode-panel-head">
 								<div>
-									<strong class="fetch-mode-panel-title">Fetch mode</strong>
-									<p class="fetch-mode-panel-status">{fetchModeStatusMessage || 'Idle'}</p>
+									<strong class="fetch-mode-panel-title">Loading</strong>
+									<p class="fetch-mode-panel-status">{loadingHeadline}</p>
 								</div>
 								<div class="fetch-mode-panel-actions">
-									{#if fetchModeRunning}
-										<button
-											type="button"
-											class="fetch-mode-pause-btn"
-											onclick={fetchModePaused ? resumeFetchMode : pauseFetchMode}
-										>
-											{fetchModePaused ? 'Resume' : 'Pause'}
+									{#if laneCreationJobs.length > activeLaneJobCount}
+										<button type="button" class="fetch-mode-pause-btn" onclick={clearFinishedLaneJobs}>
+											Clear
 										</button>
-										<button type="button" class="fetch-mode-stop-btn" onclick={stopFetchMode}>Stop</button>
 									{/if}
 									<button
 										type="button"
 										class="fetch-mode-close-btn"
-										aria-label="Hide fetch mode"
-										onclick={closeFetchModePanel}
+										aria-label="Hide loading queue"
+										onclick={() => (showLoadingPanel = false)}
 									>
 										×
 									</button>
 								</div>
 							</div>
-							<div class="fetch-mode-counts">
-								<span>{fetchModeActiveCount} active</span>
-								<span>{fetchModePendingCount} queued</span>
-								<span>{fetchModeProcessedCount} processed</span>
-								{#if fetchModeErrorCount > 0}
-									<span class="fetch-mode-error-count">{fetchModeErrorCount} errors</span>
-								{/if}
-							</div>
-							{#if visibleFetchModeQueue.length > 0}
-								<ol class="fetch-mode-queue">
-									{#each visibleFetchModeQueue as item, itemIndex (item.id + ':' + itemIndex)}
-										<li
-											class="fetch-mode-task"
-											class:fetch-mode-task-running={item.status === 'running'}
-											class:fetch-mode-task-done={item.status === 'done'}
-											class:fetch-mode-task-skipped={item.status === 'skipped'}
-											class:fetch-mode-task-error={item.status === 'error'}
-										>
-											<span class="fetch-mode-task-state">{getFetchModeTaskStatusLabel(item.status)}</span>
-											<span class="fetch-mode-task-copy">
-												<strong>{item.label}</strong>
-												<span>{item.error || item.detail}</span>
+
+							{#if loadRequestTotal > 0}
+								<div class="loading-section">
+									<div class="loading-row">
+										<span>Requests</span>
+										<span>{formatCount(loadRequestDone)} / {formatCount(loadRequestTotal)}</span>
+									</div>
+									<div
+										class="lane-job-progress"
+										role="progressbar"
+										aria-label="Requests finished"
+										aria-valuemin={0}
+										aria-valuemax={loadRequestTotal}
+										aria-valuenow={loadRequestDone}
+									>
+										<span style="width: {(loadRequestDone / loadRequestTotal) * 100}%"></span>
+									</div>
+									<div class="fetch-mode-counts">
+										<span>{loadSnapshot.running.length} loading</span>
+										<span>{formatCount(loadSnapshot.queued)} waiting</span>
+										{#if loadSnapshot.queued > 0}
+											<span>
+												{formatCount(loadSnapshot.queuedByKind.thread)} threads ·
+												{formatCount(loadSnapshot.queuedByKind.quotes)} quote pages
 											</span>
+										{/if}
+										{#if loadSnapshot.failed > 0}
+											<span class="fetch-mode-error-count">{loadSnapshot.failed} failed</span>
+										{/if}
+										{#if loadSnapshot.retried > 0}
+											<span>{loadSnapshot.retried} retried</span>
+										{/if}
+									</div>
+									{#if rateLimitSecondsLeft > 0}
+										<p class="loading-rate-limit">
+											Rate limited. Resuming in {rateLimitSecondsLeft}s at {loadSnapshot.concurrency} parallel.
+										</p>
+									{/if}
+									{#if loadSnapshot.running.length > 0}
+										<ul class="lane-job-items">
+											{#each loadSnapshot.running.slice(0, 6) as request (request.id)}
+												<li class="lane-job-item lane-job-item-running">
+													<span class="fetch-mode-task-state">Now</span>
+													<span>{request.label}{request.attempt > 1 ? ` (try ${request.attempt})` : ''}</span>
+												</li>
+											{/each}
+										</ul>
+									{/if}
+								</div>
+							{/if}
+
+							{#each quoteDiscoveries as discovery (discovery.uri)}
+								<div class="loading-section">
+									<div class="loading-row">
+										<span>Quotes of @{discovery.handle}</span>
+										<span>
+											{formatCount(discovery.found)}{discovery.expected > 0 ? ` / ~${formatCount(discovery.expected)}` : ''}
+											· page {discovery.pages + 1}
+										</span>
+									</div>
+									<div class="lane-job-progress" class:lane-job-progress-indeterminate={discovery.expected <= 0}>
+										<span
+											style="width: {discovery.expected > 0 ? Math.min(100, (discovery.found / discovery.expected) * 100) : 30}%"
+										></span>
+									</div>
+								</div>
+							{/each}
+
+							{#if fetchModeRunning}
+								<div class="loading-section">
+									<div class="loading-row">
+										<span>Fetch mode{fetchModePaused ? ' (paused)' : ''}</span>
+										<span>
+											{formatCount(fetchModeProcessedCount)} done · {formatCount(fetchModeRemainingCount)} to go
+										</span>
+									</div>
+									<div class="lane-job-progress">
+										<span style="width: {fetchModeProgressPercent}%"></span>
+									</div>
+								</div>
+							{/if}
+
+							{#if laneCreationJobs.length > 0}
+								<ol class="lane-jobs">
+									{#each laneCreationJobs as job (job.id)}
+										{@const isActive = laneJobIsActive(job)}
+										<li class="lane-job" class:lane-job-error={job.phase === 'error'}>
+											<div class="lane-job-head">
+												<button
+													type="button"
+													class="lane-job-title"
+													title="Jump to the source post"
+													onclick={() => void focusCard(job.sourceKey)}
+												>
+													<strong>{job.label}</strong>
+													<span>{job.detail}</span>
+												</button>
+												{#if isActive}
+													<button type="button" class="fetch-mode-stop-btn" onclick={() => cancelLaneJob(job.id)}>
+														Stop
+													</button>
+												{:else}
+													<button
+														type="button"
+														class="fetch-mode-close-btn"
+														aria-label="Dismiss lane job"
+														onclick={() => dismissLaneJob(job.id)}
+													>
+														×
+													</button>
+												{/if}
+											</div>
+											<div class="loading-row">
+												<span>{getLaneJobDiscoveryLabel(job)}</span>
+											</div>
+											{#if !job.discoveryDone}
+												<div class="lane-job-progress" class:lane-job-progress-indeterminate={job.expected <= 0}>
+													<span
+														style="width: {job.expected > 0 ? Math.min(100, (job.discovered / job.expected) * 100) : 30}%"
+													></span>
+												</div>
+											{/if}
+											<div class="loading-row">
+												<span>{getLaneJobStatusLabel(job)}</span>
+												{#if isActive && job.total > job.completed}
+													<span>{formatCount(job.total - job.completed)} to go</span>
+												{/if}
+											</div>
+											<div
+												class="lane-job-progress"
+												role="progressbar"
+												aria-label="Lanes created"
+												aria-valuemin={0}
+												aria-valuemax={job.total}
+												aria-valuenow={job.completed}
+											>
+												<span style="width: {job.total > 0 ? (job.completed / job.total) * 100 : 0}%"></span>
+											</div>
+											{#if job.loading > 0 || job.failed > 0}
+												<div class="fetch-mode-counts">
+													{#if job.loading > 0}
+														<span>{formatCount(job.loading)} threads queued or loading</span>
+													{/if}
+													{#if job.failed > 0}
+														<span class="fetch-mode-error-count">{job.failed} failed</span>
+													{/if}
+												</div>
+											{/if}
+											{#if isActive && job.recent.length > 0}
+												<ul class="lane-job-items">
+													{#each job.recent as item (item.uri)}
+														<li class="lane-job-item" class:lane-job-item-error={item.status === 'error'}>
+															<span class="fetch-mode-task-state">
+																{item.status === 'error' ? 'Error' : item.status === 'linked' ? 'Link' : 'Done'}
+															</span>
+															<span title={item.error}>@{item.handle}</span>
+														</li>
+													{/each}
+												</ul>
+											{/if}
 										</li>
 									{/each}
 								</ol>
@@ -4525,9 +5102,11 @@
 						<button
 							type="button"
 							class="fetch-mode-reopen-btn wobbly-border-light"
-							onclick={reopenFetchModePanel}
+							onclick={() => (showLoadingPanel = true)}
 						>
-							Fetch mode
+							Loading{loadSnapshot.running.length + loadSnapshot.queued > 0
+								? ` (${formatCount(loadSnapshot.running.length + loadSnapshot.queued)})`
+								: ''}
 						</button>
 					{/if}
 				{/if}
@@ -4612,6 +5191,78 @@
 				{/if}
 				</div>
 			{/if}
+				{#if fetchModeQueue.length > 0 || fetchModeStatusMessage}
+					{#if showFetchModePanel}
+						<section class="fetch-mode-panel wobbly-border-light" aria-live="polite">
+							<div class="fetch-mode-panel-head">
+								<div>
+									<strong class="fetch-mode-panel-title">Fetch mode</strong>
+									<p class="fetch-mode-panel-status">{fetchModeStatusMessage || 'Idle'}</p>
+								</div>
+								<div class="fetch-mode-panel-actions">
+									{#if fetchModeRunning}
+										<button
+											type="button"
+											class="fetch-mode-pause-btn"
+											onclick={fetchModePaused ? resumeFetchMode : pauseFetchMode}
+										>
+											{fetchModePaused ? 'Resume' : 'Pause'}
+										</button>
+										<button type="button" class="fetch-mode-stop-btn" onclick={stopFetchMode}>Stop</button>
+									{/if}
+									<button
+										type="button"
+										class="fetch-mode-close-btn"
+										aria-label="Hide fetch mode"
+										onclick={closeFetchModePanel}
+									>
+										×
+									</button>
+								</div>
+							</div>
+								<div class="lane-job-progress" aria-hidden="true">
+									<span style="width: {fetchModeProgressPercent}%"></span>
+								</div>
+								<div class="fetch-mode-counts">
+									<span>{fetchModeActiveCount} active</span>
+									<span>{fetchModePendingCount} queued</span>
+									<span>{fetchModeProcessedCount} processed</span>
+									<span>{fetchModeRemainingCount} to go</span>
+								{#if fetchModeErrorCount > 0}
+									<span class="fetch-mode-error-count">{fetchModeErrorCount} errors</span>
+								{/if}
+							</div>
+							{#if visibleFetchModeQueue.length > 0}
+								<ol class="fetch-mode-queue">
+									{#each visibleFetchModeQueue as item, itemIndex (item.id + ':' + itemIndex)}
+										<li
+											class="fetch-mode-task"
+											class:fetch-mode-task-running={item.status === 'running'}
+											class:fetch-mode-task-done={item.status === 'done'}
+											class:fetch-mode-task-skipped={item.status === 'skipped'}
+											class:fetch-mode-task-error={item.status === 'error'}
+										>
+											<span class="fetch-mode-task-state">{getFetchModeTaskStatusLabel(item.status)}</span>
+											<span class="fetch-mode-task-copy">
+												<strong>{item.label}</strong>
+												<span>{item.error || item.detail}</span>
+											</span>
+										</li>
+									{/each}
+								</ol>
+							{/if}
+						</section>
+					{:else}
+						<button
+							type="button"
+							class="fetch-mode-reopen-btn wobbly-border-light"
+							onclick={reopenFetchModePanel}
+						>
+							Fetch mode
+						</button>
+					{/if}
+				{/if}
+
 		</div>
 
 		<div class="parallel-board-stage">
@@ -4628,17 +5279,17 @@
 				>
 					<div
 						class="parallel-board-canvas-stage"
-						style="width: {getScaledCanvasSize(boardModel.boardWidth, zoom)}px; height: {getScaledCanvasSize(boardModel.boardHeight + boardModel.canvasOffsetY, zoom)}px;"
+						style="width: {getScaledCanvasSize(boardModel.boardWidth, zoom)}px; height: {getScaledCanvasSize(rowLayout.boardHeight + rowLayout.canvasOffsetY, zoom)}px;"
 					>
 						<div
 							class="parallel-board-canvas"
 							bind:this={boardCanvasEl}
-							style="width: {boardModel.boardWidth}px; height: {boardModel.boardHeight}px; top: {boardModel.canvasOffsetY}px; transform: scale({zoom});"
+							style="width: {boardModel.boardWidth}px; height: {rowLayout.boardHeight}px; top: {rowLayout.canvasOffsetY * zoom}px; transform: scale({zoom});"
 						>
 							<svg
 								class="parallel-board-svg"
 								width={boardModel.boardWidth}
-								height={boardModel.boardHeight}
+								height={rowLayout.boardHeight}
 								aria-hidden="true"
 							>
 								<defs>
@@ -4647,18 +5298,21 @@
 									</marker>
 								</defs>
 
-								{#each boardModel.lanes as lane (lane.id)}
-									{#if lane.activeCards.length > 0 && !laneIsExpanded(lane.id) && laneIsNearViewportX(lane)}
-										<path
-											d={buildLaneRailPath(lane.activeCards)}
-											class="lane-rail"
-											class:lane-rail-main={lane.kind === 'main'}
-											class:lane-rail-muted={expandedLaneId && lane.id !== expandedLaneId}
-										></path>
-									{/if}
+								{#each lanesWithVisibleRails as lane (lane.id)}
+									<path
+										d={buildLaneRailPath(lane.activeCards)}
+										class="lane-rail-shadow"
+										class:lane-rail-muted={expandedLaneId && lane.id !== expandedLaneId}
+									></path>
+									<path
+										d={buildLaneRailPath(lane.activeCards)}
+										class="lane-rail"
+										class:lane-rail-main={lane.kind === 'main'}
+										class:lane-rail-muted={expandedLaneId && lane.id !== expandedLaneId}
+									></path>
 								{/each}
 
-								{#each boardModel.connectors.filter(connectorShouldRender) as connector (connector.key)}
+								{#each visibleConnectors as connector (connector.key)}
 									<path
 										d={buildConnectorPath(connector)}
 										class="lane-connector"
@@ -4671,8 +5325,8 @@
 								{/each}
 							</svg>
 
-							{#each boardModel.lanes as lane (lane.id)}
-								{#if laneIsNearViewportX(lane)}
+							{#if laneMarkersVisible}
+							{#each visibleLanes as lane (lane.id)}
 								<div
 									class="lane-marker"
 									class:lane-marker-main={lane.kind === 'main'}
@@ -4697,14 +5351,14 @@
 										{laneIsExpanded(lane.id) ? 'Fold' : 'Tree'}
 									</button>
 								</div>
+							{/each}
+							{/if}
 
-								{/if}
-
-								{#each visibleLaneCards(lane) as card (card.key)}
+								{#each visibleCards as card (card.key)}
 									<article
-										use:measureCardHeight={card.key}
-										class="dimension-card"
-										class:big-dimension-card={isBigMode}
+										use:measureCardHeight={{ key: card.key, enabled: !lowDetailCards }}
+										class="dimension-card big-dimension-card"
+										class:lite-dimension-card={lowDetailCards}
 										class:active-dimension-card={card.key === activeCardKey}
 										class:source-pinned-card={cardIsSourcePin(card)}
 										class:shadow-dimension-card={card.visibility === 'shadow'}
@@ -4717,7 +5371,7 @@
 										class:quoted-root-card={card.isLaneRoot && card.laneKind === 'quoted'}
 										data-card-key={card.key}
 										data-lane-id={card.laneId}
-										style="left: {card.x}px; top: {card.y}px; --card-shift-x: {getCardShiftX(card)}px; --card-shift-y: {getCardShiftY(card)}px; --card-scale: {getCardScale(card)}; --card-opacity: {getCardOpacity(card)}; z-index: {getCardZIndex(card)};"
+										style="left: {card.x}px; top: {cardTop(card)}px;{lowDetailCards ? ` height: ${getRenderedCardHeight(card)}px;` : ''} --card-shift-x: {getCardShiftX(card)}px; --card-shift-y: {getCardShiftY(card)}px; --card-scale: {getCardScale(card)}; --card-opacity: {getCardOpacity(card)}; z-index: {getCardZIndex(card)};"
 									>
 										<div
 											class="dimension-card-inner"
@@ -4737,6 +5391,13 @@
 												}
 											}}
 										>
+											{#if lowDetailCards}
+												<div class="lite-card-head">
+													<span class="card-lane-token">{card.laneLabel}</span>
+													<strong class="card-handle">@{card.post.author.handle}</strong>
+												</div>
+												<p class="lite-card-text">{getCardTextValue(card.post)}</p>
+											{:else}
 											<div class="dimension-card-topline">
 												<div class="dimension-card-topline-copy">
 													<span class="card-lane-token">{card.laneLabel}</span>
@@ -4750,6 +5411,21 @@
 														<span class="card-root-token">{card.laneKind === 'main' ? 'Root' : 'Branch'}</span>
 													{/if}
 												</div>
+												{#if card.isLaneRoot && card.visibility === 'active' && canLoadFullThread(card.laneId)}
+													<button
+														type="button"
+														class="card-branch-btn card-full-thread-btn"
+														disabled={fullThreadLoads[card.laneId]?.status === 'loading'}
+														title={fullThreadLoads[card.laneId]?.error ??
+															'Load the whole conversation, including side branches off the parents (e)'}
+														onclick={(event) => {
+															event.stopPropagation();
+															void loadFullThreadForLane(card.laneId);
+														}}
+													>
+														{getFullThreadButtonLabel(card.laneId)}
+													</button>
+												{/if}
 												{#if hasLaneBranchSwitch(card)}
 													<button
 														type="button"
@@ -4767,7 +5443,7 @@
 
 											<div class="card-author-row">
 												{#if card.post.author.avatar}
-													<img src={card.post.author.avatar} alt="" class="card-avatar" />
+													<img src={card.post.author.avatar} alt="" class="card-avatar" loading="lazy" decoding="async" />
 												{/if}
 												<div class="card-author-copy">
 													<strong
@@ -4820,7 +5496,7 @@
 																	openImageLightbox(img);
 																}}
 															>
-																<img src={imageThumb(img)} alt={img.alt} class="card-media-thumb" />
+																<img src={imageThumb(img)} alt={img.alt} class="card-media-thumb" loading="lazy" decoding="async" />
 																{#if showImageAltOverlays && img.alt.trim()}
 																	<span class="image-alt-overlay">{img.alt}</span>
 																{/if}
@@ -4853,7 +5529,7 @@
 												{#if card.post.embed?.external}
 													<div class="card-inline-link">
 														{#if card.post.embed.external.thumb}
-															<img src={card.post.embed.external.thumb} alt="" class="card-inline-link-thumb" />
+															<img src={card.post.embed.external.thumb} alt="" class="card-inline-link-thumb" loading="lazy" decoding="async" />
 														{/if}
 														<div class="card-inline-link-copy">
 															<strong>{card.post.embed.external.title}</strong>
@@ -4869,6 +5545,8 @@
 																<img
 																	src={card.post.embed.record.author.avatar}
 																	alt=""
+																	loading="lazy"
+																	decoding="async"
 																	class="card-inline-quote-avatar"
 																/>
 															{/if}
@@ -4914,7 +5592,7 @@
 																				openImageLightbox(img);
 																			}}
 																		>
-																			<img src={imageThumb(img)} alt={img.alt} class="card-media-thumb" />
+																			<img src={imageThumb(img)} alt={img.alt} class="card-media-thumb" loading="lazy" decoding="async" />
 																			{#if showImageAltOverlays && img.alt.trim()}
 																				<span class="image-alt-overlay">{img.alt}</span>
 																			{/if}
@@ -5067,7 +5745,7 @@
 																	</p>
 																{:else if getQuoteFeedState(card.post).posts.length > 0}
 																	<div class="card-quote-picker-posts">
-																		{#each getQuoteFeedState(card.post).posts as quotePost, quoteIndex (quotePost.uri + ':' + quoteIndex)}
+																		{#each getQuoteFeedState(card.post).posts.slice(0, quotePickerRenderLimit) as quotePost, quoteIndex (quotePost.uri + ':' + quoteIndex)}
 																			<button
 																				type="button"
 																				class="card-quote-picker-post"
@@ -5094,6 +5772,12 @@
 																				</span>
 																			</button>
 																		{/each}
+																		{#if getQuoteFeedState(card.post).posts.length > quotePickerRenderLimit}
+																			<div
+																				class="progressive-sentinel"
+																				use:revealWhenVisible={() => (quotePickerRenderLimit += QUOTE_PICKER_PAGE)}
+																			></div>
+																		{/if}
 																	</div>
 																{:else}
 																	<p class="card-quote-picker-empty">
@@ -5175,10 +5859,10 @@
 													{/if}
 												{/if}
 											</div>
+											{/if}
 										</div>
 									</article>
 								{/each}
-							{/each}
 							</div>
 						</div>
 					</div>
@@ -5233,6 +5917,12 @@
 							}}
 						>
 							<canvas bind:this={minimapCanvas}></canvas>
+							{#if minimapActiveRect}
+								<div
+									class="minimap-active-card"
+									style="left: {minimapActiveRect.x}px; top: {minimapActiveRect.y}px; width: {minimapActiveRect.w}px; height: {minimapActiveRect.h}px;"
+								></div>
+							{/if}
 							<div
 								class="minimap-viewport"
 								style="left: {minimapViewport.x}px; top: {minimapViewport.y}px; width: {minimapViewport.w}px; height: {minimapViewport.h}px;"
@@ -5490,7 +6180,7 @@
 					<p class="board-gallery-empty">No images with alt text in the current board.</p>
 				{:else}
 					<div class="board-gallery-grid">
-						{#each visibleGalleryImages as img (img.key)}
+						{#each visibleGalleryImages.slice(0, galleryRenderLimit) as img (img.key)}
 						<div class="board-gallery-item">
 							<button
 								type="button"
@@ -5502,6 +6192,7 @@
 									src={img.thumb}
 									alt={img.alt}
 									loading="lazy"
+									decoding="async"
 									style={`aspect-ratio: ${img.aspectRatio}`}
 								/>
 								{#if showImageAltOverlays && img.alt.trim()}
@@ -5519,6 +6210,12 @@
 							{/if}
 						</div>
 						{/each}
+						{#if visibleGalleryImages.length > galleryRenderLimit}
+							<div
+								class="progressive-sentinel"
+								use:revealWhenVisible={() => (galleryRenderLimit += GALLERY_PAGE)}
+							></div>
+						{/if}
 					</div>
 				{/if}
 			{/if}
@@ -5760,23 +6457,33 @@
 			color: white;
 		}
 
+	/* One column on the right: loading, search, fetch mode. Collapsed panels are
+	   stacked buttons; open ones scroll on their own so the column never grows past the board. */
 	.board-overlay-panels {
 		position: absolute;
 		top: 14px;
 		right: 14px;
 		z-index: 22;
+		width: min(360px, calc(100% - 90px));
 		display: flex;
-		align-items: flex-start;
-		justify-content: flex-end;
-		gap: 10px;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 8px;
 		pointer-events: none;
 	}
 
-		.fetch-mode-panel {
+	.board-overlay-panels > * {
+		max-width: 100%;
+	}
+
+.fetch-mode-panel {
 			position: static;
-			width: 340px;
-			max-width: min(340px, calc(100vw - 500px));
-			min-width: 300px;
+			width: 100%;
+			max-width: 100%;
+			min-width: 0;
+			max-height: min(42vh, 440px);
+			overflow-y: auto;
+			overscroll-behavior: contain;
 			display: flex;
 			flex-direction: column;
 			gap: 8px;
@@ -5801,11 +6508,17 @@
 			pointer-events: auto;
 		}
 
-		.fetch-mode-panel-head {
+.fetch-mode-panel-head {
+			position: sticky;
+			top: -10px;
+			z-index: 1;
+			margin: -10px -10px 0;
+			padding: 10px;
 			display: flex;
 			align-items: flex-start;
 			justify-content: space-between;
 			gap: 10px;
+			background: rgba(255, 252, 245, 0.98);
 		}
 
 		.fetch-mode-panel-title {
@@ -5955,8 +6668,8 @@
 			word-break: break-word;
 		}
 
-		.tree-search-wrap {
-		width: min(360px, calc(100vw - 110px));
+.tree-search-wrap {
+		width: 100%;
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
@@ -5972,8 +6685,11 @@
 		pointer-events: auto;
 	}
 
-	.tree-search-panel {
+.tree-search-panel {
 		width: 100%;
+		max-height: min(42vh, 440px);
+		overflow-y: auto;
+		overscroll-behavior: contain;
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
@@ -6331,6 +7047,13 @@
 			display: block;
 		}
 
+		.minimap-active-card {
+			position: absolute;
+			background: #6f61ff;
+			outline: 1px solid #3223c6;
+			pointer-events: none;
+		}
+
 		.minimap-viewport {
 			position: absolute;
 			border: 2px solid rgba(111, 97, 255, 0.92);
@@ -6345,7 +7068,15 @@
 			stroke: rgba(140, 95, 173, 0.78);
 		stroke-width: 42px;
 		stroke-linecap: round;
-		filter: drop-shadow(0 6px 10px rgba(87, 60, 110, 0.18));
+	}
+
+	/* Stands in for a drop-shadow filter, which repaints the whole rail on scroll. */
+	.lane-rail-shadow {
+		fill: none;
+		stroke: rgba(87, 60, 110, 0.1);
+		stroke-width: 50px;
+		stroke-linecap: round;
+		transform: translateY(6px);
 	}
 
 	.lane-rail-main {
@@ -6370,7 +7101,6 @@
 	.lane-connector-tree {
 		stroke: rgba(103, 79, 201, 0.94);
 		stroke-width: 7px;
-		filter: drop-shadow(0 4px 8px rgba(94, 72, 187, 0.18));
 	}
 
 	.lane-connector-reference {
@@ -6447,20 +7177,164 @@
 		background: rgba(255, 255, 255, 0.24);
 	}
 
+	/* Shadows use box-shadow (not filter: drop-shadow) and `top` is not animated, so
+	   scrolling and row re-measurement never trigger filter repaints or layout animation. */
+	.lane-jobs {
+		display: grid;
+		gap: 10px;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		max-height: 320px;
+		overflow-y: auto;
+	}
+
+	.lane-job {
+		display: grid;
+		gap: 6px;
+	}
+
+	.lane-job-head {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
+	.lane-job-title {
+		display: grid;
+		gap: 2px;
+		min-width: 0;
+		padding: 0;
+		border: none;
+		background: none;
+		color: inherit;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.lane-job-title strong {
+		font-size: 0.8rem;
+	}
+
+	.lane-job-title span {
+		overflow: hidden;
+		font-size: 0.72rem;
+		opacity: 0.72;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.lane-job-progress {
+		position: relative;
+		height: 6px;
+		overflow: hidden;
+		border-radius: 999px;
+		background: rgba(77, 66, 96, 0.14);
+	}
+
+	.lane-job-progress span {
+		display: block;
+		height: 100%;
+		border-radius: inherit;
+		background: #6f61ff;
+		transition: width 0.25s ease;
+	}
+
+	.lane-job-error .lane-job-progress span {
+		background: #c0392b;
+	}
+
+	.lane-job-progress-indeterminate span {
+		animation: lane-job-indeterminate 1.1s ease-in-out infinite;
+	}
+
+	@keyframes lane-job-indeterminate {
+		from {
+			transform: translateX(-100%);
+		}
+		to {
+			transform: translateX(340%);
+		}
+	}
+
+.loading-panel {
+		max-height: min(50vh, 520px);
+	}
+
+	.loading-section {
+		display: grid;
+		gap: 5px;
+		padding: 8px 0;
+		border-top: 1px solid rgba(77, 66, 96, 0.12);
+	}
+
+	.loading-row {
+		display: flex;
+		justify-content: space-between;
+		gap: 8px;
+		font-size: 0.74rem;
+	}
+
+	.loading-row span:first-child {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.loading-rate-limit {
+		margin: 0;
+		font-size: 0.72rem;
+		color: #b3541e;
+		font-weight: 700;
+	}
+
+	.lane-job-items {
+		display: grid;
+		gap: 3px;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		font-size: 0.72rem;
+	}
+
+	.lane-job-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		opacity: 0.7;
+	}
+
+	.lane-job-item-running {
+		opacity: 1;
+		font-weight: 700;
+	}
+
+	.lane-job-item-error {
+		color: #c0392b;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.lane-job-progress-indeterminate span {
+			animation: none;
+		}
+	}
+
 	.dimension-card {
 		position: absolute;
 		width: 360px;
 		height: 360px;
+		border-radius: 18px;
+		contain: layout style;
 		transform: translate(var(--card-shift-x, 0px), var(--card-shift-y, 0px)) scale(var(--card-scale, 1));
 		transform-origin: center center;
 		opacity: var(--card-opacity, 1);
 		transition:
 			left 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-			top 0.34s cubic-bezier(0.22, 1, 0.36, 1),
 			transform 0.26s cubic-bezier(0.22, 1, 0.36, 1),
-			filter 0.2s ease,
-			opacity 0.2s ease,
-			z-index 0.2s ease;
+			box-shadow 0.2s ease,
+			opacity 0.2s ease;
 	}
 
 	.big-dimension-card {
@@ -6471,15 +7345,49 @@
 		transform:
 			translate(var(--card-shift-x, 0px), calc(var(--card-shift-y, 0px) - 4px))
 			scale(var(--card-scale, 1));
-		filter: drop-shadow(0 12px 16px rgba(30, 25, 35, 0.18));
+		box-shadow: 0 12px 16px rgba(30, 25, 35, 0.18);
 	}
 
 	.shadow-dimension-card {
-		filter: drop-shadow(0 10px 16px rgba(28, 24, 37, 0.16));
+		box-shadow: 0 10px 16px rgba(28, 24, 37, 0.16);
 	}
 
 	.muted-dimension-card {
-		filter: blur(0.2px) grayscale(0.18) drop-shadow(0 6px 10px rgba(28, 24, 37, 0.06));
+		box-shadow: 0 6px 10px rgba(28, 24, 37, 0.06);
+	}
+
+	.big-dimension-card.lite-dimension-card .dimension-card-inner {
+		height: 100%;
+		min-height: 0;
+		overflow: hidden;
+		gap: 8px;
+	}
+
+	.lite-card-head {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		min-width: 0;
+	}
+
+	.lite-card-head .card-handle {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.lite-card-text {
+		margin: 0;
+		overflow: hidden;
+		font-size: 1.05rem;
+		line-height: 1.45;
+		overflow-wrap: anywhere;
+	}
+
+	.progressive-sentinel {
+		width: 100%;
+		height: 1px;
+		grid-column: 1 / -1;
 	}
 
 	.tree-dimension-card .dimension-card-inner {
@@ -7690,9 +8598,8 @@
 			.board-overlay-panels {
 				top: 10px;
 				right: 10px;
+				width: auto;
 				left: 58px;
-				flex-direction: column-reverse;
-				align-items: flex-end;
 			}
 
 			.fetch-mode-panel {

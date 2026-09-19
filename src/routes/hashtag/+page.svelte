@@ -9,7 +9,7 @@
 	import { ClassifierPool, type ClassifierStats } from '$lib/utils/classifierPool';
 	import type { Prediction } from '$lib/utils/classifierTypes';
 
-	const JETSTREAM_URL = 'wss://jetstream2.us-east.bsky.network/subscribe';
+	const JETSTREAM_URL = 'wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents';
 	const MAX_GALLERY_ITEMS = 140;
 	const MAX_GALLERY_CANDIDATES = 280;
 	const MAX_STREAM_EVENTS = 80;
@@ -216,6 +216,11 @@
 	// even when the image never entered the gallery.
 	const classifiedImageMeta = new Map<string, Omit<ClassifiedImage, 'probability'>>();
 	const dismissedImageIds = new Set<string>();
+	let replayHours = $state(0);
+	let replayOnlyTags = $state(false);
+	let replayStartedAt = $state<string | null>(null);
+	let replayEventAt = $state<string | null>(null);
+	let replayNotice = $state('');
 	let socket: WebSocket | null = null;
 	let seenImageIds = new Set<string>();
 	let embedderEnabled = $state(false);
@@ -541,7 +546,7 @@
 	}
 
 	function submitForClassification(item: GalleryImage) {
-		if (!classifierEnabled) return;
+		if (!classifierEnabled || replayOnlyTags) return;
 		classifiedImageMeta.set(item.id, {
 			id: item.id,
 			postUri: item.postUri,
@@ -739,6 +744,7 @@
 	}
 
 	function setEmbedderEnabled(next: boolean) {
+		if (next && replayOnlyTags) return;
 		embedderEnabled = next;
 		if (next) ensureEmbedderPool();
 		else teardownEmbedderPool();
@@ -747,7 +753,7 @@
 	}
 
 	function submitForEmbedding(item: GalleryImage) {
-		if (!embedderEnabled) return;
+		if (!embedderEnabled || replayOnlyTags) return;
 		embedPool?.submit({ id: item.id, url: classifierSourceUrl(item.thumb) });
 	}
 
@@ -850,6 +856,7 @@
 	}
 
 	function setClassifierEnabled(next: boolean) {
+		if (next && replayOnlyTags) return;
 		classifierEnabled = next;
 		if (next) {
 			ensureClassifierPool();
@@ -947,6 +954,8 @@
 	function updateQuery() {
 		if (!browser) return;
 		const next = new URL(window.location.href);
+		if (replayHours > 0) next.searchParams.set('replay', String(replayHours));
+		else next.searchParams.delete('replay');
 		if (watchedTags.length > 0) {
 			next.searchParams.set('tags', watchedTags.join(','));
 		} else {
@@ -1525,6 +1534,9 @@
 
 		const images = imageEmbeds(record);
 		const postTags = extractTags(record);
+		// Replay can arrive much faster than live. Do no analytics, image work, or
+		// moderation requests for posts outside the requested hashtags.
+		if (replayOnlyTags && (matchedTagsFor(postTags).length === 0 || hasBlacklistedTag(postTags))) return;
 		const createdAt = streamCreatedAt(record, event);
 		const uri = `at://${did}/app.bsky.feed.post/${rkey}`;
 		const eventImages = streamEventImages(images, did, uri);
@@ -1547,11 +1559,11 @@
 		if (eventImages.length === 0) return;
 		imagePostsSeen += 1;
 
-		const modelsRunning = classifierEnabled || embedderEnabled;
+		const modelsRunning = !replayOnlyTags && (classifierEnabled || embedderEnabled);
 		if (!hasFilters && !modelsRunning) return;
 		const postText = typeof record?.text === 'string' ? record.text : '';
 		const matchedTags = matchedTagsFor(postTags);
-		const searchMatched = eventMatchesSearch(postText, eventImages);
+		const searchMatched = !replayOnlyTags && eventMatchesSearch(postText, eventImages);
 		if (matchedTags.length === 0 && !searchMatched && !modelsRunning) return;
 		if (matchedTags.length > 0) matchingPostsSeen += 1;
 		if (searchMatched) searchMatchingPostsSeen += 1;
@@ -1623,28 +1635,78 @@
 	function handleJetstreamMessage(message: MessageEvent) {
 		if (typeof message.data !== 'string') return;
 		try {
-			void addGalleryImages(JSON.parse(message.data));
+			const frame = JSON.parse(message.data);
+			const payload = frame?.payload;
+			if (frame?.$type === 'error') {
+				disconnectJetstream();
+				status = 'error';
+				statusMessage = frame.error ?? 'Jetstream error';
+				return;
+			}
+			if (payload?.$type === 'network.bsky.jetstream.subscribeEvents#info') {
+				replayNotice = payload.message ?? payload.name ?? 'Server adjusted replay cursor';
+				return;
+			}
+			if (payload?.$type !== 'network.bsky.jetstream.subscribeEvents#commit') return;
+			const timeMs = Date.parse(payload.time);
+			if (Number.isFinite(timeMs)) {
+				replayEventAt = payload.time;
+				statusMessage = replayOnlyTags && Date.now() - timeMs > 15_000 ? 'Replaying' : 'Live';
+			}
+			void addGalleryImages({ did: payload.did, time_us: timeMs * 1000, commit: payload });
 		} catch {
-			// Jetstream should be JSON; ignore malformed frames without dropping the stream.
+			// Ignore malformed frames without dropping the stream.
 		}
 	}
 
 	function connectJetstream() {
 		disconnectJetstream();
+		replayOnlyTags = replayHours > 0;
+		updateQuery();
+		replayNotice = '';
+		replayEventAt = null;
+		replayStartedAt = null;
+		if (replayOnlyTags && watchedTags.length === 0) {
+			status = 'error';
+			statusMessage = 'Add at least one hashtag before replaying';
+			return;
+		}
 		const url = new URL(JETSTREAM_URL);
-		url.searchParams.set('wantedCollections', 'app.bsky.feed.post');
-
+		url.searchParams.set('collections', 'app.bsky.feed.post');
+		url.searchParams.set('kinds', 'commit');
+		if (replayOnlyTags) {
+			classifierEnabled = false;
+			embedderEnabled = false;
+			teardownClassifierPool();
+			teardownEmbedderPool();
+			galleryCandidates = [];
+			seenImageIds.clear();
+			recentStreamEvents = [];
+			recentPostsByTag = {};
+			streamTagStats = {};
+			postsSeen = 0;
+			matchingPostsSeen = 0;
+			imagePostsSeen = 0;
+			searchMatchingPostsSeen = 0;
+			streamTaggedPostsSeen = 0;
+			streamImageTaggedPostsSeen = 0;
+			// Leave a minute of headroom at the moving 36-hour server floor.
+			const start = Date.now() - Math.min(36 * 60 - 1, replayHours * 60) * 60_000;
+			replayStartedAt = new Date(start).toISOString();
+			url.searchParams.set('cursor', String(Math.trunc(start * 1000)));
+		}
 		status = 'connecting';
 		statusMessage = 'Connecting';
-		const nextSocket = new WebSocket(url.toString());
+		const nextSocket = new WebSocket(url.toString(), 'xrpc.v1.json');
 		socket = nextSocket;
-
 		nextSocket.addEventListener('open', () => {
 			if (socket !== nextSocket) return;
 			status = 'open';
-			statusMessage = 'Live';
+			statusMessage = replayOnlyTags ? 'Replaying' : 'Live';
 		});
-		nextSocket.addEventListener('message', handleJetstreamMessage);
+		nextSocket.addEventListener('message', (message) => {
+			if (socket === nextSocket) handleJetstreamMessage(message);
+		});
 		nextSocket.addEventListener('error', () => {
 			if (socket !== nextSocket) return;
 			status = 'error';
@@ -1656,6 +1718,13 @@
 			status = status === 'error' ? 'error' : 'closed';
 			statusMessage = status === 'error' ? 'Stream error' : 'Disconnected';
 		});
+	}
+
+	function replayCats() {
+		tagInput = 'cat, cats, catsofbsky, caturday';
+		applyTags();
+		replayHours = replayHours || 24;
+		connectJetstream();
 	}
 
 	function disconnectJetstream() {
@@ -1718,6 +1787,8 @@
 		} catch {}
 
 		const params = new URLSearchParams(window.location.search);
+		const requestedReplay = Number(params.get('replay'));
+		if ([1, 6, 12, 24, 36].includes(requestedReplay)) replayHours = requestedReplay;
 		const queryTags = params.get('tags');
 		let nextTags = queryTags ? parseTagList(queryTags) : [];
 		if (nextTags.length === 0) {
@@ -1801,9 +1872,9 @@
 				classifierStrict = parsed.strict === true;
 				// The embedder is a large download; remember the toggle but let the
 				// pool spin up on demand rather than at page load.
-				embedderEnabled = parsed.embedder === true;
+				embedderEnabled = replayHours === 0 && parsed.embedder === true;
 				if (embedderEnabled) ensureEmbedderPool();
-				if (parsed.enabled === true) {
+				if (replayHours === 0 && parsed.enabled === true) {
 					classifierEnabled = true;
 					classifierPanelOpen = true;
 					ensureClassifierPool();
@@ -1832,7 +1903,7 @@
 		<div class="title-row">
 			<div>
 				<h1>Hashtag Image Gallery</h1>
-				<p class="subtitle">Live Jetstream images filtered by hashtag</p>
+				<p class="subtitle">Live and recent Jetstream images filtered by hashtag</p>
 			</div>
 			<FontPicker value={fontKey} onchange={handleFontChange} />
 		</div>
@@ -1866,6 +1937,25 @@
 						{/if}
 					</div>
 				</form>
+
+				<div class="tag-form">
+					<label for="replay-hours">Jetstream v2 replay</label>
+					<div class="tag-input-row">
+						<select id="replay-hours" bind:value={replayHours}>
+							<option value={0}>Live only</option>
+							{#each [1, 6, 12, 24, 36] as hours}
+								<option value={hours}>Last {hours} hours</option>
+							{/each}
+						</select>
+						<button type="button" class="primary-button wobbly-border" onclick={() => { applyTags(); connectJetstream(); }}>Start / restart</button>
+						<button type="button" class="secondary-button wobbly-border-light" onclick={replayCats}>Replay cats</button>
+					</div>
+					<small>Replay uses hashtags only, with classification off, then continues live. Shows the latest {MAX_GALLERY_ITEMS} matches; 36 hours includes a one-minute buffer.</small>
+					{#if replayStartedAt}
+						<small>Requested from {new Date(replayStartedAt).toLocaleString()} · Stream time: {replayEventAt ? new Date(replayEventAt).toLocaleString() : 'waiting…'}</small>
+					{/if}
+					{#if replayNotice}<small role="status">{replayNotice}</small>{/if}
+				</div>
 
 				<form class="tag-form" onsubmit={handleSearchSubmit}>
 					<label for="search-input">Search text <small>(matched OR hashtags)</small></label>

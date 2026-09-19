@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
+	import { DEFAULT_TAG_TEMPLATE, parseTagTemplate, matchingTags, type TagResult, type PostTag } from '$lib/utils/jetstreamTags';
 	import { browser } from '$app/environment';
 	import '../../app.css';
 	import FontPicker from '$lib/components/FontPicker.svelte';
@@ -10,55 +11,6 @@
 
 	type ModelState = 'idle' | 'checking' | 'loading' | 'ready' | 'error';
 	type StreamStatus = 'idle' | 'connecting' | 'live' | 'closed' | 'error';
-	type Availability = 'available' | 'downloadable' | 'downloading' | 'unavailable' | string;
-
-	type PromptMessage = {
-		role: 'system' | 'user' | 'assistant';
-		content: string;
-		prefix?: boolean;
-	};
-
-	type PromptSession = EventTarget & {
-		prompt: (
-			input: string | PromptMessage[],
-			options?: {
-				signal?: AbortSignal;
-				responseConstraint?: unknown;
-				omitResponseConstraintInput?: boolean;
-			}
-		) => Promise<string>;
-		destroy?: () => void;
-		contextUsage?: number;
-		contextWindow?: number;
-	};
-
-	type PromptFactory = {
-		availability: (options?: Record<string, unknown>) => Promise<Availability>;
-		create: (options?: Record<string, unknown>) => Promise<PromptSession>;
-	};
-
-	type LanguageDetectionResult = {
-		detectedLanguage: string;
-		confidence: number;
-	};
-
-	type LanguageDetectorSession = {
-		detect: (
-			input: string,
-			options?: {
-				signal?: AbortSignal;
-			}
-		) => Promise<LanguageDetectionResult[]>;
-		destroy?: () => void;
-		inputQuota?: number;
-		measureInputUsage?: (input: string) => Promise<number>;
-	};
-
-	type LanguageDetectorFactory = {
-		availability: (options?: Record<string, unknown>) => Promise<Availability>;
-		create: (options?: Record<string, unknown>) => Promise<LanguageDetectorSession>;
-	};
-
 	type FirehoseImage = {
 		id: string;
 		thumb: string;
@@ -89,6 +41,7 @@
 		keep: boolean;
 		answer: 'YES' | 'NO' | 'ERROR';
 		confidence: number;
+		tags: PostTag[];
 		description: string;
 		error?: string;
 	};
@@ -99,8 +52,6 @@
 		raw: string;
 		processedAt: string;
 	};
-
-	type ClassifierRecord = Record<string, unknown>;
 
 	type JetstreamEvent = {
 		did?: string;
@@ -121,7 +72,7 @@
 		'wss://jetstream2.us-west.bsky.network/subscribe',
 		'wss://jetstream1.us-west.bsky.network/subscribe'
 	];
-	const STORAGE_PROMPT_KEY = 'firehose-filtered-prompt-template';
+	const STORAGE_PROMPT_KEY = 'jetstream-typesafe-tag-template-v1';
 	const STORAGE_FONT_KEY = 'preferred-font';
 	const MAX_QUEUE_SIZE = 180;
 	const MAX_ACCEPTED_POSTS = 140;
@@ -130,54 +81,11 @@
 	const MAX_PROMPT_TEXT_LENGTH = 1200;
 	const PROFILE_BATCH_DELAY_MS = 220;
 	const LIVE_CURSOR_REWIND_US = 12_000_000;
-	const MODEL_DOWNLOAD_HINT_MS = 20_000;
 	const CLASSIFIER_DESCRIPTION_LIMIT = 100;
 	const DEFAULT_CLASSIFIER_BATCH_SIZE = 6;
 	const MAX_CLASSIFIER_BATCH_SIZE = 10;
-	const CLASSIFIER_BATCH_WAIT_MS = 160;
-	const MAX_BATCH_PROMPT_TEXT_LENGTH = 600;
-	const CLASSIFIER_BATCH_SCHEMA = {
-		type: 'object',
-		properties: {
-			posts: {
-				type: 'array',
-				items: {
-					type: 'object',
-					properties: {
-						id: { type: 'string' },
-						description: { type: 'string', maxLength: CLASSIFIER_DESCRIPTION_LIMIT }
-					},
-					required: ['id', 'description'],
-					additionalProperties: false
-				}
-			}
-		},
-		required: ['posts'],
-		additionalProperties: false
-	};
-
-	const MODEL_OPTIONS = {
-		expectedInputs: [{ type: 'text', languages: ['en'] }],
-		expectedOutputs: [{ type: 'text', languages: ['en'] }]
-	};
-	const LANGUAGE_DETECTOR_OPTIONS = {
-		expectedInputLanguages: ['en']
-	};
-	const ENGLISH_CONFIDENCE_THRESHOLD = 0.9;
-
-	const SYSTEM_PROMPT =
-		'You filter batches of public Bluesky Jetstream posts for a live personal feed. Return JSON with only the posts that should be shown.';
-
-	const DEFAULT_PROMPT_TEMPLATE = `Wanted classes:
-- Concrete builds, demos, tools, visual experiments, or prototypes.
-- Posts with a specific observation, field note, research finding, or technical detail.
-- Thoughtful questions that could start a useful discussion.
-- Weird, poetic, or unusually well-phrased posts with real substance.
-
-Skip:
-- Engagement bait, generic outrage, pure dunking, scams, giveaways, ads, and low-context replies.
-- Adult, graphic, hateful, or harassment-heavy posts.
-- Posts that only say good morning, lol, same, or quote without context.`;
+	const CLASSIFIER_BATCH_WAIT_MS = 1000;
+	const DEFAULT_PROMPT_TEMPLATE = DEFAULT_TAG_TEMPLATE;
 
 	const fontFamilies: Record<string, string> = {
 		virgil: "'Virgil', cursive",
@@ -192,16 +100,10 @@ Skip:
 	let promptTemplate = $state(DEFAULT_PROMPT_TEMPLATE);
 	let templateSavedAt: string | null = $state(null);
 	let modelState = $state<ModelState>('idle');
-	let modelStatus = $state('Model not loaded');
-	let modelProgress = $state(0);
-	let modelProgressIndeterminate = $state(false);
-	let modelHint: string | null = $state(null);
+	let modelStatus = $state('TypeSafe not connected');
 	let modelError: string | null = $state(null);
-	let availability: Availability | null = $state(null);
-	let languageState = $state<ModelState>('idle');
-	let languageStatus = $state('Language detector not loaded');
-	let languageAvailability: Availability | null = $state(null);
-	let languageError: string | null = $state(null);
+	let tagThreshold = $state(0.75);
+	let selectedTag = $state('');
 	let streamStatus = $state<StreamStatus>('idle');
 	let streamStatusText = $state('Idle');
 	let streamError: string | null = $state(null);
@@ -216,7 +118,6 @@ Skip:
 	let postsDropped = $state(0);
 	let postsSkipped = $state(0);
 	let textOnlySkipped = $state(0);
-	let imageSkipped = $state(0);
 	let languageSkipped = $state(0);
 	let postsProcessed = $state(0);
 	let promptFailures = $state(0);
@@ -237,15 +138,12 @@ Skip:
 	let endpointIndex = 0;
 	let profilesByDid = $state<Record<string, ProfileInfo>>({});
 
-	let modelSession: PromptSession | null = null;
-	let languageDetector: LanguageDetectorSession | null = null;
 	let modelAbortController: AbortController | null = null;
 	let promptAbortController: AbortController | null = null;
 	let socket: WebSocket | null = null;
 	let drainScheduled = false;
 	let drainTimer: ReturnType<typeof setTimeout> | null = null;
 	let profileBatchTimer: ReturnType<typeof setTimeout> | null = null;
-	let modelDownloadHintTimer: ReturnType<typeof setTimeout> | null = null;
 	const pendingProfileDids = new Set<string>();
 	const seenUris: string[] = [];
 	const seenUriSet = new Set<string>();
@@ -254,17 +152,12 @@ Skip:
 	const canLoadModel = $derived(modelState !== 'checking' && modelState !== 'loading');
 	const canStartFirehose = $derived(
 		modelState === 'ready' &&
-			languageState === 'ready' &&
 			streamStatus !== 'connecting' &&
 			streamStatus !== 'live'
 	);
-	const promptClasses = $derived(
-		promptTemplate
-			.split('\n')
-			.map((line) => line.replace(/^[-*\s]+/, '').trim())
-			.filter(Boolean)
-			.slice(0, 12)
-	);
+	const promptClasses = $derived(promptTemplate.split('\n').map(line => line.split(':')[0].trim()).filter(Boolean));
+	const visiblePosts = $derived(selectedTag ? acceptedPosts.filter(item => item.decision.tags.some(tag => tag.name === selectedTag)) : acceptedPosts);
+	const resultTags = $derived([...new Set(acceptedPosts.flatMap(item => item.decision.tags.map(tag => tag.name)))]);
 	const queuePreview = $derived(pendingPosts.slice(0, 16));
 	const acceptedCount = $derived(postsAccepted);
 	const rejectedCount = $derived(postsRejected);
@@ -285,224 +178,39 @@ Skip:
 		return 'Unknown error';
 	}
 
-	function modelFactory(): PromptFactory | null {
-		const scope = globalThis as typeof globalThis & {
-			LanguageModel?: PromptFactory;
-			LanguageDetector?: LanguageDetectorFactory;
-			ai?: { languageModel?: PromptFactory };
-		};
-		return scope.LanguageModel ?? scope.ai?.languageModel ?? null;
-	}
-
-	function languageDetectorFactory(): LanguageDetectorFactory | null {
-		const scope = globalThis as typeof globalThis & {
-			LanguageDetector?: LanguageDetectorFactory;
-		};
-		return scope.LanguageDetector ?? null;
-	}
-
-	function normalizeAvailability(value: Availability): string {
-		if (value === 'available') return 'Available';
-		if (value === 'downloadable') return 'Downloadable';
-		if (value === 'downloading') return 'Downloading';
-		if (value === 'unavailable') return 'Unavailable';
-		return String(value || 'Unknown');
-	}
-
-	function clearModelDownloadHintTimer() {
-		if (!modelDownloadHintTimer) return;
-		clearTimeout(modelDownloadHintTimer);
-		modelDownloadHintTimer = null;
-	}
-
-	function scheduleModelDownloadHint() {
-		clearModelDownloadHintTimer();
-		modelDownloadHintTimer = setTimeout(() => {
-			modelDownloadHintTimer = null;
-			if (modelState !== 'loading' || modelProgress > 0) return;
-			modelProgressIndeterminate = true;
-			modelStatus = 'Waiting for Chrome download progress';
-			modelHint =
-				'Chrome has started model setup but has not reported download progress yet. Keep this tab open; if it stays here for several minutes, restart Chrome and try again.';
-		}, MODEL_DOWNLOAD_HINT_MS);
-	}
-
-	function updateModelDownloadProgress(loadedValue: unknown) {
-		const loaded = Number(loadedValue ?? 0);
-		if (!Number.isFinite(loaded) || loaded <= 0) {
-			modelProgress = 0;
-			modelProgressIndeterminate = true;
-			modelStatus = 'Downloading model';
-			modelHint = 'Chrome has not reported a nonzero download percentage yet.';
-			return;
-		}
-
-		modelProgress = Math.max(0, Math.min(1, loaded));
-		modelProgressIndeterminate = false;
-		modelStatus = `Downloading model ${formatPercent(modelProgress)}`;
-		modelHint = null;
-	}
-
 	async function loadModel() {
 		if (!browser || !canLoadModel) return;
-
 		stopCurrentPrompt();
-		modelSession?.destroy?.();
-		modelSession = null;
-		languageDetector?.destroy?.();
-		languageDetector = null;
-		modelAbortController = new AbortController();
-		modelError = null;
-		languageError = null;
-		modelProgress = 0;
-		modelProgressIndeterminate = false;
-		modelHint = null;
+		const controller = new AbortController();
+		modelAbortController = controller;
 		modelState = 'checking';
-		modelStatus = 'Checking Prompt API';
-		languageState = 'checking';
-		languageStatus = 'Checking LanguageDetector';
-		clearModelDownloadHintTimer();
-
-		const factory = modelFactory();
-		if (!factory) {
-			modelState = 'error';
-			modelStatus = 'Prompt API unavailable';
-			modelError = 'LanguageModel is not available in this browser.';
-			languageState = 'idle';
-			languageStatus = 'Language detector not loaded';
-			return;
-		}
-
-		const detectorFactory = languageDetectorFactory();
-		if (!detectorFactory) {
-			modelState = 'error';
-			modelStatus = 'Language detector unavailable';
-			modelError = 'LanguageDetector is not available in this browser.';
-			languageState = 'error';
-			languageStatus = 'Language detector unavailable';
-			languageError = 'LanguageDetector is required for the English prefilter.';
-			return;
-		}
-
+		modelStatus = 'Checking TypeSafe configuration';
+		modelError = null;
 		try {
-			const nextLanguageAvailability = await detectorFactory.availability(LANGUAGE_DETECTOR_OPTIONS);
-			languageAvailability = nextLanguageAvailability;
-			if (nextLanguageAvailability === 'unavailable') {
-				modelState = 'error';
-				modelStatus = 'Language detector unavailable';
-				modelError = 'LanguageDetector cannot run with the English prefilter in this browser.';
-				languageState = 'error';
-				languageStatus = 'Language detector unavailable';
-				languageError = 'LanguageDetector is required for the English prefilter.';
-				return;
-			}
-
-			languageState = 'loading';
-			languageStatus =
-				nextLanguageAvailability === 'available'
-					? 'Opening language detector'
-					: `${normalizeAvailability(nextLanguageAvailability)} language detector`;
-			languageDetector = await detectorFactory.create({
-				...LANGUAGE_DETECTOR_OPTIONS,
-				signal: modelAbortController.signal,
-				monitor(monitor: EventTarget) {
-					monitor.addEventListener('downloadprogress', (event) => {
-						const progress = event as Event & { loaded?: number };
-						const loaded = Number(progress.loaded ?? 0);
-						languageStatus =
-							Number.isFinite(loaded) && loaded > 0
-								? `Downloading language detector ${formatPercent(loaded)}`
-								: 'Downloading language detector';
-					});
-				}
-			});
-			languageState = 'ready';
-			languageStatus = 'English detector ready';
-
-			const nextAvailability = await factory.availability(MODEL_OPTIONS);
-			availability = nextAvailability;
-			if (nextAvailability === 'unavailable') {
-				modelState = 'error';
-				modelStatus = 'Model unavailable';
-				modelError = 'This browser or device cannot run the built-in language model.';
-				return;
-			}
-
-			modelState = 'loading';
-			modelProgressIndeterminate = nextAvailability !== 'available';
-			modelHint =
-				nextAvailability === 'available'
-					? null
-					: 'Chrome may sit at 0% while it prepares the on-device model download.';
-			modelStatus =
-				nextAvailability === 'available'
-					? 'Opening model session'
-					: `${normalizeAvailability(nextAvailability)} model`;
-			scheduleModelDownloadHint();
-
-			const session = await factory.create({
-				...MODEL_OPTIONS,
-				initialPrompts: [{ role: 'system', content: SYSTEM_PROMPT }],
-				signal: modelAbortController.signal,
-				monitor(monitor: EventTarget) {
-					monitor.addEventListener('downloadprogress', (event) => {
-						const progress = event as Event & { loaded?: number; total?: number };
-						updateModelDownloadProgress(progress.loaded);
-					});
-				}
-			});
-
-			clearModelDownloadHintTimer();
-			session.addEventListener?.('contextoverflow', () => {
-				modelStatus = 'Model ready, context rolling forward';
-			});
-			modelSession = session;
+			const response = await fetch('/api/jetstreamfiltered', { signal: controller.signal });
+			const data = await response.json() as { message?: string };
+			if (!response.ok) throw new Error(data.message || 'TypeSafe is unavailable.');
+			if (controller.signal.aborted) return;
 			modelState = 'ready';
-			modelStatus = 'Model ready';
-			modelProgress = 1;
-			modelProgressIndeterminate = false;
-			modelHint = null;
+			modelStatus = 'TypeSafe configured · Jev';
 			scheduleQueueDrain();
 		} catch (error) {
-			clearModelDownloadHintTimer();
+			if (controller.signal.aborted) return;
 			modelState = 'error';
-			modelStatus = 'Model load failed';
-			modelProgressIndeterminate = false;
+			modelStatus = 'TypeSafe unavailable';
 			modelError = describeError(error);
-			if (languageState !== 'ready') {
-				languageState = 'error';
-				languageStatus = 'Language detector failed';
-				languageError = describeError(error);
-			}
 		}
 	}
 
 	function unloadModel() {
 		stopCurrentPrompt();
 		modelAbortController?.abort();
-		modelAbortController = null;
-		modelSession?.destroy?.();
-		languageDetector?.destroy?.();
-		modelSession = null;
-		languageDetector = null;
-		currentBatchPosts = [];
 		modelState = 'idle';
-		modelStatus = 'Model not loaded';
-		languageState = 'idle';
-		languageStatus = 'Language detector not loaded';
-		languageError = null;
-		modelProgress = 0;
-		modelProgressIndeterminate = false;
-		modelHint = null;
-		if (drainTimer) {
-			clearTimeout(drainTimer);
-			drainTimer = null;
-			drainScheduled = false;
-		}
-		clearModelDownloadHintTimer();
-		if (streamStatus === 'connecting' || streamStatus === 'live') {
-			disconnectJetstream();
-		}
+		modelStatus = 'TypeSafe disconnected';
+		if (drainTimer) clearTimeout(drainTimer);
+		drainTimer = null;
+		drainScheduled = false;
+		disconnectJetstream();
 	}
 
 	function stopCurrentPrompt() {
@@ -513,9 +221,11 @@ Skip:
 	function applyPromptTemplate(event: Event) {
 		event.preventDefault();
 		try {
+			parseTagTemplate(promptTemplate);
+			modelError = null;
 			localStorage.setItem(STORAGE_PROMPT_KEY, promptTemplate);
 			templateSavedAt = new Date().toISOString();
-		} catch {}
+		} catch (error) { modelError = describeError(error); }
 	}
 
 	function resetPromptTemplate() {
@@ -627,13 +337,8 @@ Skip:
 
 		const text = typeof record.text === 'string' ? record.text.trim() : '';
 		const images = streamEventImages(imageEmbeds(record), did, uri);
-		if (!text) {
+		if (!text && !images.some(image => image.alt.trim())) {
 			textOnlySkipped += 1;
-			postsSkipped += 1;
-			return null;
-		}
-		if (images.length > 0) {
-			imageSkipped += 1;
 			postsSkipped += 1;
 			return null;
 		}
@@ -667,27 +372,11 @@ Skip:
 	}
 
 	async function isEnglishPost(post: QueuedPost): Promise<boolean> {
-		if (!languageDetector) {
-			languageSkipped += 1;
-			postsSkipped += 1;
-			return false;
-		}
-
-		try {
-			const results = await languageDetector.detect(post.text.slice(0, MAX_PROMPT_TEXT_LENGTH));
-			const top = results[0];
-			const detectedLanguage = top?.detectedLanguage.toLowerCase() ?? '';
-			const isEnglish = detectedLanguage === 'en' || detectedLanguage.startsWith('en-');
-			if (isEnglish && (top?.confidence ?? 0) >= ENGLISH_CONFIDENCE_THRESHOLD) return true;
-
-			languageSkipped += 1;
-			postsSkipped += 1;
-			return false;
-		} catch {
-			languageSkipped += 1;
-			postsSkipped += 1;
-			return false;
-		}
+		// Unknown language is judged server-side; declared non-English posts skip inference.
+		if (!post.langs.length || post.langs.some(lang => /^en(?:-|$)/i.test(lang))) return true;
+		languageSkipped += 1;
+		postsSkipped += 1;
+		return false;
 	}
 
 	function rememberUri(uri: string) {
@@ -729,7 +418,7 @@ Skip:
 	}
 
 	async function drainQueue() {
-		if (queuePaused || isClassifying || !modelSession || modelState !== 'ready') return;
+		if (queuePaused || isClassifying || modelState !== 'ready') return;
 		const batch = pendingPosts.slice(0, classifierBatchSize());
 		if (batch.length === 0) return;
 
@@ -740,8 +429,15 @@ Skip:
 		promptAbortController = controller;
 
 		try {
+			const threshold = Number(tagThreshold);
 			const raw = await runClassifierPrompt(batch, controller.signal);
-			const decisions = parseBatchDecisions(raw, batch);
+			const results = JSON.parse(raw).posts as TagResult[];
+			const decisions = new Map(results.map(result => {
+				const tags = matchingTags(result, threshold);
+				const keep = result.eligible >= 0.75 && tags.length > 0;
+				return [result.id, { keep, answer: keep ? 'YES' as const : 'NO' as const, confidence: result.eligible, tags,
+					description: result.eligible < 0.75 ? 'Outside the English discovery feed criteria.' : tags.length ? tags.map(tag => tag.name).join(', ') : 'No tags above the threshold.' }];
+			}));
 			const processedAt = new Date().toISOString();
 			const items = batch.map((post, index) => ({
 				post,
@@ -751,14 +447,14 @@ Skip:
 				raw,
 				processedAt
 			}));
-			const verifiedItems = await verifyAcceptedItems(items, controller.signal);
-
-			postsProcessed += verifiedItems.length;
-			storeClassifiedItems(verifiedItems);
+			postsProcessed += items.length;
+			storeClassifiedItems(items);
 		} catch (error) {
 			if ((error as Error)?.name === 'AbortError') {
 				pendingPosts = [...batch, ...pendingPosts].slice(0, MAX_QUEUE_SIZE);
 			} else {
+				queuePaused = true;
+				modelError = describeError(error);
 				promptFailures += batch.length;
 				const errorMessage = describeError(error).slice(0, 140);
 				const processedAt = new Date().toISOString();
@@ -795,6 +491,7 @@ Skip:
 			keep: false,
 			answer: 'ERROR',
 			confidence: 0,
+			tags: [],
 			description,
 			error: message
 		};
@@ -805,6 +502,7 @@ Skip:
 			keep: false,
 			answer: 'NO',
 			confidence: 0,
+			tags: [],
 			description: 'Not returned by model.'
 		};
 	}
@@ -879,316 +577,19 @@ Skip:
 	}
 
 	async function runClassifierPrompt(posts: QueuedPost[], signal: AbortSignal): Promise<string> {
-		if (!modelSession) throw new Error('Model session is not ready.');
-		const prompt = buildClassifierPrompt(posts);
-		try {
-			const raw = await modelSession.prompt(prompt, {
-				signal,
-				responseConstraint: CLASSIFIER_BATCH_SCHEMA
-			});
-			logLlmOutput('batch', posts, raw);
-			return raw;
-		} catch (error) {
-			if ((error as Error)?.name === 'AbortError') throw error;
-			const raw = await modelSession.prompt(
-				`${prompt}\n\nReturn exactly one JSON object like {"posts":[{"id":"p1","description":"short reason"}]}.`,
-				{ signal }
-			);
-			logLlmOutput('batch fallback', posts, raw);
-			return raw;
-		}
-	}
-
-	async function runVerificationPrompt(post: QueuedPost, signal: AbortSignal): Promise<string> {
-		if (!modelSession) throw new Error('Model session is not ready.');
-		const prompt = `${buildClassifierPrompt([post])}
-
-Second pass:
-- This is a verification pass for a candidate accepted by a batch.
-- Judge only this one post.
-- Default to NO unless this specific post is an obvious high-signal match.`;
-
-		try {
-			const raw = await modelSession.prompt(prompt, {
-				signal,
-				responseConstraint: CLASSIFIER_BATCH_SCHEMA
-			});
-			logLlmOutput('verification', [post], raw);
-			return raw;
-		} catch (error) {
-			if ((error as Error)?.name === 'AbortError') throw error;
-			const raw = await modelSession.prompt(
-				`${prompt}\n\nReturn exactly one JSON object like {"posts":[{"id":"p1","description":"short reason"}]}.`,
-				{ signal }
-			);
-			logLlmOutput('verification fallback', [post], raw);
-			return raw;
-		}
-	}
-
-	function logLlmOutput(stage: string, posts: QueuedPost[], raw: string) {
-		console.groupCollapsed(
-			`[jetstreamfiltered] LLM ${stage} output · ${posts.length} post${posts.length === 1 ? '' : 's'}`
-		);
-		console.log(
-			'posts',
-			posts.map((post, index) => ({
-				id: batchPostId(index),
-				uri: post.uri,
-				author: authorHandle(post),
-				text: post.text.slice(0, 180)
-			}))
-		);
-		console.log('raw', raw);
-		console.groupEnd();
-	}
-
-	async function verifyAcceptedItems(items: ClassifiedPost[], signal: AbortSignal): Promise<ClassifiedPost[]> {
-		const verified: ClassifiedPost[] = [];
-
-		for (const item of items) {
-			if (!item.decision.keep) {
-				verified.push(item);
-				continue;
-			}
-
-			try {
-				const raw = await runVerificationPrompt(item.post, signal);
-				const decisions = parseBatchDecisions(raw, [item.post]);
-				verified.push({
-					...item,
-					decision:
-						decisions.get(batchPostId(0)) ??
-						omittedDecision(),
-					raw: `${item.raw}\n\nverification:\n${raw}`
-				});
-			} catch (error) {
-				if ((error as Error)?.name === 'AbortError') throw error;
-				promptFailures += 1;
-				verified.push({
-					...item,
-					decision: errorDecision(`Verification failed: ${describeError(error)}`),
-					raw: item.raw
-				});
-			}
-		}
-
-		return verified;
-	}
-
-	function buildClassifierPrompt(posts: QueuedPost[]): string {
-		const payload = posts.map((post, index) => classifierPostPayload(post, index));
-		return `Filter this batch of Bluesky Jetstream posts against the user template.
-
-User template:
-${promptTemplate.trim() || DEFAULT_PROMPT_TEMPLATE}
-
-Decision:
-- Return only the most interesting posts that should be shown.
-- Do not return rejected posts.
-- If no posts should be shown, return {"posts":[]}.
-- Include a post only when it clearly matches at least one wanted class, avoids the skip classes, and you are highly confident it is worth showing.
-- Omit everything else. Default to omission when uncertain.
-- Description must be ${CLASSIFIER_DESCRIPTION_LIMIT} characters or less and explain the decision.
-- Preserve each id exactly.
-- Judge each post independently. A shown post must not affect any other post.
-- Never copy a description from one post to another.
-- Return exactly one JSON object with a posts array.
-- Shape: {"posts":[{"id":"p1","description":"short reason"}]}
-- Do not include markdown, code fences, or extra text.
-
-Posts:
-${JSON.stringify(payload, null, 2)}`;
-	}
-
-	function classifierPostPayload(post: QueuedPost, index: number) {
-		const profile = profilesByDid[post.did];
-		const author = profile?.handle ? `@${profile.handle}` : post.did;
-		return {
-			id: batchPostId(index),
-			author,
-			createdAt: post.createdAt,
-			kind: post.replyParentUri ? 'reply' : 'root post or quote',
-			langs: post.langs.length > 0 ? post.langs : ['unknown'],
-			labels: post.labels,
-			tags: post.tags,
-			links: post.links,
-			text: post.text.slice(0, MAX_BATCH_PROMPT_TEXT_LENGTH)
-		};
-	}
-
-	function parseBatchDecisions(raw: string, posts: QueuedPost[]): Map<string, ClassifierDecision> {
-		const cleaned = stripModelEnvelope(raw);
-		const records = parseBatchDecisionRecords(cleaned);
-
-		const expectedIds = posts.map((_, index) => batchPostId(index));
-		const expectedIdSet = new Set(expectedIds);
-		const decisions = new Map<string, ClassifierDecision>();
-
-		for (const record of records) {
-			const id = recordId(record);
-			if (id && expectedIdSet.has(id)) decisions.set(id, decisionFromRecord(record));
-		}
-
-		for (const id of expectedIds) {
-			if (!decisions.has(id)) decisions.set(id, omittedDecision());
-		}
-
-		return decisions;
-	}
-
-	function stripModelEnvelope(raw: string): string {
-		return raw
-			.trim()
-			.replace(/^```(?:json|text)?/i, '')
-			.replace(/```$/i, '')
-			.trim();
-	}
-
-	function parseBatchDecisionRecords(raw: string): ClassifierRecord[] {
-		const json = parseJsonValue(raw);
-		const jsonRecords = recordsFromJson(json);
-		if (jsonRecords.length > 0) return jsonRecords;
-		return recordsFromLabeledLines(raw);
-	}
-
-	function parseJsonValue(raw: string): unknown {
-		const objectStart = raw.indexOf('{');
-		const arrayStart = raw.indexOf('[');
-		const starts = [objectStart, arrayStart].filter((index) => index >= 0);
-		if (starts.length === 0) return null;
-
-		const start = Math.min(...starts);
-		const end = Math.max(raw.lastIndexOf('}'), raw.lastIndexOf(']'));
-		if (end <= start) return null;
-
-		try {
-			return JSON.parse(raw.slice(start, end + 1));
-		} catch {
-			return null;
-		}
-	}
-
-	function recordsFromJson(value: unknown): ClassifierRecord[] {
-		if (Array.isArray(value)) return value.filter(isRecord);
-		if (!isRecord(value)) return [];
-
-		const list =
-			value.posts ??
-			value.shownPosts ??
-			value.shown ??
-			value.show ??
-			value.results ??
-			value.items ??
-			value.decisions ??
-			value.classifications;
-		if (Array.isArray(list)) return list.filter(isRecord).filter(isShownRecord);
-		if ('id' in value && ('description' in value || 'confidence' in value || 'score' in value)) return [value];
-		return [];
-	}
-
-	function isShownRecord(record: ClassifierRecord): boolean {
-		if (!('answer' in record) && !('decision' in record)) return true;
-		const answer = String(record.answer ?? record.decision ?? '')
-			.trim()
-			.replace(/[^a-z]/gi, '')
-			.toUpperCase();
-		return answer === 'YES' || answer === 'SHOW' || answer === 'KEEP';
-	}
-
-	function recordsFromLabeledLines(raw: string): ClassifierRecord[] {
-		return raw
-			.split('\n')
-			.map((line) => {
-				const match = line.match(
-					/^\s*(p?\d+|post\s*\d+)\s*[:=-]\s*(yes|no)\b(?:\s*[,|;-]\s*([0-9]+(?:\.[0-9]+)?%?))?(?:\s*[,|;-]\s*(.*))?$/i
-				);
-				if (!match) return null;
-				return {
-					id: normalizeRecordId(match[1]),
-					answer: match[2],
-					confidence: match[3],
-					description: match[4]
-				};
+		parseTagTemplate(promptTemplate);
+		const response = await fetch('/api/jetstreamfiltered', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			signal,
+			body: JSON.stringify({
+				template: promptTemplate,
+				posts: posts.map((post, index) => ({ id: batchPostId(index), text: post.text.slice(0, MAX_PROMPT_TEXT_LENGTH), altText: post.images.slice(0, 4).map(image => image.alt.slice(0, 1000)) }))
 			})
-			.filter((record): record is ClassifierRecord => Boolean(record) && isShownRecord(record));
-	}
-
-	function isRecord(value: unknown): value is ClassifierRecord {
-		return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-	}
-
-	function recordId(record: ClassifierRecord): string | null {
-		return normalizeRecordId(record.id ?? record.postId ?? record.post_id);
-	}
-
-	function normalizeRecordId(value: unknown): string | null {
-		const text = String(value ?? '').trim().toLowerCase();
-		if (!text) return null;
-		const postMatch = text.match(/^post\s*(\d+)$/);
-		if (postMatch) return `p${Math.max(1, Number(postMatch[1]))}`;
-		const compactMatch = text.match(/^p?(\d+)$/);
-		if (compactMatch) return `p${Math.max(1, Number(compactMatch[1]))}`;
-		return text;
-	}
-
-	function decisionFromRecord(record: ClassifierRecord): ClassifierDecision {
-		try {
-			return applyConfidenceGate(
-				decisionFromParts(
-					record.answer ?? record.decision ?? 'YES',
-					record.confidence ?? record.score,
-					record.description ?? record.reason ?? record.summary
-				)
-			);
-		} catch (error) {
-			return errorDecision(describeError(error).slice(0, 140));
-		}
-	}
-
-	function decisionFromParts(answerValue: unknown, confidenceValue: unknown, descriptionValue: unknown): ClassifierDecision {
-		const answer = normalizeAnswer(answerValue);
-		const confidence =
-			answer === 'YES' && (confidenceValue == null || confidenceValue === '') ? 1 : normalizeConfidence(confidenceValue);
-		const description =
-			normalizeDescription(descriptionValue) ||
-			(answer === 'YES' ? 'Matches the saved filter.' : 'Does not match the saved filter.');
-		return {
-			keep: answer === 'YES',
-			answer,
-			confidence,
-			description
-		};
-	}
-
-	function normalizeAnswer(value: unknown): 'YES' | 'NO' {
-		const answer = String(value ?? '')
-			.trim()
-			.replace(/[^a-z]/gi, '')
-			.toUpperCase();
-		if (answer === 'YES' || answer === 'SHOW' || answer === 'KEEP') return 'YES';
-		if (answer === 'NO' || answer === 'OMIT' || answer === 'SKIP' || answer === 'REJECT') return 'NO';
-		throw new Error('Model response did not include YES or NO.');
-	}
-
-	function normalizeConfidence(value: unknown): number {
-		const text = String(value ?? '').trim();
-		const parsed = Number(text.replace(/%$/, ''));
-		if (!Number.isFinite(parsed)) return 0;
-		const normalized = parsed > 1 ? parsed / 100 : parsed;
-		return Math.max(0, Math.min(1, normalized));
-	}
-
-	function normalizeDescription(value: unknown): string {
-		return String(value ?? '')
-			.replace(/\s+/g, ' ')
-			.trim()
-			.slice(0, CLASSIFIER_DESCRIPTION_LIMIT);
-	}
-
-	function applyConfidenceGate(decision: ClassifierDecision): ClassifierDecision {
-		if (decision.answer !== 'YES') return { ...decision, keep: false };
-		return { ...decision, keep: true };
+		});
+		const data = await response.json() as { message?: string };
+		if (!response.ok) throw new Error(data.message || 'TypeSafe request failed.');
+		return JSON.stringify(data);
 	}
 
 	function pauseQueue() {
@@ -1197,6 +598,7 @@ ${JSON.stringify(payload, null, 2)}`;
 
 	function resumeQueue() {
 		queuePaused = false;
+		modelError = null;
 		scheduleQueueDrain();
 	}
 
@@ -1205,6 +607,7 @@ ${JSON.stringify(payload, null, 2)}`;
 	}
 
 	function clearResults() {
+		selectedTag = '';
 		acceptedPosts = [];
 		rejectedPosts = [];
 		postsAccepted = 0;
@@ -1386,11 +789,6 @@ ${JSON.stringify(payload, null, 2)}`;
 		return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 	}
 
-	function contextLabel(): string {
-		if (!modelSession?.contextWindow || !modelSession.contextUsage) return 'n/a';
-		return `${modelSession.contextUsage} / ${modelSession.contextWindow}`;
-	}
-
 	onMount(() => {
 		try {
 			const savedFont = localStorage.getItem(STORAGE_FONT_KEY);
@@ -1404,11 +802,8 @@ ${JSON.stringify(payload, null, 2)}`;
 		disconnectJetstream();
 		stopCurrentPrompt();
 		modelAbortController?.abort();
-		modelSession?.destroy?.();
-		languageDetector?.destroy?.();
 		if (drainTimer) clearTimeout(drainTimer);
 		if (profileBatchTimer) clearTimeout(profileBatchTimer);
-		clearModelDownloadHintTimer();
 	});
 </script>
 
@@ -1422,7 +817,7 @@ ${JSON.stringify(payload, null, 2)}`;
 		<div class="title-row">
 			<div>
 				<h1>Jetstream Filtered</h1>
-				<p class="subtitle">Prompt API queue over live Bluesky Jetstream posts</p>
+				<p class="subtitle">TypeSafe AI tags over live Bluesky Jetstream posts · local development</p>
 			</div>
 			<FontPicker value={fontKey} onchange={handleFontChange} />
 		</div>
@@ -1437,7 +832,7 @@ ${JSON.stringify(payload, null, 2)}`;
 					disabled={!canLoadModel}
 					onclick={loadModel}
 				>
-					{modelState === 'ready' ? 'Reload model' : 'Load model'}
+					{modelState === 'ready' ? 'Recheck TypeSafe' : 'Connect TypeSafe'}
 				</button>
 				<button
 					type="button"
@@ -1445,7 +840,7 @@ ${JSON.stringify(payload, null, 2)}`;
 					disabled={modelState === 'idle'}
 					onclick={unloadModel}
 				>
-					Unload
+					Disconnect
 				</button>
 			</div>
 			<div class="action-group">
@@ -1469,8 +864,9 @@ ${JSON.stringify(payload, null, 2)}`;
 			</div>
 		</div>
 
+		<p class="muted-copy">Starting the stream sends sampled post text and image alt text to TypeSafe AI. Images themselves are not analyzed. A post may match several tags.</p>
 		<form class="prompt-form" onsubmit={applyPromptTemplate}>
-			<label for="prompt-template">Post classes</label>
+			<label for="prompt-template">Tags — one Tag: description per line</label>
 			<textarea
 				id="prompt-template"
 				rows="8"
@@ -1497,6 +893,11 @@ ${JSON.stringify(payload, null, 2)}`;
 		{/if}
 
 		<div class="queue-controls">
+			<label class="confidence-control" for="tag-threshold">
+				<span>Tag probability threshold <strong>{formatPercent(tagThreshold)}</strong></span>
+				<input id="tag-threshold" type="range" min="0.5" max="0.99" step="0.01" bind:value={tagThreshold} />
+				<small>Applies to new batches. Show a post if any tag matches.</small>
+			</label>
 			<label class="confidence-control" for="classifier-batch-size">
 				<span>
 					Batch size
@@ -1545,18 +946,6 @@ ${JSON.stringify(payload, null, 2)}`;
 				<strong class:live={modelState === 'ready'}>{modelStatus}</strong>
 			</div>
 			<div class="stat">
-				<span>Language</span>
-				<strong class:live={languageState === 'ready'}>{languageStatus}</strong>
-			</div>
-			<div class="stat">
-				<span>Availability</span>
-				<strong>{availability ? normalizeAvailability(availability) : 'n/a'}</strong>
-			</div>
-			<div class="stat">
-				<span>Detector</span>
-				<strong>{languageAvailability ? normalizeAvailability(languageAvailability) : 'n/a'}</strong>
-			</div>
-			<div class="stat">
 				<span>Jetstream</span>
 				<strong class:live={streamStatus === 'live'}>{streamStatusText}</strong>
 			</div>
@@ -1597,39 +986,15 @@ ${JSON.stringify(payload, null, 2)}`;
 				<strong>{textOnlySkipped.toLocaleString()}</strong>
 			</div>
 			<div class="stat">
-				<span>Images</span>
-				<strong>{imageSkipped.toLocaleString()}</strong>
-			</div>
-			<div class="stat">
 				<span>Non-English</span>
 				<strong>{languageSkipped.toLocaleString()}</strong>
 			</div>
-			<div class="stat">
-				<span>Context</span>
-				<strong>{contextLabel()}</strong>
-			</div>
 		</div>
 
-		{#if modelState === 'loading'}
-			<div
-				class="progress-shell"
-				class:indeterminate={modelProgressIndeterminate || modelProgress <= 0}
-				aria-label="Model download progress"
-			>
-				<span style={`width: ${modelProgressIndeterminate || modelProgress <= 0 ? '36%' : formatPercent(modelProgress)}`}></span>
-			</div>
-			{#if modelHint}
-				<p class="model-hint">{modelHint}</p>
-			{/if}
-		{/if}
-
-		{#if modelError || languageError || streamError}
+		{#if modelError || streamError}
 			<div class="error-row">
 				{#if modelError}
 					<p>{modelError}</p>
-				{/if}
-				{#if languageError}
-					<p>{languageError}</p>
 				{/if}
 				{#if streamError}
 					<p>{streamError}</p>
@@ -1643,7 +1008,7 @@ ${JSON.stringify(payload, null, 2)}`;
 			<div class="queue-heading">
 				<h2>Current batch</h2>
 				{#if isClassifying}
-					<button type="button" class="mini-button" onclick={stopCurrentPrompt}>Stop prompt</button>
+					<button type="button" class="mini-button" onclick={() => { pauseQueue(); stopCurrentPrompt(); }}>Stop classification</button>
 				{/if}
 			</div>
 			{#if currentBatchPosts.length > 0}
@@ -1706,13 +1071,19 @@ ${JSON.stringify(payload, null, 2)}`;
 		<section class="empty-state wobbly-border-light">
 			<h2>{streamStatus === 'live' ? 'Waiting for accepted posts.' : 'Ready for Jetstream.'}</h2>
 			<p>
-				Text-only English gate: {postsSkipped.toLocaleString()} skipped,
-				{promptFailures.toLocaleString()} prompt failures
+				English discovery feed: {postsSkipped.toLocaleString()} skipped,
+				{promptFailures.toLocaleString()} classification failures
 			</p>
 		</section>
 	{:else}
+		<label for="tag-filter">Show tag</label>
+		<select id="tag-filter" bind:value={selectedTag}>
+			<option value="">All tags</option>
+			{#each resultTags as tag}<option value={tag}>{tag}</option>{/each}
+		</select>
+		<p class="muted-copy">{visiblePosts.length} posts shown</p>
 		<section class="filtered-gallery" aria-label="Jetstream filtered posts">
-			{#each acceptedPosts as item (item.post.uri)}
+			{#each visiblePosts as item (item.post.uri)}
 				{@const post = item.post}
 				{@const profile = profilesByDid[post.did]}
 				<article class="post-card">
@@ -1730,8 +1101,9 @@ ${JSON.stringify(payload, null, 2)}`;
 					</div>
 
 					<div class="decision-row">
-						<span>Shown</span>
-						<strong title={item.decision.description}>{item.decision.description}</strong>
+						{#each item.decision.tags as tag}
+							<span title="Probability that this tag applies">{tag.name} {formatPercent(tag.probability)}</span>
+						{/each}
 					</div>
 
 					{#if post.images.length > 0}
@@ -2051,45 +1423,6 @@ ${JSON.stringify(payload, null, 2)}`;
 		color: #1d7f6e;
 	}
 
-	.progress-shell {
-		height: 8px;
-		overflow: hidden;
-		border-radius: 999px;
-		background: var(--muted-surface);
-	}
-
-	.progress-shell span {
-		display: block;
-		height: 100%;
-		border-radius: inherit;
-		background: var(--accent);
-		transition: width 180ms ease;
-	}
-
-	.progress-shell.indeterminate span {
-		animation: progress-sweep 1.35s ease-in-out infinite;
-	}
-
-	.model-hint {
-		margin: -4px 0 0;
-		color: var(--muted);
-		font-size: 0.84rem;
-		font-weight: 750;
-		line-height: 1.3;
-	}
-
-	@keyframes progress-sweep {
-		0% {
-			transform: translateX(-115%);
-		}
-		50% {
-			transform: translateX(90%);
-		}
-		100% {
-			transform: translateX(300%);
-		}
-	}
-
 	.error-row {
 		display: grid;
 		gap: 5px;
@@ -2302,8 +1635,7 @@ ${JSON.stringify(payload, null, 2)}`;
 		margin-bottom: 6px;
 	}
 
-	.decision-row span,
-	.decision-row strong {
+	.decision-row span {
 		padding: 4px 8px;
 		border-radius: 999px;
 		font-size: 0.78rem;
@@ -2320,15 +1652,7 @@ ${JSON.stringify(payload, null, 2)}`;
 		white-space: nowrap;
 	}
 
-	.decision-row strong {
-		flex: 1 1 auto;
-		min-width: 0;
-		overflow: hidden;
-		background: color-mix(in srgb, var(--accent) 14%, var(--card-bg));
-		color: var(--warm-text);
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
+
 
 	.image-grid {
 		display: grid;

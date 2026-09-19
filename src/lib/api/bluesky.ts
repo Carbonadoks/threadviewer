@@ -1168,36 +1168,62 @@ function parseThread(node: any): ThreadPost {
 	};
 }
 
+type QuotesCaller = (
+	params: { uri: string; limit?: number; cursor?: string },
+	opts?: { signal?: AbortSignal }
+) => Promise<{ data: { posts?: any[]; cursor?: string } }>;
+
+function getQuotesCaller(): QuotesCaller {
+	const getQuotes: QuotesCaller | null =
+		typeof (agent as any).getQuotes === 'function'
+			? (params, opts) => (agent as any).getQuotes(params, opts)
+			: typeof (agent as any).app?.bsky?.feed?.getQuotes === 'function'
+				? (params, opts) => (agent as any).app.bsky.feed.getQuotes(params, opts)
+				: null;
+	if (!getQuotes) {
+		throw new Error('Quote lookup is unavailable in this Bluesky client build.');
+	}
+	return getQuotes;
+}
+
+/** One page of quote posts, so callers can stream, show progress and resume from a cursor. */
+export async function fetchQuotePostsPage(
+	uri: string,
+	options: { cursor?: string; limit?: number; signal?: AbortSignal } = {}
+): Promise<{ posts: ThreadPost[]; cursor?: string }> {
+	throwIfAborted(options.signal);
+	const response = await getQuotesCaller()(
+		{ uri, limit: Math.max(1, Math.min(options.limit ?? 100, 100)), cursor: options.cursor },
+		{ signal: options.signal }
+	);
+	return {
+		posts: (response.data.posts || []).map((post: any) => parsePostView(post)),
+		cursor: response.data.cursor || undefined
+	};
+}
+
 export async function fetchQuotesForPost(
 	uri: string,
 	options: { limit?: number; fetchAll?: boolean } = {}
 ): Promise<{ posts: ThreadPost[]; hasMore: boolean }> {
 	const { limit = 12, fetchAll = false } = options;
-	const getQuotes =
-		typeof (agent as any).getQuotes === 'function'
-			? (params: { uri: string; limit?: number; cursor?: string }) => (agent as any).getQuotes(params)
-			: typeof (agent as any).app?.bsky?.feed?.getQuotes === 'function'
-				? (params: { uri: string; limit?: number; cursor?: string }) =>
-						(agent as any).app.bsky.feed.getQuotes(params)
-				: null;
-	if (!getQuotes) {
-		throw new Error('Quote lookup is unavailable in this Bluesky client build.');
-	}
-
 	const pageSize = fetchAll ? Math.max(25, Math.min(limit, 100)) : limit;
 	const posts: ThreadPost[] = [];
 	const seenUris = new Set<string>();
+	const seenCursors = new Set<string>();
 	let cursor: string | undefined;
 
 	do {
-		const response = await getQuotes({ uri, limit: pageSize, cursor });
-		for (const post of response.data.posts || []) {
-			const parsed = parsePostView(post);
+		const page = await fetchQuotePostsPage(uri, { limit: pageSize, cursor });
+		for (const parsed of page.posts) {
 			if (seenUris.has(parsed.uri)) continue;
 			seenUris.add(parsed.uri);
 			posts.push(parsed);
 		}
-		cursor = response.data.cursor;
+		cursor = page.cursor;
+		// A repeated cursor would otherwise page forever.
+		if (cursor && seenCursors.has(cursor)) cursor = undefined;
+		if (cursor) seenCursors.add(cursor);
 		if (!fetchAll) {
 			break;
 		}
@@ -1553,7 +1579,8 @@ function findHydrationCandidates(post: ThreadPost): ThreadPost[] {
 async function hydrateThread(
 	root: ThreadPost,
 	maxRounds = 30,
-	apiAgent: ThreadApiAgent = agent
+	apiAgent: ThreadApiAgent = agent,
+	signal?: AbortSignal
 ): Promise<boolean> {
 	let encounteredExtraReplies = false;
 	const exhaustedUris = new Set<string>();
@@ -1565,6 +1592,7 @@ async function hydrateThread(
 		// Fetch all truncated nodes in parallel (batch of 10 at a time to avoid rate limits)
 		const batchSize = 10;
 		for (let i = 0; i < candidates.length; i += batchSize) {
+			throwIfAborted(signal);
 			const batch = candidates.slice(i, i + batchSize);
 			const results = await Promise.allSettled(
 				batch.map(async (node) => ({
@@ -1781,12 +1809,68 @@ export async function fetchPostEngagementCounts(
 	return result;
 }
 
-export async function getFullThread(
+/**
+ * Light alternative to getFullThread: one request for the post, its chain of parents
+ * up to the conversation root, and the replies below the post. Replies to the parents
+ * (side branches) and replies the API leaves out are not fetched; use getFullThread
+ * for the whole conversation.
+ */
+export async function getPostContext(
 	uri: string,
-	options: { agent?: ThreadApiAgent } = {}
+	options: { agent?: ThreadApiAgent; signal?: AbortSignal } = {}
 ): Promise<{ rootPost: ThreadPost; depth: number; rootUri: string; isTruncated: boolean }> {
 	const apiAgent = options.agent ?? agent;
+	throwIfAborted(options.signal);
+	const res = await apiAgent.getPostThread(
+		{ uri, depth: FULL_THREAD_FLAT_DEPTH, parentHeight: 1000 },
+		{ signal: options.signal }
+	);
+	const node = res.data.thread as any;
+	if (node?.$type !== 'app.bsky.feed.defs#threadViewPost' || !node.post) {
+		throw new Error(
+			node?.$type === 'app.bsky.feed.defs#blockedPost'
+				? 'This post is blocked.'
+				: 'This post is unavailable.'
+		);
+	}
+
+	// The post with its replies, then its parents linked above it, root first.
+	let top: ThreadPost = parseThread(node);
+	let partial = false;
+	const stack = [top];
+	while (stack.length) {
+		const post = stack.pop()!;
+		if (post.replyCount > post.children.length) partial = true;
+		stack.push(...post.children);
+	}
+	let current = node.parent;
+	while (current?.$type === 'app.bsky.feed.defs#threadViewPost' && current.post) {
+		const parent = parsePostView(current.post);
+		parent.children = [top];
+		// Only the branch toward the post is loaded, so other replies are missing.
+		if (parent.replyCount > 1) partial = true;
+		top = parent;
+		current = current.parent;
+	}
+	// A parent that exists but cannot be shown (blocked/deleted) cuts the chain short.
+	if (current) partial = true;
+
+	return {
+		rootPost: top,
+		depth: computeDepth(top),
+		rootUri: node.post.record?.reply?.root?.uri || top.uri,
+		isTruncated: partial
+	};
+}
+
+export async function getFullThread(
+	uri: string,
+	options: { agent?: ThreadApiAgent; signal?: AbortSignal } = {}
+): Promise<{ rootPost: ThreadPost; depth: number; rootUri: string; isTruncated: boolean }> {
+	const apiAgent = options.agent ?? agent;
+	const { signal } = options;
 	let rootUri = uri;
+	throwIfAborted(signal);
 
 	try {
 		// First fetch with parentHeight to find the true root of the conversation
@@ -1806,14 +1890,17 @@ export async function getFullThread(
 		// Fallback to original URI if root discovery fails
 	}
 
+	throwIfAborted(signal);
 	const flatRootUri = await discoverVisibleRootUriViaFlatThread(uri, apiAgent);
 	if (flatRootUri) {
 		rootUri = flatRootUri;
 	}
 
+	throwIfAborted(signal);
 	const flatThread = await fetchFullThreadViaFlatThreadApi(rootUri, apiAgent);
+	throwIfAborted(signal);
 	if (flatThread) {
-		const encounteredExtraReplies = await hydrateThread(flatThread.rootPost, 30, apiAgent);
+		const encounteredExtraReplies = await hydrateThread(flatThread.rootPost, 30, apiAgent, signal);
 		const isTruncated =
 			flatThread.hasOtherReplies || encounteredExtraReplies || detectTruncation(flatThread.rootPost);
 		return {
@@ -1829,7 +1916,7 @@ export async function getFullThread(
 	const rootPost = parseThread(rootRaw);
 
 	// Recursively hydrate truncated branches
-	const encounteredExtraReplies = await hydrateThread(rootPost, 30, apiAgent);
+	const encounteredExtraReplies = await hydrateThread(rootPost, 30, apiAgent, signal);
 
 	const isTruncated = encounteredExtraReplies || detectTruncation(rootPost);
 	return {

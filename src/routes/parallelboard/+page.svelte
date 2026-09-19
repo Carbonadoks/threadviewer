@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
 	import '../../app.css';
-	import { getProfile, getFullThread } from '$lib/api/bluesky';
+	import { getProfile, getPostContext } from '$lib/api/bluesky';
 	import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
 	import FontPicker from '$lib/components/FontPicker.svelte';
 	import ParallelBoardView from '$lib/components/ParallelBoardView.svelte';
@@ -31,6 +31,7 @@
 	let loading = $state(false);
 	let error: string | null = $state(null);
 	let thread = $state<(SelfReplyThread & { isTruncated?: boolean }) | null>(null);
+	let anchorUri = $state<string | null>(null);
 
 	function updateQueryParam(url: string) {
 		if (!browser) return;
@@ -64,7 +65,9 @@
 				error = 'Could not build an AT URI for this thread.';
 				return;
 			}
-			thread = await getFullThread(atUri);
+			// The post, its parents and its replies; the board's "Full thread" button loads the rest.
+			thread = await getPostContext(atUri);
+			anchorUri = atUri;
 		} catch (e: any) {
 			if (e?.message?.includes('resolve')) {
 				error = `Could not find handle "${parsed.handle}".`;
@@ -138,7 +141,7 @@
 		{#if thread.isTruncated}
 			<p class="truncation-warning">Some replies may be missing</p>
 		{/if}
-		<ParallelBoardView {thread} />
+		<ParallelBoardView {thread} mainLaneAnchorUri={anchorUri} />
 	{/if}
 </main>
 

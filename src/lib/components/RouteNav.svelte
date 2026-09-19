@@ -22,6 +22,7 @@
 		| 'chat'
 		| 'board'
 		| 'blog'
+		| 'reader'
 		| 'clock'
 		| 'treeviewer'
 		| 'xtreeviewer'
@@ -83,6 +84,7 @@
 		{ id: 'chat', href: '/chat', label: 'Chat' },
 		{ id: 'board', href: '/board', label: 'Board' },
 		{ id: 'blog', href: '/blog', label: 'Blog' },
+		{ id: 'reader', href: '/reader', label: 'Reader' },
 		{ id: 'clock', href: '/clock', label: 'Clock' },
 		{ id: 'treeviewer', href: '/treeviewer', label: 'Treeviewer', compactLabel: 'Tree' },
 		{ id: 'xtreeviewer', href: '/xtreeviewer', label: 'X Treeviewer', compactLabel: 'X Tree' },
@@ -159,6 +161,7 @@
 				item.id === 'followinteraction' ||
 				item.id === 'followsearch' ||
 				item.id === 'mentions' ||
+				item.id === 'reader' ||
 				item.id === 'warg' ||
 				item.id === 'wordcloud' ||
 				item.id === 'loom' ||
