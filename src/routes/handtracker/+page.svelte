@@ -668,7 +668,7 @@
 <style>
 	.tracker-card {
 		position: fixed;
-		top: 16px;
+		top: calc(var(--app-header-height, 0px) + 16px);
 		right: 16px;
 		z-index: 1000;
 		display: flex;

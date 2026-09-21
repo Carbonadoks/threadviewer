@@ -1,7 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { ThreadPost } from '../types';
-import { assignLaneColumns, LaneCardLayoutCache, type LanePlacement, type LaneRenderModel } from './parallelBoardLayout';
+import {
+	assignLaneColumns,
+	clipCubicToRect,
+	cullConnectorsToRect,
+	LaneCardLayoutCache,
+	type CubicCurve,
+	type LaneConnector,
+	type LanePlacement,
+	type LaneRenderModel
+} from './parallelBoardLayout';
 
 const mainId = 'main';
 
@@ -127,4 +136,127 @@ test('cache reuses geometry across board movement and invalidates branch, tree, 
 	assert.ok(relabeled.cards.every((card) => card.laneLabel === 'Q99'));
 	cache.retain(new Set());
 	assert.notEqual(cache.get({ ...lane, label: 'Q99' }, false, depths, 398), relabeled);
+});
+
+test('clipCubicToRect finds the visible part of a curve, not its bounding box', () => {
+	const rect = { left: 1000, top: 0, right: 2000, bottom: 1000 };
+	// S-curve from (0, 0) to (10000, 5000) bending at x = 5000: its box covers the rect,
+	// but at x 1000..2000 the curve has only risen to y ≈ 70..290.
+	const sCurve = [0, 0, 5000, 0, 5000, 5000, 10000, 5000] as const;
+	const visible = clipCubicToRect(sCurve, rect);
+	assert.ok(visible);
+	assert.ok(visible.top > 50 && visible.bottom < 350, `unexpected visible part ${JSON.stringify(visible)}`);
+
+	// Same box, but the rect sits where the curve is not.
+	assert.equal(clipCubicToRect(sCurve, { left: 1000, top: 3000, right: 2000, bottom: 4000 }), null);
+
+	// A curve entirely inside is returned whole.
+	const inside = clipCubicToRect([1100, 100, 1200, 100, 1300, 200, 1400, 200], rect);
+	assert.deepEqual(inside, { left: 1100, top: 100, right: 1400, bottom: 200 });
+});
+
+test('cullConnectorsToRect collapses overlapping pass-through fans from one source', () => {
+	const card = (key: string, x: number) => ({ key, x }) as unknown as LaneConnector['from'];
+	const source = card('main:root', 0);
+	const connectors: LaneConnector[] = Array.from({ length: 500 }, (_, index) => ({
+		key: `c${index}`,
+		from: source,
+		to: card(`lane${index}:root`, 20000 + index * 400),
+		kind: 'spawn'
+	}));
+	// Each spawn bends halfway to its target and ends at y = 100, like quote lanes whose
+	// roots share a row; the view sits between the source and every target.
+	const curveOf = (connector: LaneConnector): CubicCurve => {
+		const endX = connector.to.x;
+		const bendX = endX / 2;
+		return [360, 100, bendX, 100, bendX, 100, endX, 100];
+	};
+	const view = { left: 3000, top: 0, right: 5000, bottom: 1000 };
+	const kept = cullConnectorsToRect(connectors, curveOf, view);
+	assert.equal(kept.length, 1);
+
+	// A connector that ends inside the view is always kept.
+	const ending: LaneConnector = { key: 'end', from: source, to: card('near:root', 4000), kind: 'spawn' };
+	const keptWithEnd = cullConnectorsToRect([...connectors, ending], (c) =>
+		c === ending ? [360, 100, 2000, 100, 2000, 100, 4000, 100] : curveOf(c), view);
+	assert.equal(keptWithEnd.length, 2);
+	assert.ok(keptWithEnd.includes(ending));
+});
+
+test('cullConnectorsToRect merges a fan leaving a source that is in view', () => {
+	const card = (key: string, x: number) => ({ key, x }) as unknown as LaneConnector['from'];
+	const source = card('main:root', 0);
+	// New quote lanes sit right next to their source, so the source is on screen and
+	// thousands of spawns leave it together, bending far to the right.
+	const connectors: LaneConnector[] = Array.from({ length: 5000 }, (_, index) => ({
+		key: `c${index}`,
+		from: source,
+		to: card(`lane${index}:root`, 40000 + index * 400),
+		kind: 'spawn'
+	}));
+	const curveOf = (connector: LaneConnector): CubicCurve => {
+		const startX = 360;
+		const endX = connector.to.x - 8;
+		const bendX = startX + (endX - startX) * 0.48;
+		return [startX, 300, bendX, 300, bendX, 180, endX, 180];
+	};
+	const view = { left: -600, top: -600, right: 3000, bottom: 1600 };
+	const kept = cullConnectorsToRect(connectors, curveOf, view);
+	assert.ok(kept.length <= 3, `expected the fan to collapse, kept ${kept.length}`);
+});
+
+test('cullConnectorsToRect caps distinct pass-through lines and keeps lines entirely in view', () => {
+	const card = (key: string, x: number) => ({ key, x }) as unknown as LaneConnector['from'];
+	// 3,000 lines from different sources, each crossing the view at its own height.
+	const connectors: LaneConnector[] = Array.from({ length: 3000 }, (_, index) => ({
+		key: `c${index}`,
+		from: card(`src${index}:post`, 0),
+		to: card(`lane${index}:root`, 50000),
+		kind: 'reference'
+	}));
+	const curveOf = (connector: LaneConnector): CubicCurve => {
+		const y = Number(connector.key.slice(1)) * 0.5;
+		return [0, y, 10000, y, 40000, y, 50000, y];
+	};
+	const ending: LaneConnector = { key: 'end', from: card('a:b', 1200), to: card('c:d', 1500), kind: 'spawn' };
+	const all = [...connectors, ending];
+	const stats = { crossing: 0, local: 0, sources: 0, mergeGrid: 0 };
+	const view = { left: 1000, top: -100, right: 3000, bottom: 2000 };
+	const kept = cullConnectorsToRect(
+		all,
+		(c) => (c === ending ? [1200, 50, 1300, 50, 1400, 80, 1500, 80] : curveOf(c)),
+		view,
+		{ maxPassThrough: 250, stats }
+	);
+	assert.equal(stats.crossing, 3001);
+	assert.equal(stats.local, 1);
+	assert.ok(kept.length <= 251, `kept ${kept.length}`);
+	assert.ok(kept.includes(ending));
+	assert.ok(stats.mergeGrid > 6);
+	// Draw order is preserved.
+	const order = kept.map((c) => all.indexOf(c));
+	assert.deepEqual(order, [...order].sort((a, b) => a - b));
+});
+
+test('cullConnectorsToRect merges thousands of lanes pointing at one post in view', () => {
+	const card = (key: string, x: number) => ({ key, x }) as unknown as LaneConnector['from'];
+	const target = card('main:quoted', 0);
+	// Every quote lane points back at the quoted post in the main lane: all arrowheads land
+	// on one point in view, and the lines arrive from far to the right.
+	const connectors: LaneConnector[] = Array.from({ length: 5885 }, (_, index) => ({
+		key: `q${index}`,
+		from: card(`lane${index}:root`, 3000 + index * 400),
+		to: target,
+		kind: 'reference'
+	}));
+	const curveOf = (connector: LaneConnector): CubicCurve => {
+		const startX = connector.from.x + 60;
+		const offset = Math.max(64, startX * 0.35);
+		return [startX, 120, startX - offset, 120, 60 + offset, 200, 60, 200];
+	};
+	const stats = { crossing: 0, local: 0, sources: 0, mergeGrid: 0 };
+	const kept = cullConnectorsToRect(connectors, curveOf, { left: -600, top: -600, right: 2400, bottom: 1400 }, { stats });
+	assert.equal(stats.crossing, 5885);
+	assert.equal(stats.sources, 5885);
+	assert.ok(kept.length <= 250, `kept ${kept.length}`);
 });

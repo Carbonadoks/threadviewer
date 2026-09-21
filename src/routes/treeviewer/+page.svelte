@@ -24,6 +24,12 @@
 	import type { QuoteDownloadEvent } from '$lib/utils/treeQuoteLoader';
 	import { parseXStatusUrl } from '$lib/api/x';
 
+	let { suppliedThread = null, initialActiveUri = null, inline = false }: {
+		suppliedThread?: (SelfReplyThread & { isTruncated?: boolean }) | null;
+		initialActiveUri?: string | null;
+		inline?: boolean;
+	} = $props();
+
 	const fontFamilies: Record<string, string> = {
 		virgil: "'Virgil', cursive",
 		caveat: "'Caveat', cursive",
@@ -205,6 +211,7 @@
 	let error: string | null = $state(null);
 	let thread = $state<(SelfReplyThread & { isTruncated?: boolean }) | null>(null);
 	let selectedUri = $state<string | null>(null);
+	let textScrollFollowsTree = true;
 	let treeViewMode = $state<TreeViewMode>('nodes');
 	let treeLayout = $state<TreeLayoutMode>('vertical');
 	let radialMinRadius = $state(360);
@@ -253,6 +260,20 @@
 	let embeddedSection = $state(readEmbeddedSectionParam());
 	let treeOnlyEmbed = $state(initialTreeOnlyEmbed);
 	let embeddedUiCollapsed = $state(initialTreeOnlyEmbed);
+
+	// Reuse the fetched lane directly when hosted inside parallelboard.
+	$effect(() => {
+		if (!suppliedThread) return;
+		thread = suppliedThread;
+		selectedUri = initialActiveUri ?? suppliedThread.rootPost.uri;
+		focusedTreeUri = initialActiveUri ?? suppliedThread.rootPost.uri;
+		allReplyLaneIds = new Set([MAIN_LANE_ID]);
+		const uri = initialActiveUri ?? suppliedThread.rootPost.uri;
+		void tick().then(() => {
+			centerTreeNode(uri, MAIN_LANE_ID);
+			chatScrollRequest = { uri, nonce: ++chatScrollNonce };
+		});
+	});
 
 	let treeLaneHeaderHeight = $derived(embeddedUiCollapsed ? 0 : TREE_LANE_HEADER_HEIGHT);
 	let allLanes = $derived(thread ? buildViewerLanes(thread) : []);
@@ -1228,7 +1249,7 @@
 		setLaneTreeExpanded(laneId, !expandedLaneIds.has(laneId));
 	}
 
-	function setAllRepliesForLane(laneId: string, enabled: boolean) {
+	function setAllRepliesForLane(laneId: string, enabled: boolean, centerTree = true) {
 		const lane = allLanes.find((candidate) => candidate.id === laneId);
 		const nextAllReplyLaneIds = new Set(allReplyLaneIds);
 		if (enabled) {
@@ -1245,7 +1266,7 @@
 		activeLaneId = laneId;
 		void tick().then(() => {
 			const updatedLane = allLanes.find((candidate) => candidate.id === laneId);
-			if (updatedLane?.focusedUri) centerTreeNode(updatedLane.focusedUri, laneId);
+			if (centerTree && updatedLane?.focusedUri) centerTreeNode(updatedLane.focusedUri, laneId);
 		});
 		reportAllRepliesState(enabled);
 	}
@@ -1539,7 +1560,7 @@
 
 		if (bestUri && bestUri !== activeForumPostUri) {
 			activeForumPostUri = bestUri;
-			focusTreePostFromChat(bestUri);
+			focusTreePostFromChat(bestUri, textScrollFollowsTree);
 		}
 	}
 
@@ -1547,8 +1568,9 @@
 		const lane = allLanes.find((candidate) => candidate.id === laneId);
 		if (!lane) return;
 		if (!findPostByUri(lane.thread.rootPost, uri)) return;
+		textScrollFollowsTree = false;
 		if (uri === lane.thread.rootPost.uri) {
-			setAllRepliesForLane(laneId, true);
+			setAllRepliesForLane(laneId, true, false);
 		} else {
 			ensurePathOnlyForLane(laneId);
 		}
@@ -1556,7 +1578,6 @@
 		updateLaneSelection(laneId, uri, uri);
 		chatScrollRequest = { uri, nonce: ++chatScrollNonce };
 		void tick().then(() => {
-			centerTreeNode(uri, laneId);
 			chatScrollRequest = { uri, nonce: ++chatScrollNonce };
 		});
 	}
@@ -1615,10 +1636,22 @@
 		};
 	}
 
-	function focusTreePostFromChat(uri: string) {
+	function focusTreePostFromChat(uri: string, centerTree = true) {
 		expandAncestorsForUri(uri);
 		updateLaneFocus(activeLaneId, uri);
-		void tick().then(() => centerTreeNode(uri, activeLaneId));
+		// Automatic text scrolling after a tree click must not move the tree back.
+		if (centerTree) void tick().then(() => centerTreeNode(uri, activeLaneId));
+	}
+
+	function followUserTextScroll(node: HTMLElement) {
+		const resume = () => { textScrollFollowsTree = true; };
+		const events = ['wheel', 'pointerdown', 'touchstart', 'keydown'] as const;
+		for (const event of events) node.addEventListener(event, resume, { capture: true, passive: true });
+		return {
+			destroy() {
+				for (const event of events) node.removeEventListener(event, resume, true);
+			}
+		};
 	}
 
 	async function loadQuotesForChatPost(postUri: string, fetchAll = false): Promise<ThreadPost[] | null> {
@@ -2250,8 +2283,8 @@
 		} catch {}
 
 		const params = new URLSearchParams(window.location.search);
-		embeddedSection = ['thread-section', 'tree'].includes(params.get('embed') ?? '');
-		treeOnlyEmbed = params.get('embed') === 'tree';
+		embeddedSection = inline || ['thread-section', 'tree'].includes(params.get('embed') ?? '');
+		treeOnlyEmbed = !inline && params.get('embed') === 'tree';
 		const viewParam = params.get('view');
 		if (viewParam === 'chat' || viewParam === 'forum' || viewParam === 'carousel') {
 			textPanelMode = viewParam;
@@ -2262,7 +2295,7 @@
 			embeddedUiCollapsed = treeOnlyEmbed;
 		}
 		const urlParam = params.get('url');
-		if (urlParam) {
+		if (urlParam && !inline) {
 			urlInput = urlParam;
 			loadThread(urlParam);
 		}
@@ -2327,7 +2360,7 @@
 	<title>Treeviewer</title>
 </svelte:head>
 
-<main class:embedded={embeddedSection} style="font-family: {fontFamily}">
+<main class:inline class:embedded={embeddedSection} style="font-family: {fontFamily}">
 	{#if !embeddedSection}
 		<header>
 			<RouteNav
@@ -2841,7 +2874,7 @@
 			{/if}
 
 			{#if !chatCollapsed}
-				<div class="chat-panel">
+				<div class="chat-panel" use:followUserTextScroll>
 					{#if !embeddedUiCollapsed}
 						<div class="chat-panel-title">
 							<span>{activeLane?.label ?? 'Lane'} · {allRepliesMode ? 'all replies' : 'selected path'}</span>
@@ -2922,7 +2955,7 @@
 								onquoteselect={selectQuoteFromChat}
 								onquoteall={showAllQuotePosts}
 								onpostselect={focusTreePostFromChat}
-								onactivepostchange={focusTreePostFromChat}
+								onactivepostchange={(uri) => focusTreePostFromChat(uri, textScrollFollowsTree)}
 							/>
 						</div>
 					{/if}
@@ -3429,6 +3462,15 @@
 		--panel-height: 100vh;
 		height: 100vh;
 		gap: 6px;
+	}
+
+	main.inline {
+		height: 100%;
+	}
+
+	main.inline .viewer-shell {
+		--panel-height: 100%;
+		height: 100%;
 	}
 
 	main.embedded .viewer-shell.ui-collapsed:not(.tree-collapsed):not(.chat-collapsed) {

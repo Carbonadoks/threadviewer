@@ -2565,7 +2565,7 @@
 	.page {
 		display: flex;
 		flex-direction: column;
-		height: 100vh;
+		height: calc(100vh - var(--app-header-height, 0px));
 		overflow: hidden;
 	}
 

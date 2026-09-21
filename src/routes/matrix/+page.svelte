@@ -445,8 +445,8 @@
 		--matrix-ink: #e8ffe0;
 		--matrix-ui-font: var(--font-matrix-ui);
 		position: relative;
-		height: 100svh;
-		min-height: 100svh;
+		height: calc(100svh - var(--app-header-height, 0px));
+		min-height: calc(100svh - var(--app-header-height, 0px));
 		padding: 8px;
 		background:
 			radial-gradient(circle at top, rgba(62, 255, 90, 0.12), transparent 30%),
@@ -474,7 +474,7 @@
 	.matrix-chrome {
 		position: relative;
 		width: min(1060px, 100%);
-		max-height: calc(100svh - 16px);
+		max-height: calc((100svh - var(--app-header-height, 0px)) - 16px);
 		display: grid;
 		gap: 8px;
 		padding: 40px 12px 12px;
@@ -828,25 +828,6 @@
 		100% {
 			opacity: 0;
 		}
-	}
-
-	:global(.matrix-shell .route-nav-link) {
-		background: rgba(2, 8, 4, 0.86);
-		border-color: rgba(125, 255, 154, 0.18);
-		box-shadow: none;
-		color: var(--matrix-green-strong);
-		font-family: var(--matrix-ui-font);
-	}
-
-	:global(.matrix-shell .route-nav-link:hover) {
-		background: rgba(11, 24, 14, 0.96);
-		border-color: rgba(125, 255, 154, 0.36);
-	}
-
-	:global(.matrix-shell .route-nav-link.active) {
-		background: rgba(18, 48, 24, 0.92);
-		border-color: rgba(125, 255, 154, 0.44);
-		box-shadow: 0 0 0 1px rgba(125, 255, 154, 0.16);
 	}
 
 	@media (max-width: 640px) {

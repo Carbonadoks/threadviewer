@@ -1405,7 +1405,7 @@
 
 <style>
 	.frontpage-shell {
-		height: 100vh;
+		height: calc(100vh - var(--app-header-height, 0px));
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
@@ -2223,7 +2223,7 @@
 	@media (max-width: 720px) {
 		.frontpage-shell {
 			height: auto;
-			min-height: 100svh;
+			min-height: calc(100svh - var(--app-header-height, 0px));
 			overflow: visible;
 		}
 
@@ -2294,13 +2294,13 @@
 		.frontpage-shell.mobile-thread-focused .frontpage-workspace.with-viewer {
 			display: block;
 			height: auto;
-			min-height: 100svh;
+			min-height: calc(100svh - var(--app-header-height, 0px));
 			overflow: visible;
 		}
 
 		.frontpage-shell.mobile-thread-focused .treeviewer-pane,
 		.frontpage-shell.mobile-thread-focused .treeviewer-sections {
-			min-height: 100svh;
+			min-height: calc(100svh - var(--app-header-height, 0px));
 			overflow: visible;
 		}
 
@@ -2310,8 +2310,8 @@
 
 		.frontpage-shell.mobile-thread-focused .treeviewer-section {
 			width: 100%;
-			height: 100svh;
-			min-height: 100svh;
+			height: calc(100svh - var(--app-header-height, 0px));
+			min-height: calc(100svh - var(--app-header-height, 0px));
 			border: 0;
 			border-radius: 0;
 			box-shadow: none;

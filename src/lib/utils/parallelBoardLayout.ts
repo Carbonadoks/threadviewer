@@ -502,3 +502,133 @@ export function queryConnectorIndex(
 	hits.sort((a, b) => a - b);
 	return hits.map((i) => index.connectors[i]);
 }
+
+/** Cubic Bézier as [x0, y0, x1, y1, x2, y2, x3, y3]. */
+export type CubicCurve = readonly [number, number, number, number, number, number, number, number];
+export type BoardRect = { left: number; top: number; right: number; bottom: number };
+
+const CLIP_MAX_DEPTH = 24;
+
+/**
+ * Bounds of the part of `curve` inside `rect`, or null when the curve misses it.
+ * Subdivides with de Casteljau and rejects pieces whose control-point box misses the
+ * rect (a Bézier stays inside its control hull). A piece thinner than `tolerance` in
+ * either direction is effectively a line, so its box clipped to the rect is accepted:
+ * this keeps long near-straight spans to a logarithmic number of splits.
+ */
+export function clipCubicToRect(curve: CubicCurve, rect: BoardRect, tolerance = 4): BoardRect | null {
+	let result: BoardRect | null = null;
+	const stack: { c: CubicCurve; depth: number }[] = [{ c: curve, depth: 0 }];
+	while (stack.length) {
+		const { c, depth } = stack.pop()!;
+		const minX = Math.min(c[0], c[2], c[4], c[6]);
+		const maxX = Math.max(c[0], c[2], c[4], c[6]);
+		const minY = Math.min(c[1], c[3], c[5], c[7]);
+		const maxY = Math.max(c[1], c[3], c[5], c[7]);
+		if (maxX < rect.left || minX > rect.right || maxY < rect.top || minY > rect.bottom) continue;
+		const inside = minX >= rect.left && maxX <= rect.right && minY >= rect.top && maxY <= rect.bottom;
+		if (inside || maxX - minX <= tolerance || maxY - minY <= tolerance || depth >= CLIP_MAX_DEPTH) {
+			const piece = {
+				left: Math.max(minX, rect.left),
+				right: Math.min(maxX, rect.right),
+				top: Math.max(minY, rect.top),
+				bottom: Math.min(maxY, rect.bottom)
+			};
+			result = result
+				? {
+						left: Math.min(result.left, piece.left),
+						right: Math.max(result.right, piece.right),
+						top: Math.min(result.top, piece.top),
+						bottom: Math.max(result.bottom, piece.bottom)
+					}
+				: piece;
+			continue;
+		}
+		// Split at t = 0.5.
+		const [x0, y0, x1, y1, x2, y2, x3, y3] = c;
+		const ax = (x0 + x1) / 2, ay = (y0 + y1) / 2;
+		const bx = (x1 + x2) / 2, by = (y1 + y2) / 2;
+		const cx = (x2 + x3) / 2, cy = (y2 + y3) / 2;
+		const dx = (ax + bx) / 2, dy = (ay + by) / 2;
+		const ex = (bx + cx) / 2, ey = (by + cy) / 2;
+		const mx = (dx + ex) / 2, my = (dy + ey) / 2;
+		stack.push({ c: [x0, y0, ax, ay, dx, dy, mx, my], depth: depth + 1 });
+		stack.push({ c: [mx, my, ex, ey, cx, cy, x3, y3], depth: depth + 1 });
+	}
+	return result;
+}
+
+export type ConnectorCullStats = {
+	/** Curves that really cross the rect. */
+	crossing: number;
+	/** Of those, curves with both ends inside the rect; always drawn. */
+	local: number;
+	/** Distinct source cards among the crossing curves. */
+	sources: number;
+	/** Merge grid (px) needed to fit the pass-through budget. */
+	mergeGrid: number;
+};
+
+/**
+ * Connectors worth drawing inside `rect`: curves that actually pass through it (not just
+ * their bounding box). Curves with both ends inside are short and distinct, so they are
+ * always kept. The rest (a fan crossing the view, or thousands of quote lanes all pointing
+ * at one post in view) are merged when their visible parts and in-view endpoints coincide
+ * on a `mergeGrid` px grid, whatever their source. If more than `maxPassThrough` remain,
+ * the grid doubles until they fit: lines closer than a few px read as one band, and drawing
+ * them all is what made large quote fans slow to paint.
+ */
+export function cullConnectorsToRect(
+	connectors: LaneConnector[],
+	getCurve: (connector: LaneConnector) => CubicCurve,
+	rect: BoardRect,
+	options: { mergeGrid?: number; maxPassThrough?: number; stats?: ConnectorCullStats } = {}
+): LaneConnector[] {
+	const maxPassThrough = options.maxPassThrough ?? 250;
+	const keptIndexes: number[] = [];
+	const passThrough: { index: number; visible: BoardRect; start: [number, number] | null; end: [number, number] | null }[] = [];
+	const sources = new Set<string>();
+	const contains = (x: number, y: number) =>
+		x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+	connectors.forEach((connector, index) => {
+		const curve = getCurve(connector);
+		const visible = clipCubicToRect(curve, rect);
+		if (!visible) return;
+		sources.add(connector.from.key);
+		const startInside = contains(curve[0], curve[1]);
+		const endInside = contains(curve[6], curve[7]);
+		if (startInside && endInside) keptIndexes.push(index);
+		else
+			passThrough.push({
+				index,
+				visible,
+				start: startInside ? [curve[0], curve[1]] : null,
+				end: endInside ? [curve[6], curve[7]] : null
+			});
+	});
+
+	let grid = options.mergeGrid ?? 6;
+	let merged: number[] = [];
+	for (;;) {
+		const keys = new Set<string>();
+		merged = [];
+		const q = (value: number) => Math.round(value / grid);
+		const point = (p: [number, number] | null) => (p ? `${q(p[0])},${q(p[1])}` : '-');
+		for (const { index, visible, start, end } of passThrough) {
+			const key = `${q(visible.left)}:${q(visible.right)}:${q(visible.top)}:${q(visible.bottom)}:${point(start)}:${point(end)}`;
+			if (keys.has(key)) continue;
+			keys.add(key);
+			merged.push(index);
+		}
+		if (merged.length <= maxPassThrough || grid >= 4096) break;
+		grid *= 2;
+	}
+
+	if (options.stats) {
+		options.stats.crossing = keptIndexes.length + passThrough.length;
+		options.stats.local = keptIndexes.length;
+		options.stats.sources = sources.size;
+		options.stats.mergeGrid = grid;
+	}
+	return [...keptIndexes, ...merged].sort((a, b) => a - b).map((index) => connectors[index]);
+}

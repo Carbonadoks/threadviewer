@@ -13,9 +13,7 @@
 </svelte:head>
 
 <main class="landing-page">
-	<div class="nav-shell">
-		<RouteNav current="landing" compact align="center" />
-	</div>
+	<RouteNav current="landing" />
 
 	<section class="hero-stage" aria-labelledby="landing-title">
 		<div class="hero-paper" aria-hidden="true">
@@ -92,7 +90,7 @@
 	}
 
 	.landing-page {
-		min-height: 100vh;
+		min-height: calc(100vh - var(--app-header-height, 0px));
 		display: flex;
 		flex-direction: column;
 		color: var(--landing-ink);
@@ -102,12 +100,6 @@
 			var(--landing-bg);
 		background-size: 28px 28px;
 		overflow-x: hidden;
-	}
-
-	.nav-shell {
-		width: min(1120px, calc(100% - 28px));
-		margin: 0 auto;
-		padding: 16px 0 4px;
 	}
 
 	.hero-stage {
@@ -430,11 +422,6 @@
 	}
 
 	@media (max-width: 820px) {
-		.nav-shell {
-			width: min(100% - 20px, 1120px);
-			padding-top: 10px;
-		}
-
 		.hero-stage {
 			min-height: 74vh;
 			padding: 46px 18px 58px;

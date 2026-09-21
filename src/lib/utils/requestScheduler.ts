@@ -161,6 +161,16 @@ export class RequestScheduler {
 		});
 	}
 
+	/** Moves a queued task to a more urgent priority (no-op if it is running or unknown). */
+	promote(key: string, priority: RequestPriority) {
+		const task = this.byKey.get(key);
+		if (!task || task.state !== 'queued' || priority >= task.priority) return;
+		this.removeQueued(task);
+		task.priority = priority;
+		this.queues[priority].push(task);
+		this.pump();
+	}
+
 	snapshot(): SchedulerSnapshot {
 		const queuedByKind: Record<RequestKind, number> = { quotes: 0, thread: 0 };
 		let queued = 0;

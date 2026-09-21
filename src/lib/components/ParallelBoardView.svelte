@@ -3,7 +3,7 @@
 		import {
 			assignLaneColumns, buildConnectorIndex, buildPostDepthMap, collectLaneChains,
 			firstIndexAtOrAbove, LaneCardLayoutCache, lastIndexAtOrBelow, pickLaneChainId,
-			queryConnectorIndex, type ConnectorIndex, type LaneChain, type LaneCard,
+			queryConnectorIndex, cullConnectorsToRect, type ConnectorIndex, type CubicCurve, type LaneChain, type LaneCard,
 			type LaneRenderModel, type LaneConnector
 		} from '$lib/utils/parallelBoardLayout';
 		import {
@@ -19,7 +19,7 @@
 			type RequestPriority,
 			type SchedulerSnapshot
 		} from '$lib/utils/requestScheduler';
-		import BoardView from '$lib/components/BoardView.svelte';
+		import TreeViewer from '../../routes/treeviewer/+page.svelte';
 		import ThreadExportButton from '$lib/components/ThreadExportButton.svelte';
 		import type { EmbedImage, QuotedRecordEmbed, ThreadPost } from '$lib/types';
 		import type { BoardPlatformConfig, BoardThread } from '$lib/types/boardPlatform';
@@ -84,6 +84,8 @@
 		/** The post's advertised quote count, for progress. */
 		expected?: number;
 		handle?: string;
+		/** A running load is paused between pages; it resumes from `cursor`. */
+		paused?: boolean;
 	};
 	type NavigationDirection = 'left' | 'right' | 'up' | 'down';
 	type HighlightSegment = {
@@ -186,7 +188,7 @@
 	// Below this zoom, cards render as lightweight previews at their measured size.
 	const LOW_DETAIL_ZOOM = 0.35;
 	// Shadow cards deeper in a stack sit behind the others; render only the nearest ones.
-	const SHADOW_STACK_RENDER_LIMIT = 24;
+	const SHADOW_STACK_RENDER_LIMIT = 8;
 	const MINIMAP_REDRAW_MS = 120;
 	const QUOTE_PICKER_PAGE = 60;
 	const GALLERY_PAGE = 120;
@@ -228,7 +230,7 @@
 				{ keys: ['1-9'], description: 'Pick quote posts, or jump to numbered child branches in tree view' },
 				{ keys: ['r', 'Backspace'], description: 'Jump to the current fork point or the root while in tree view' },
 				{ keys: ['g'], description: 'Open or close the selected post details modal' },
-				{ keys: ['Enter'], description: 'Open the selected card in the tree board' },
+				{ keys: ['Enter'], description: 'Open the selected card in treeviewer' },
 				{ keys: ['o'], description: `Open the selected post on ${platformName}` },
 				{ keys: ['q'], description: 'Fetch, link, or jump to the selected card’s quoted thread' },
 				{ keys: ['w'], description: 'Open quote posts for the selected card' },
@@ -450,6 +452,9 @@
 	 * it scrolls near view, so thousands of quotes or images never mount at once. */
 	function revealWhenVisible(node: HTMLElement, onVisible: () => void) {
 		let frame = 0;
+		// Inside a scrolling list, watch that list; the page viewport's margin does not
+		// reach into a scroll box, so more items would only appear at its very bottom.
+		const root = node.closest<HTMLElement>('[data-reveal-root]');
 		const observer = new IntersectionObserver(
 			(entries) => {
 				if (!entries.some((entry) => entry.isIntersecting)) return;
@@ -462,7 +467,7 @@
 					observer.observe(node);
 				});
 			},
-			{ rootMargin: '600px' }
+			{ root, rootMargin: root ? '400px' : '600px' }
 		);
 		observer.observe(node);
 		return {
@@ -1042,13 +1047,19 @@
 
 		/** Row tops from measured heights. Only measured cards are visited, so a height
 		 * change costs O(measured cards + rows) instead of a full board rebuild. */
-		function computeRowLayout(model: BoardModel, heights: Record<string, number>): RowLayout {
+		function computeRowLayout(
+			model: BoardModel,
+			heights: Record<string, number>,
+			expandedId: string | null
+		): RowLayout {
 			const { minRow, maxRow } = model;
 			const rowCount = maxRow - minRow + 1;
 			const rowHeights = new Float64Array(rowCount).fill(CARD_HEIGHT);
 			for (const key in heights) {
 				const card = model.cardsByKey.get(key);
 				if (!card) continue;
+				// Stacked shadow cards take their row's height; they never size it.
+				if (card.visibility === 'shadow' && card.laneId !== expandedId) continue;
 				const index = card.row - minRow;
 				if (heights[key] > rowHeights[index]) rowHeights[index] = heights[key];
 			}
@@ -1150,7 +1161,7 @@
 				expandedLaneId
 			)
 		);
-		let rowLayout = $derived.by(() => computeRowLayout(boardModel, cardHeights));
+		let rowLayout = $derived.by(() => computeRowLayout(boardModel, cardHeights, expandedLaneId));
 	let activeCard = $derived.by(
 		() =>
 			boardModel.cardsByKey.get(activeCardKey) ??
@@ -1178,19 +1189,7 @@
 			? galleryImages.filter((image) => image.alt.trim())
 			: galleryImages
 	);
-	let nestedLightboxImageVariants = $derived.by(() => {
-		const variants: Record<string, LightboxImageVariants> = {};
-		for (const [originalSrc, mirrorSrc] of Object.entries(imageOverrides)) {
-			const entry: LightboxImageVariants = {
-				originalSrc,
-				mirrorSrc,
-				initialView: imageMirrorVisibility[originalSrc] === false ? 'original' : 'mirror'
-			};
-			variants[originalSrc] = entry;
-			variants[mirrorSrc] = entry;
-		}
-		return variants;
-	});
+
 	$effect(() => {
 		const discovered = galleryImages
 			.filter((image) => image.alt.trim())
@@ -1322,7 +1321,21 @@
 		return cardMatchesPinnedUri(card, targetUri);
 	}
 
+	/** A shadow card behind a lane's active chain (not in an expanded tree fan). These
+	 * render as lightweight shells sized to their row: only their edge peeks out, and deep
+	 * in large threads they outnumber the visible cards many times over. */
+	function cardIsStackedShadow(card: LaneCard): boolean {
+		return card.visibility === 'shadow' && !laneIsExpanded(card.laneId);
+	}
+
+	function cardRendersLite(card: LaneCard): boolean {
+		return lowDetailCards || cardIsStackedShadow(card);
+	}
+
 	function getRenderedCardHeight(card: LaneCard): number {
+		if (cardIsStackedShadow(card)) {
+			return Math.max(CARD_HEIGHT, rowLayout.heights[card.row - rowLayout.minRow] ?? CARD_HEIGHT);
+		}
 		return Math.max(CARD_HEIGHT, cardHeights[card.key] ?? CARD_HEIGHT);
 	}
 
@@ -1391,7 +1404,9 @@
 	function rememberCardHeight(cardKey: string, height: number) {
 		const card = boardModel.cardsByKey.get(cardKey);
 		// Open pickers and tree-fan controls make a card temporarily taller.
-		if (!card || laneIsExpanded(card.laneId) || openQuotePickerCardKey === cardKey) return;
+		if (!card || card.visibility === 'shadow' || laneIsExpanded(card.laneId) || openQuotePickerCardKey === cardKey) {
+			return;
+		}
 		const uri = card.post.uri;
 		if (savedCardHeights.get(uri) === height) return;
 		// Re-insert so the Map's order is least recently measured first.
@@ -2137,7 +2152,8 @@
 		return `M${x},${startY} L${x},${endY}`;
 	}
 
-	function buildConnectorPath(connector: LaneConnector): string {
+	/** Connector geometry as one cubic Bézier, shared by drawing and viewport culling. */
+	function getConnectorCurve(connector: LaneConnector): CubicCurve {
 		const fromHeight = getRenderedCardHeight(connector.from);
 		const toHeight = getRenderedCardHeight(connector.to);
 		const fromY = cardTop(connector.from);
@@ -2149,7 +2165,7 @@
 			const endX = connector.to.x + CARD_WIDTH / 2;
 			const endY = toY + 12;
 			const middleY = startY + (endY - startY) * 0.5;
-			return `M${startX},${startY} C${startX},${middleY} ${endX},${middleY} ${endX},${endY}`;
+			return [startX, startY, startX, middleY, endX, middleY, endX, endY];
 		}
 
 		if (connector.kind === 'spawn') {
@@ -2159,7 +2175,7 @@
 			const endX = flowsLeft ? connector.to.x + CARD_WIDTH + 8 : connector.to.x - 8;
 			const endY = toY + toHeight * 0.48;
 			const bendX = startX + (endX - startX) * 0.48;
-			return `M${startX},${startY} C${bendX},${startY} ${bendX},${endY} ${endX},${endY}`;
+			return [startX, startY, bendX, startY, bendX, endY, endX, endY];
 		}
 
 		const startX = connector.from.x + CARD_WIDTH * 0.84;
@@ -2170,7 +2186,12 @@
 		const controlOffset = Math.max(64, Math.abs(endX - startX) * 0.35);
 		const controlX1 = startX + controlOffset * direction;
 		const controlX2 = endX - controlOffset * direction;
-		return `M${startX},${startY} C${controlX1},${startY} ${controlX2},${endY} ${endX},${endY}`;
+		return [startX, startY, controlX1, startY, controlX2, endY, endX, endY];
+	}
+
+	function buildConnectorPath(connector: LaneConnector): string {
+		const [x0, y0, x1, y1, x2, y2, x3, y3] = getConnectorCurve(connector);
+		return `M${x0},${y0} C${x1},${y1} ${x2},${y2} ${x3},${y3}`;
 	}
 
 	function countPosts(post: ThreadPost): number {
@@ -2415,20 +2436,59 @@
 	/** Scroll position that centers the card horizontally and brings it into view
 	 * vertically (like `scrollIntoView({ block: 'nearest', inline: 'center' })`), computed
 	 * from the model so the card does not need to be mounted. */
-	function getCardScrollTarget(card: LaneCard, verticalEdge: 'top' | 'bottom' | null) {
+	/** Board element geometry, read once per scroll animation. Reading it every frame
+	 * forces a synchronous layout whenever the DOM changed earlier in that frame. */
+	type BoardScrollGeometry = {
+		stageLeft: number;
+		stageTop: number;
+		viewWidth: number;
+		viewHeight: number;
+		startTop: number;
+		maxLeft: number;
+		/** Scroll extent below the canvas stage (the board's bottom padding). */
+		bottomExtent: number;
+	};
+
+	function readBoardScrollGeometry(): BoardScrollGeometry | null {
 		const stage = boardCanvasEl?.parentElement;
 		if (!boardEl || !stage) return null;
+		return {
+			stageLeft: stage.offsetLeft,
+			stageTop: stage.offsetTop,
+			viewWidth: boardEl.clientWidth,
+			viewHeight: boardEl.clientHeight,
+			startTop: boardEl.scrollTop,
+			maxLeft: Math.max(0, boardEl.scrollWidth - boardEl.clientWidth),
+			bottomExtent: Math.max(0, boardEl.scrollHeight - (stage.offsetTop + stage.offsetHeight))
+		};
+	}
+
+	function getCardScrollTarget(
+		card: LaneCard,
+		verticalEdge: 'top' | 'bottom' | null,
+		geometry: BoardScrollGeometry
+	) {
 		const scale = zoom || 1;
-		const left = stage.offsetLeft + card.x * scale;
-		const top = stage.offsetTop + (rowLayout.canvasOffsetY + cardTop(card)) * scale;
+		const left = geometry.stageLeft + card.x * scale;
+		const top = geometry.stageTop + (rowLayout.canvasOffsetY + cardTop(card)) * scale;
 		const width = CARD_WIDTH * scale;
 		const height = getRenderedCardHeight(card) * scale;
-		const viewWidth = boardEl.clientWidth;
-		const viewHeight = boardEl.clientHeight;
-		let nextTop = boardScrollAnimation?.startTop ?? boardEl.scrollTop;
+		let nextTop = boardScrollAnimation?.startTop ?? geometry.startTop;
 		if (verticalEdge === 'top') nextTop = top - BOARD_SCROLL_EDGE_MARGIN;
-		if (verticalEdge === 'bottom') nextTop = top + height + BOARD_SCROLL_EDGE_MARGIN - viewHeight;
-		return clampBoardScroll(left + width / 2 - viewWidth / 2, nextTop);
+		if (verticalEdge === 'bottom') nextTop = top + height + BOARD_SCROLL_EDGE_MARGIN - geometry.viewHeight;
+		// The board height follows rowLayout, so its scroll limit is computed from the
+		// model instead of read back from the DOM.
+		const maxTop = Math.max(
+			0,
+			geometry.stageTop +
+				getScaledCanvasSize(rowLayout.boardHeight + rowLayout.canvasOffsetY, zoom) +
+				geometry.bottomExtent -
+				geometry.viewHeight
+		);
+		return {
+			left: Math.min(Math.max(0, left + width / 2 - geometry.viewWidth / 2), geometry.maxLeft),
+			top: Math.min(Math.max(0, nextTop), maxTop)
+		};
 	}
 
 	function getCardVerticalEdge(card: LaneCard): 'top' | 'bottom' | null {
@@ -2449,9 +2509,11 @@
 		const initialCard = boardModel.cardsByKey.get(cardKey);
 		if (!initialCard) return;
 		const verticalEdge = getCardVerticalEdge(initialCard);
+		const geometry = readBoardScrollGeometry();
+		if (!geometry) return;
 		animateBoardScroll(() => {
 			const card = boardModel.cardsByKey.get(cardKey);
-			return card ? getCardScrollTarget(card, verticalEdge) : null;
+			return card ? getCardScrollTarget(card, verticalEdge, geometry) : null;
 		}, behavior);
 	}
 
@@ -2705,6 +2767,8 @@
 			}
 			openQuotePickerCardKey = card.key;
 			quotePickerRenderLimit = QUOTE_PICKER_PAGE;
+			// A background scan of this post's quotes should not keep the open picker waiting.
+			promoteQuoteLoad(card.post.uri, 0);
 			const state = getQuoteFeedState(card.post);
 			if (state.status === 'idle' && card.post.quoteCount > 0) {
 				await loadQuotesForPost(card.post);
@@ -2891,7 +2955,93 @@
 			postQuotes = { ...postQuotes, [uri]: state };
 		}
 
-		const quoteLoadsInFlight = new Map<string, { promise: Promise<ThreadPost[] | null>; fetchAll: boolean }>();
+		// Pausing a quote load lets the page in flight finish, then holds the load (and its
+		// cursor) open until it is resumed. Callers sharing the load wait with it.
+		let pausedQuoteUris = $state.raw<Set<string>>(new Set());
+		const quoteResumeWaiters = new Map<string, () => void>();
+
+		function pauseQuoteLoad(uri: string) {
+			if (pausedQuoteUris.has(uri)) return;
+			pausedQuoteUris = new Set([...pausedQuoteUris, uri]);
+			const state = postQuotes[uri];
+			if (state?.status === 'loading') setQuoteFeedState(uri, { ...state, paused: true });
+		}
+
+		function resumeQuoteLoad(uri: string) {
+			if (!pausedQuoteUris.has(uri)) return;
+			const next = new Set(pausedQuoteUris);
+			next.delete(uri);
+			pausedQuoteUris = next;
+			const state = postQuotes[uri];
+			if (state?.paused) setQuoteFeedState(uri, { ...state, paused: false });
+			const wake = quoteResumeWaiters.get(uri);
+			quoteResumeWaiters.delete(uri);
+			wake?.();
+		}
+
+		function waitWhileQuoteLoadPaused(uri: string, signal?: AbortSignal): Promise<void> {
+			if (!pausedQuoteUris.has(uri)) return Promise.resolve();
+			return new Promise((resolve, reject) => {
+				const onAbort = () => {
+					quoteResumeWaiters.delete(uri);
+					reject(abortError());
+				};
+				if (signal?.aborted) return onAbort();
+				signal?.addEventListener('abort', onAbort, { once: true });
+				quoteResumeWaiters.set(uri, () => {
+					signal?.removeEventListener('abort', onAbort);
+					resolve();
+				});
+			});
+		}
+
+		type QuoteLoadRecord = {
+			promise: Promise<ThreadPost[] | null>;
+			fetchAll: boolean;
+			/** Priority for this load's next page; raised when a more urgent caller joins. */
+			priority: RequestPriority;
+			/** Scheduler key of the page request currently queued or running. */
+			pageKey: string | null;
+		};
+		const quoteLoadsInFlight = new Map<string, QuoteLoadRecord>();
+		const QUOTE_PAGE_TIMEOUT_MS = 20_000;
+
+		/** Moves a running quote load (for example a fetch-mode scan at the lowest priority)
+		 * to the front when the user asks for the same post's quotes. */
+		function promoteQuoteLoad(uri: string, priority: RequestPriority) {
+			const record = quoteLoadsInFlight.get(uri);
+			if (!record || priority >= record.priority) return;
+			record.priority = priority;
+			if (record.pageKey) requestScheduler.promote(record.pageKey, priority);
+		}
+
+		/** One quote page with a timeout. A hung request would otherwise hold a scheduler
+		 * slot forever; the timeout surfaces as a network error, which the scheduler retries. */
+		async function fetchQuotePageWithTimeout(
+			pageLoader: NonNullable<BoardPlatformConfig['fetchQuotePostsPage']>,
+			uri: string,
+			options: { cursor?: string; limit: number; signal: AbortSignal }
+		) {
+			const controller = new AbortController();
+			const onAbort = () => controller.abort();
+			options.signal.addEventListener('abort', onAbort, { once: true });
+			let timedOut = false;
+			const timer = setTimeout(() => {
+				timedOut = true;
+				controller.abort();
+			}, QUOTE_PAGE_TIMEOUT_MS);
+			try {
+				return await pageLoader(uri, { cursor: options.cursor, limit: options.limit, signal: controller.signal });
+			} catch (error) {
+				if (timedOut && !options.signal.aborted) {
+					throw new TypeError(`Quote page timed out after ${QUOTE_PAGE_TIMEOUT_MS / 1000}s`);
+				}
+				throw error;
+			} finally {
+				clearTimeout(timer);
+				options.signal.removeEventListener('abort', onAbort);
+			}
+		}
 
 		/** Loads one page (picker) or every page (`fetchAll`). Concurrent callers share the
 		 * active request; a page request upgraded to fetch-all continues from its cursor.
@@ -2909,18 +3059,32 @@
 			const { fetchAll = false } = options;
 			const inFlight = quoteLoadsInFlight.get(post.uri);
 			if (inFlight) {
+				promoteQuoteLoad(post.uri, options.priority ?? 0);
 				const result = await inFlight.promise;
 				if (!fetchAll || inFlight.fetchAll || !result) {
 					if (result && options.onPage) await options.onPage(result);
 					return result;
 				}
 			}
-			const record = { promise: runQuoteLoad(post, options), fetchAll };
+			const record: QuoteLoadRecord = {
+				promise: Promise.resolve(null),
+				fetchAll,
+				priority: options.priority ?? 0,
+				pageKey: null
+			};
+			record.promise = runQuoteLoad(post, options, record);
 			quoteLoadsInFlight.set(post.uri, record);
 			try {
 				return await record.promise;
 			} finally {
-				if (quoteLoadsInFlight.get(post.uri) === record) quoteLoadsInFlight.delete(post.uri);
+				if (quoteLoadsInFlight.get(post.uri) === record) {
+					quoteLoadsInFlight.delete(post.uri);
+					if (pausedQuoteUris.has(post.uri)) {
+						const next = new Set(pausedQuoteUris);
+						next.delete(post.uri);
+						pausedQuoteUris = next;
+					}
+				}
 			}
 		}
 
@@ -2931,9 +3095,10 @@
 				onPage?: (posts: ThreadPost[]) => void | Promise<void>;
 				signal?: AbortSignal;
 				priority?: RequestPriority;
-			}
+			},
+			record: QuoteLoadRecord
 		): Promise<ThreadPost[] | null> {
-			const { fetchAll = false, onPage, signal, priority = 0 } = options;
+			const { fetchAll = false, onPage, signal } = options;
 			const existing = postQuotes[post.uri];
 			const resume = Boolean(fetchAll && existing?.cursor && !existing.loadedAll && existing.posts.length);
 			let posts: ThreadPost[] = resume ? existing!.posts : [];
@@ -2967,7 +3132,7 @@
 						kind: 'quotes',
 						key: `quotes:${post.uri}:${fetchAll ? 'all' : 'page'}`,
 						label: `Quotes of ${shortHandle(post.author.handle)}`,
-						priority,
+						priority: record.priority,
 						signal,
 						run: () => fetchQuotePosts(post.uri, fetchAll ? { limit: 100, fetchAll: true } : { limit: 12 })
 					});
@@ -2984,16 +3149,24 @@
 				}
 
 				do {
+					if (pausedQuoteUris.has(post.uri)) {
+						setQuoteFeedState(post.uri, { ...(postQuotes[post.uri] ?? { status: 'loading', posts }), paused: true });
+						await waitWhileQuoteLoadPaused(post.uri, signal);
+						setQuoteFeedState(post.uri, { ...(postQuotes[post.uri] ?? { status: 'loading', posts }), paused: false });
+					}
 					const pageCursor = cursor;
+					const pageKey = `quotes:${post.uri}:${limit}:${pageCursor ?? ''}`;
+					record.pageKey = pageKey;
 					const page = await requestScheduler.schedule({
 						kind: 'quotes',
-						key: `quotes:${post.uri}:${limit}:${pageCursor ?? ''}`,
+						key: pageKey,
 						label: `Quotes of ${shortHandle(post.author.handle)} · page ${pages + 1}`,
-						priority,
+						priority: record.priority,
 						signal,
 						run: (requestSignal) =>
-							pageLoader(post.uri, { cursor: pageCursor, limit, signal: requestSignal })
+							fetchQuotePageWithTimeout(pageLoader, post.uri, { cursor: pageCursor, limit, signal: requestSignal })
 					});
+					record.pageKey = null;
 					pages += 1;
 					const fresh = page.posts.filter((quotePost) => {
 						if (seenUris.has(quotePost.uri)) return false;
@@ -3005,6 +3178,14 @@
 					// A repeated cursor would page forever.
 					if (cursor && seenCursors.has(cursor)) cursor = undefined;
 					if (cursor) seenCursors.add(cursor);
+					if (!fetchAll && existing && existing.posts.length > posts.length) {
+						// Refresh: new quotes go in front; keep everything already loaded and
+						// where paging stopped, instead of dropping back to the first page.
+						const known = new Set(posts.map((quotePost) => quotePost.uri));
+						posts = posts.concat(existing.posts.filter((quotePost) => !known.has(quotePost.uri)));
+						cursor = existing.loadedAll ? undefined : (existing.cursor ?? cursor);
+						pages = Math.max(pages, existing.pages ?? 0);
+					}
 					const more = Boolean(cursor);
 					setQuoteFeedState(post.uri, {
 						...base,
@@ -3014,7 +3195,8 @@
 						loadedAll: !more,
 						loadingMode: fetchAll ? 'all' : 'page',
 						cursor,
-						pages
+						pages,
+						paused: fetchAll && more && pausedQuoteUris.has(post.uri)
 					});
 					if (onPage && fresh.length) await onPage(fresh);
 				} while (fetchAll && cursor);
@@ -3258,6 +3440,7 @@
 			laneId: card.laneId,
 			postUri: card.post.uri
 		};
+		if (canLoadFullThread(card.laneId)) void loadFullThreadForLane(card.laneId);
 	}
 
 	function closeTreeBoard() {
@@ -3521,21 +3704,30 @@
 			return () => clearInterval(timer);
 		});
 
-		/** "Load all" quote scans not already shown under a lane job. */
-		let quoteDiscoveries = $derived.by(() => {
-			const jobSources = new Set(
-				laneCreationJobs.filter(laneJobIsActive).map((job) => job.sourceUri)
-			);
-			return Object.entries(postQuotes)
-				.filter(([uri, state]) => state.status === 'loading' && state.loadingMode === 'all' && !jobSources.has(uri))
+		/** Every quote load in progress (picker, lane jobs, fetch mode), running ones first. */
+		let quoteLoads = $derived.by(() =>
+			Object.entries(postQuotes)
+				.filter(([, state]) => state.status === 'loading')
 				.map(([uri, state]) => ({
 					uri,
 					handle: state.handle ?? 'unknown',
 					found: state.posts.length,
 					expected: state.expected ?? 0,
-					pages: state.pages ?? 0
-				}));
-		});
+					pages: state.pages ?? 0,
+					all: state.loadingMode === 'all',
+					paused: Boolean(state.paused) || pausedQuoteUris.has(uri)
+				}))
+				.sort((a, b) => Number(a.paused) - Number(b.paused))
+		);
+		let pausedQuoteLoadCount = $derived(quoteLoads.filter((load) => load.paused).length);
+
+		function toggleAllQuoteLoads() {
+			const pauseAll = pausedQuoteLoadCount < quoteLoads.length;
+			for (const load of quoteLoads) {
+				if (pauseAll) pauseQuoteLoad(load.uri);
+				else resumeQuoteLoad(load.uri);
+			}
+		}
 
 		let fetchModeRemainingCount = $derived(fetchModePendingCount + fetchModeActiveCount);
 		let fetchModeProgressPercent = $derived.by(() => {
@@ -3547,7 +3739,7 @@
 			laneCreationJobs.length > 0 ||
 				loadSnapshot.running.length > 0 ||
 				loadSnapshot.queued > 0 ||
-				quoteDiscoveries.length > 0
+				quoteLoads.length > 0
 		);
 
 		let loadingHeadline = $derived.by(() => {
@@ -4773,8 +4965,13 @@
 			pending.sort(
 				(a, b) => cardDistanceFromViewport(a, centerX, centerY) - cardDistanceFromViewport(b, centerX, centerY)
 			);
-			const budget = lowDetailCards ? LITE_CARD_MOUNT_BATCH : CARD_MOUNT_BATCH;
-			for (const card of pending.slice(0, budget)) next.add(card.key);
+			// Budget in full-card units; lite shells (shadows, low zoom) cost a fraction.
+			let cost = 0;
+			for (const card of pending) {
+				if (cost >= CARD_MOUNT_BATCH) break;
+				next.add(card.key);
+				cost += cardRendersLite(card) ? CARD_MOUNT_BATCH / LITE_CARD_MOUNT_BATCH : 1;
+			}
 			mountedCardKeys = next;
 		}
 
@@ -4816,8 +5013,7 @@
 			const queue: { card: LaneCard; distance: number }[] = [];
 			for (const lane of model.lanes) {
 				for (const card of lane.cards) {
-					if (card.visibility === 'shadow' && card.stackIndex >= SHADOW_STACK_RENDER_LIMIT) continue;
-					if (cardHeightKnown(card)) continue;
+					if (cardIsStackedShadow(card) || cardHeightKnown(card)) continue;
 					queue.push({ card, distance: cardDistanceFromViewport(card, centerX, centerY) });
 				}
 			}
@@ -4883,7 +5079,7 @@
 			while (batch.length < MEASURE_BATCH && measureQueue.length) {
 				const queued = measureQueue.pop()!;
 				const card = model.cardsByKey.get(queued.key);
-				if (!card || cardHeightKnown(card) || rendered.has(card.key)) continue;
+				if (!card || cardIsStackedShadow(card) || cardHeightKnown(card) || rendered.has(card.key)) continue;
 				batch.push(card.key);
 			}
 			measureCardKeys = batch;
@@ -4914,9 +5110,21 @@
 			return cards;
 		});
 
-		let visibleConnectors = $derived(
-			queryConnectorIndex(boardModel.connectorIndex, visibleXLo, visibleXHi, visibleRowLo, visibleRowHi)
-		);
+		let visibleConnectors = $derived.by(() => {
+			const index = boardModel.connectorIndex;
+			const [xLo, xHi, rowLo, rowHi] = [visibleXLo, visibleXHi, visibleRowLo, visibleRowHi];
+			const vp = cullViewport;
+			const rect = {
+				left: xLo,
+				right: xHi,
+				top: vp.top - VIEWPORT_CULL_MARGIN,
+				bottom: vp.top + vp.height + VIEWPORT_CULL_MARGIN
+			};
+			const candidates = queryConnectorIndex(index, xLo, xHi, rowLo, rowHi);
+			// The index matches bounding boxes; long quote fans overlap nearly every view, so
+			// keep only curves that really cross it and merge overlapping ones.
+			return cullConnectorsToRect(candidates, getConnectorCurve, rect);
+		});
 
 		let lowDetailCards = $derived(zoom < LOW_DETAIL_ZOOM);
 
@@ -5366,22 +5574,51 @@
 								</div>
 							{/if}
 
-							{#each quoteDiscoveries as discovery (discovery.uri)}
+							{#if quoteLoads.length > 0}
 								<div class="loading-section">
-									<div class="loading-row">
-										<span>Quotes of @{discovery.handle}</span>
+									<div class="loading-row loading-row-actions">
 										<span>
-											{formatCount(discovery.found)}{discovery.expected > 0 ? ` / ~${formatCount(discovery.expected)}` : ''}
-											· page {discovery.pages + 1}
+											Quote posts · {formatCount(quoteLoads.length - pausedQuoteLoadCount)} loading{pausedQuoteLoadCount > 0
+												? ` · ${formatCount(pausedQuoteLoadCount)} paused`
+												: ''}
 										</span>
+										<button type="button" class="fetch-mode-pause-btn" onclick={toggleAllQuoteLoads}>
+											{pausedQuoteLoadCount < quoteLoads.length ? 'Pause all' : 'Resume all'}
+										</button>
 									</div>
-									<div class="lane-job-progress" class:lane-job-progress-indeterminate={discovery.expected <= 0}>
-										<span
-											style="width: {discovery.expected > 0 ? Math.min(100, (discovery.found / discovery.expected) * 100) : 30}%"
-										></span>
-									</div>
+									<ul class="quote-load-list">
+										{#each quoteLoads as load (load.uri)}
+											<li class="quote-load-item" class:quote-load-item-paused={load.paused}>
+												<div class="loading-row loading-row-actions">
+													<span>@{load.handle}{load.paused ? ' (paused)' : ''}</span>
+													<span class="quote-load-meta">
+														{formatCount(load.found)}{load.expected > 0 ? ` / ~${formatCount(load.expected)}` : ''}
+														· page {load.pages + 1}
+													</span>
+													{#if load.all}
+														<button
+															type="button"
+															class="fetch-mode-pause-btn"
+															title={load.paused ? 'Continue loading these quote posts' : 'Pause after the current page'}
+															onclick={() => (load.paused ? resumeQuoteLoad(load.uri) : pauseQuoteLoad(load.uri))}
+														>
+															{load.paused ? 'Resume' : 'Pause'}
+														</button>
+													{/if}
+												</div>
+												<div
+													class="lane-job-progress"
+													class:lane-job-progress-indeterminate={load.expected <= 0 && !load.paused}
+												>
+													<span
+														style="width: {load.expected > 0 ? Math.min(100, (load.found / load.expected) * 100) : 30}%"
+													></span>
+												</div>
+											</li>
+										{/each}
+									</ul>
 								</div>
-							{/each}
+							{/if}
 
 							{#if fetchModeRunning}
 								<div class="loading-section">
@@ -5739,9 +5976,9 @@
 
 								{#each renderedCards as card (card.key)}
 									<article
-										use:measureCardHeight={{ key: card.key, enabled: !lowDetailCards }}
+										use:measureCardHeight={{ key: card.key, enabled: !cardRendersLite(card) }}
 										class="dimension-card big-dimension-card"
-										class:lite-dimension-card={lowDetailCards}
+										class:lite-dimension-card={cardRendersLite(card)}
 										class:active-dimension-card={card.key === activeCardKey}
 										class:source-pinned-card={cardIsSourcePin(card)}
 										class:shadow-dimension-card={card.visibility === 'shadow'}
@@ -5754,7 +5991,7 @@
 										class:quoted-root-card={card.isLaneRoot && card.laneKind === 'quoted'}
 										data-card-key={card.key}
 										data-lane-id={card.laneId}
-										style="left: {card.x}px; top: {cardTop(card)}px;{lowDetailCards ? ` height: ${getRenderedCardHeight(card)}px;` : ''} --card-shift-x: {getCardShiftX(card)}px; --card-shift-y: {getCardShiftY(card)}px; --card-scale: {getCardScale(card)}; --card-opacity: {getCardOpacity(card)}; z-index: {getCardZIndex(card)};"
+										style="left: {card.x}px; top: {cardTop(card)}px;{cardRendersLite(card) ? ` height: ${getRenderedCardHeight(card)}px;` : ''} --card-shift-x: {getCardShiftX(card)}px; --card-shift-y: {getCardShiftY(card)}px; --card-scale: {getCardScale(card)}; --card-opacity: {getCardOpacity(card)}; z-index: {getCardZIndex(card)};"
 									>
 										<div
 											class="dimension-card-inner"
@@ -5774,7 +6011,7 @@
 												}
 											}}
 										>
-											{#if lowDetailCards}
+											{#if cardRendersLite(card)}
 												<div class="lite-card-head">
 													<span class="card-lane-token">{card.laneLabel}</span>
 													<strong class="card-handle">@{card.post.author.handle}</strong>
@@ -6083,19 +6320,28 @@
 																				type="button"
 																				class="card-quote-btn card-quote-btn-secondary"
 																				disabled={
-																					getQuoteFeedState(card.post).status === 'loading' ||
+																					(getQuoteFeedState(card.post).status === 'loading' &&
+																						!getQuoteFeedState(card.post).paused) ||
 																					bulkQuoteLaneLoads[card.post.uri]
 																				}
-																				title="Load every available quote post into this picker without opening lanes"
+																				title={getQuoteFeedState(card.post).paused
+																					? 'Continue loading quote posts from where it paused'
+																					: 'Load every available quote post into this picker without opening lanes'}
 																				onclick={(event) => {
 																					event.stopPropagation();
+																					if (getQuoteFeedState(card.post).paused) {
+																						resumeQuoteLoad(card.post.uri);
+																						return;
+																					}
 																					void loadQuotesForPost(card.post, { fetchAll: true });
 																				}}
 																			>
-																				{getQuoteFeedState(card.post).status === 'loading' &&
-																				getQuoteFeedState(card.post).loadingMode === 'all'
-																					? 'Loading all...'
-																					: 'Load all quote posts'}
+																				{getQuoteFeedState(card.post).paused
+																					? 'Resume loading'
+																					: getQuoteFeedState(card.post).status === 'loading' &&
+																						  getQuoteFeedState(card.post).loadingMode === 'all'
+																						? 'Loading all...'
+																						: 'Load all quote posts'}
 																			</button>
 																		{/if}
 																		{#if card.post.quoteCount > 0}
@@ -6127,7 +6373,10 @@
 																		{getQuoteFeedState(card.post).error || 'Could not load quote posts.'}
 																	</p>
 																{:else if getQuoteFeedState(card.post).posts.length > 0}
-																	<div class="card-quote-picker-posts">
+																	<div
+																		class="card-quote-picker-posts"
+																		data-reveal-root
+																	>
 																		{#each getQuoteFeedState(card.post).posts.slice(0, quotePickerRenderLimit) as quotePost, quoteIndex (quotePost.uri + ':' + quoteIndex)}
 																			<button
 																				type="button"
@@ -6140,12 +6389,15 @@
 																			>
 																				<span class="card-quote-picker-post-header">
 																					<span class="card-quote-picker-post-author">
-																						{#if quoteIndex < 9}
-																							<span class="card-quote-picker-post-hotkey">{quoteIndex + 1}</span>
-																						{/if}
-																						<strong>@{quotePost.author.handle}</strong>
+																						<span
+																							class="card-quote-picker-post-number"
+																							class:card-quote-picker-post-hotkey={quoteIndex < 9}
+																						>
+																							{quoteIndex + 1}
+																						</span>
+																						<strong class="card-quote-picker-post-handle">@{quotePost.author.handle}</strong>
 																					</span>
-																					<span>{formatDate(quotePost.createdAt)}</span>
+																					<span class="card-quote-picker-post-date">{formatDate(quotePost.createdAt)}</span>
 																				</span>
 																				<span class="card-quote-picker-post-text">
 																					{quotePost.text || 'No text'}
@@ -6342,7 +6594,7 @@
 										class="detail-action-btn"
 										onclick={() => void openTreeBoardFromDetailModal(detailModalCard)}
 									>
-										Open board
+										Show treeviewer
 									</button>
 									<a
 										href={postUrl(detailModalCard.post.uri, detailModalCard.post.author.handle)}
@@ -6625,7 +6877,7 @@
 			<button
 				type="button"
 				class="tree-board-modal-dismiss"
-				aria-label="Close tree board"
+				aria-label="Close treeviewer"
 				onclick={closeTreeBoard}
 			></button>
 			<dialog
@@ -6638,7 +6890,7 @@
 					<div class="tree-board-modal-copy">
 						<p class="tree-board-modal-kicker">{treeBoardLane.label}</p>
 						<h2 id="tree-board-modal-title" class="tree-board-modal-title">
-							Tree board for @{treeBoardCard.post.author.handle}
+							Treeviewer for @{treeBoardCard.post.author.handle}
 						</h2>
 						<p class="tree-board-modal-subtitle">
 							Focused on the post you clicked inside {treeBoardLane.title}
@@ -6646,6 +6898,16 @@
 					</div>
 
 					<div class="tree-board-modal-actions">
+						{#if canLoadFullThread(treeBoardLane.id)}
+							<button
+								type="button"
+								class="detail-action-btn"
+								disabled={fullThreadLoads[treeBoardLane.id]?.status === 'loading'}
+								onclick={() => void loadFullThreadForLane(treeBoardLane.id)}
+							>
+								{getFullThreadButtonLabel(treeBoardLane.id)}
+							</button>
+						{/if}
 						<button
 							type="button"
 							class="detail-action-btn"
@@ -6667,14 +6929,17 @@
 					</div>
 				</div>
 
+				{#if fullThreadLoads[treeBoardLane.id]?.status === 'error'}
+					<p role="alert">{fullThreadLoads[treeBoardLane.id]?.error}</p>
+				{/if}
 				<div class="tree-board-modal-body">
-					<BoardView
-						thread={threadWithImageOverrides(treeBoardLane.thread)}
-						initialActiveUri={treeBoardCard.post.uri}
-						{platform}
-						{showImageAltOverlays}
-						lightboxImageVariants={nestedLightboxImageVariants}
-					/>
+					{#key treeBoardTarget.postUri}
+						<TreeViewer
+							suppliedThread={threadWithImageOverrides(treeBoardLane.thread)}
+							initialActiveUri={treeBoardCard.post.uri}
+							inline
+						/>
+					{/key}
 				</div>
 		</dialog>
 	</div>
@@ -7666,6 +7931,37 @@
 		white-space: nowrap;
 	}
 
+	.loading-row-actions {
+		align-items: center;
+	}
+
+	.quote-load-meta {
+		margin-left: auto;
+		white-space: nowrap;
+		color: #6a5f7c;
+	}
+
+	/* Many posts can be loading quotes at once (fetch mode); keep the panel a fixed size. */
+	.quote-load-list {
+		display: grid;
+		gap: 6px;
+		margin: 0;
+		padding: 0 4px 0 0;
+		list-style: none;
+		max-height: 240px;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+	}
+
+	.quote-load-item {
+		display: grid;
+		gap: 4px;
+	}
+
+	.quote-load-item-paused {
+		opacity: 0.7;
+	}
+
 	.loading-rate-limit {
 		margin: 0;
 		font-size: 0.72rem;
@@ -8391,16 +8687,48 @@
 		color: #766d86;
 	}
 
+	/* Contained in the card: thousands of quotes scroll inside the picker instead of
+	   growing the card. Items render in pages as the list scrolls. */
 	.card-quote-picker-posts {
 		display: grid;
-		gap: 8px;
+		/* minmax(0, …) lets rows shrink below long handles instead of widening the list. */
+		grid-template-columns: minmax(0, 1fr);
+		align-content: start;
+		gap: 4px;
+		max-height: 360px;
+		overflow-x: hidden;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		padding-right: 4px;
+		scrollbar-width: thin;
+	}
+
+	.card-quote-picker-post-number {
+		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 20px;
+		height: 18px;
+		padding: 0 5px;
+		border-radius: 999px;
+		background: rgba(77, 66, 96, 0.08);
+		border: 1px solid rgba(77, 66, 96, 0.16);
+		color: #675f75;
+		font-size: 0.62rem;
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
 	}
 
 	.card-quote-picker-post {
 		display: grid;
-		gap: 5px;
-		padding: 10px;
-		border-radius: 10px;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 3px;
+		min-width: 0;
+		width: 100%;
+		padding: 6px 8px;
+		overflow: hidden;
+		border-radius: 8px;
 		border: 1px solid rgba(77, 66, 96, 0.14);
 		background: rgba(250, 246, 237, 0.96);
 		text-align: left;
@@ -8422,15 +8750,31 @@
 	}
 
 	.card-quote-picker-post-header {
-		font-size: 0.68rem;
+		min-width: 0;
+		font-size: 0.66rem;
 		color: #675f75;
 	}
 
 	.card-quote-picker-post-author {
 		display: inline-flex;
+		flex: 1 1 auto;
 		align-items: center;
 		gap: 6px;
 		min-width: 0;
+		overflow: hidden;
+	}
+
+	.card-quote-picker-post-handle,
+	.card-quote-picker-post-action {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.card-quote-picker-post-date {
+		flex-shrink: 0;
+		white-space: nowrap;
 	}
 
 	.card-quote-picker-post-hotkey {
@@ -8448,16 +8792,23 @@
 		font-weight: 700;
 	}
 
+	/* Two lines at most; long links and words wrap instead of widening the row. */
 	.card-quote-picker-post-text {
-		font-size: 0.74rem;
-		line-height: 1.4;
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		overflow: hidden;
+		font-size: 0.72rem;
+		line-height: 1.35;
 		color: #322d38;
 		white-space: pre-wrap;
-		word-break: break-word;
+		overflow-wrap: anywhere;
 	}
 
 	.card-quote-picker-post-action {
-		font-size: 0.63rem;
+		display: block;
+		font-size: 0.6rem;
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		color: #7d5aa3;
@@ -8904,7 +9255,7 @@
 	}
 
 	.tree-board-modal-body {
-		flex: 1 1 auto;
+		flex: 1 1 0;
 		min-height: 0;
 		overflow: auto;
 		padding: 14px;

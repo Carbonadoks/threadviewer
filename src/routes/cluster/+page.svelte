@@ -2256,7 +2256,7 @@
 		max-width: none;
 		padding: 16px;
 		gap: 16px;
-		min-height: 100dvh;
+		min-height: calc(100dvh - var(--app-header-height, 0px));
 	}
 
 	.hero h1 {
@@ -2324,7 +2324,7 @@
 
 	.map-card-fullscreen {
 		position: relative;
-		height: calc(100dvh - 32px);
+		height: calc((100dvh - var(--app-header-height, 0px)) - 32px);
 		min-height: 640px;
 	}
 
@@ -3142,7 +3142,7 @@
 		}
 
 		.map-card-fullscreen {
-			height: calc(100dvh - 20px);
+			height: calc((100dvh - var(--app-header-height, 0px)) - 20px);
 			min-height: 560px;
 		}
 
