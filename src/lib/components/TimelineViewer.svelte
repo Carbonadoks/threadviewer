@@ -21,6 +21,12 @@
 		onhydrate?: (fromMs: number, toMs: number) => void;
 		onselect?: (fromMs: number | null, toMs: number | null) => void;
 		onopenpost?: (uri: string, handle: string) => void;
+		// External date filter (YYYY-MM-DD). When set by someone else (e.g. the heatmap),
+		// the timeline adopts it as its selection and zooms to it.
+		selectedFrom?: string;
+		selectedTo?: string;
+		// When set, clicking the header hides the timeline.
+		oncollapse?: () => void;
 	}
 
 	let {
@@ -32,7 +38,10 @@
 		hydrationProgress = { current: 0, total: 0 },
 		onhydrate,
 		onselect,
-		onopenpost
+		onopenpost,
+		selectedFrom,
+		selectedTo,
+		oncollapse
 	}: Props = $props();
 
 	const timelineItems = $derived(posts.length > 0
@@ -426,6 +435,51 @@
 		emitSelection();
 	}
 
+	function msToDayKey(ms: number): string {
+		const d = new Date(ms);
+		return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+	}
+
+	function dayKeyToMs(key: string, endOfDay: boolean): number | null {
+		const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
+		if (!match) return null;
+		const [, y, m, d] = match.map(Number);
+		return endOfDay ? new Date(y, m - 1, d + 1).getTime() - 1 : new Date(y, m - 1, d).getTime();
+	}
+
+	// Follow external date-filter changes. Our own selections round-trip to the same day
+	// keys, so they're left alone (no zoom jump, no clobbering a half-set range).
+	$effect(() => {
+		if (selectedFrom === undefined && selectedTo === undefined) return;
+		const from = selectedFrom ?? '';
+		const to = selectedTo ?? '';
+		const curFrom = selLo != null ? msToDayKey(selLo) : '';
+		const curTo = selHi != null ? msToDayKey(selHi) : '';
+		if (!from && !to) {
+			if (selFrom != null && selTo != null) {
+				selFrom = null;
+				selTo = null;
+			}
+			return;
+		}
+		if (from === curFrom && to === curTo) return;
+		const fromMs = from ? dayKeyToMs(from, false) : tDomain.min;
+		const toMs = to ? dayKeyToMs(to, true) : tDomain.max;
+		if (fromMs == null || toMs == null) return;
+		selFrom = fromMs;
+		selTo = toMs;
+		monthAnchor = null;
+		closePopup();
+		const { start, end } = clampWindow(fromMs, toMs);
+		if (end - start >= tDomain.max - tDomain.min) {
+			viewStart = null;
+			viewEnd = null;
+		} else {
+			viewStart = start;
+			viewEnd = end;
+		}
+	});
+
 	function hydrateSelection() {
 		if (selFrom == null || selTo == null) return;
 		onhydrate?.(Math.min(selFrom, selTo), Math.max(selFrom, selTo));
@@ -531,11 +585,19 @@
 
 <div class="timeline-viewer wobbly-border-light" bind:clientWidth={containerWidth}>
 	<div class="timeline-toolbar">
-		<div class="timeline-info">
+		{#snippet infoContent()}
 			<span>{points.length.toLocaleString()} posts</span>
 			<span class="sep">·</span>
 			<span>{hydratedCount.toLocaleString()} with likes</span>
-		</div>
+		{/snippet}
+		{#if oncollapse}
+			<button type="button" class="timeline-info collapsible" onclick={oncollapse} title="Hide timeline">
+				<span class="collapse-caret">▾</span>
+				{@render infoContent()}
+			</button>
+		{:else}
+			<div class="timeline-info">{@render infoContent()}</div>
+		{/if}
 		<div class="timeline-controls">
 			<button
 				type="button"
@@ -801,6 +863,24 @@
 		font-size: 0.85rem;
 		color: var(--text-ink);
 		opacity: 0.85;
+	}
+
+	.timeline-info.collapsible {
+		padding: 0;
+		font-family: inherit;
+		text-align: left;
+		background: transparent;
+		border: none;
+		cursor: pointer;
+	}
+
+	.timeline-info.collapsible:hover {
+		opacity: 1;
+		text-decoration: underline;
+	}
+
+	.collapse-caret {
+		margin-right: 4px;
 	}
 
 	.timeline-info .sep {

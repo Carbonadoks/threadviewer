@@ -57,6 +57,7 @@
 					and see what shape the conversation was hiding.
 				</p>
 				<div class="hero-actions" aria-label="Primary actions">
+					<a class="sketch-button tour" href="/">▶ watch the 4-minute tour</a>
 					<a class="sketch-button primary" href="/viewer2">open the repo viewer</a>
 					<a class="sketch-button" href="/clock">open the clock</a>
 					<a class="sketch-button" href="/treeviewer">open the tree toy</a>
@@ -396,6 +397,12 @@
 	.sketch-button.primary {
 		background: var(--landing-button-primary-bg);
 		color: var(--landing-button-primary-text);
+	}
+
+	.sketch-button.tour {
+		flex-basis: 100%;
+		background: var(--landing-node-branch);
+		font-size: 1.1rem;
 	}
 
 	.sketch-button:hover {

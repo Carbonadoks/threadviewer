@@ -85,6 +85,7 @@
 	import ModePicker from '$lib/components/ModePicker.svelte';
 	import VirtualThreadList from '$lib/components/VirtualThreadList.svelte';
 	import TimelineViewer from '$lib/components/TimelineViewer.svelte';
+	import ActivityHeatmap from '$lib/components/ActivityHeatmap.svelte';
 	import { getGalleryHydratedEmbed } from '$lib/components/modes/GalleryThreads.svelte';
 	import WholeThreadReader, {
 		type WholeThreadReaderItem
@@ -96,13 +97,24 @@
 	import type { FollowProfileInfo, ProfileInfo } from '$lib/api/bluesky';
 	import { getFollowsPage, getProfile, getFullThread } from '$lib/api/bluesky';
 	import {
+		downloadRepoCar,
 		hydrateFeedItemsEngagement,
 		hydrateFeedItemsThreadEngagement,
 		loadRepoFeedItems,
 		type RepoDownloadProgress,
 		type RepoFeedLoadResult
 	} from '$lib/utils/repoHydration';
-	import { loadRepoReposts } from '$lib/utils/repoReposts';
+	import {
+		hydrateSubjectPosts,
+		parseRepoSubjectRecordsFromCar,
+		type RepoSubjectRecords
+	} from '$lib/utils/repoReposts';
+	import { RequestScheduler, type SchedulerSnapshot } from '$lib/utils/requestScheduler';
+	import { GET_POSTS_BATCH_SIZE } from '$lib/api/bluesky';
+	import SubjectFetchDashboard, {
+		type SubjectFetchJob,
+		type SubjectFetchPhase
+	} from '$lib/components/SubjectFetchDashboard.svelte';
 	import { buildThreadsFromFeed } from '$lib/utils/threadWalker';
 	import {
 		fetchParentPosts,
@@ -505,6 +517,8 @@
 	let engagementAttemptedPostUris = new Set<string>();
 	let engagementHydratedCount = 0;
 	let engagementCountsByUri = $state<Record<string, CachedPostEngagementCounts>>({});
+	// Dashboard for the current/last engagement run; its requests go through subjectScheduler.
+	let engagementJob = $state<SubjectFetchJob | null>(null);
 	let engagementTargetPostCount = 0;
 	let cachedRepoFeedItems: any[] | null = $state(null);
 	let cachedHydrationFeedItems: any[] | null = null;
@@ -536,15 +550,48 @@
 	// We parse app.bsky.feed.repost records locally, hydrate the referenced posts, and
 	// present each reposted post as a single-post thread so the gallery's content-mode
 	// (all/media/images/movies), search, and date filters all apply unchanged.
-	type ViewSource = 'threads' | 'reposts' | 'both';
+	// Likes (app.bsky.feed.like) work the same way.
+	type ViewSource = 'threads' | 'reposts' | 'likes' | 'both';
+	type SubjectSource = Exclude<SubjectFetchJob['kind'], 'engagement'>;
 	let viewSource = $state<ViewSource>('threads');
 	let repostThreads = $state<SelfReplyThread[]>([]);
 	let repostsLoaded = $state(false);
 	let repostsMissingCount = $state(0);
-	let repostsFetching = $state(false);
-	let repostsPhase = $state<'idle' | 'downloading' | 'parsing' | 'hydrating'>('idle');
-	let repostsProgress = $state({ current: 0, total: 0 });
-	let repostsController: AbortController | null = null;
+	let likeThreads = $state<SelfReplyThread[]>([]);
+	let likesLoaded = $state(false);
+	let likesMissingCount = $state(0);
+	let sourceFetchKind = $state<SubjectSource>('reposts');
+	let sourceFetching = $state(false);
+	let sourceController: AbortController | null = null;
+	let subjectJob = $state<SubjectFetchJob | null>(null);
+
+	// Nothing about reposts/likes runs when a repo is shown. The initial load only keeps
+	// the raw CAR per DID; the first Reposts/Likes click reads both record types from it in
+	// one pass, keeps just the records (URIs + timestamps) and frees the CAR. Hydrated posts
+	// are cached by URI and shared by both views, so stop/resume only fetches what's missing.
+	const repoCarBytesByDid = new Map<string, Uint8Array>();
+	const repoSubjectRecordsByDid = new Map<string, RepoSubjectRecords>();
+	const subjectPostCache = new Map<string, ThreadPost>();
+	const unavailableSubjectUris = new Set<string>();
+
+	// public.api.bsky.app allows ~3,000 requests / 5 min / IP and exposes no rate-limit
+	// headers, so budget just under that; getPosts is 25 posts per request, the most any
+	// call returns. Concurrency adapts, and 429s pause the queue (see RequestScheduler).
+	const SUBJECT_REQUEST_BUDGET = { requests: 2900, windowMs: 5 * 60_000 };
+	let subjectSchedulerSnapshot = $state<SchedulerSnapshot | null>(null);
+	let subjectSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
+	const subjectScheduler = new RequestScheduler({
+		maxConcurrency: 16,
+		initialConcurrency: 8,
+		rateLimit: SUBJECT_REQUEST_BUDGET,
+		// A timer rather than rAF so the dashboard keeps updating in a background tab.
+		onChange: () => {
+			subjectSnapshotTimer ??= setTimeout(() => {
+				subjectSnapshotTimer = null;
+				subjectSchedulerSnapshot = subjectScheduler.snapshot();
+			}, 150);
+		}
+	});
 
 	const detailIsOpen = $derived(showExpanded || showBlogReader || showWholeThreadReader);
 
@@ -690,16 +737,24 @@
 
 	const searchMatcher = $derived(buildSearchMatcher(searchQuery, searchMode));
 
+	// Date-only strings (YYYY-MM-DD) are local calendar days; `new Date('YYYY-MM-DD')` would be UTC.
+	function parseDateBound(value: string, endOfDay: boolean): Date {
+		const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+		if (!match) {
+			const date = new Date(value);
+			if (endOfDay) date.setHours(23, 59, 59, 999);
+			return date;
+		}
+		const [, y, m, d] = match.map(Number);
+		return endOfDay ? new Date(y, m - 1, d, 23, 59, 59, 999) : new Date(y, m - 1, d);
+	}
+
 	function isInDateRange(createdAt: string, from: string, toDate: string): boolean {
 		if (!from && !toDate) return true;
 		const postDate = new Date(createdAt);
 		if (isNaN(postDate.getTime())) return true;
-		if (from && postDate < new Date(from)) return false;
-		if (toDate) {
-			const to = new Date(toDate);
-			to.setHours(23, 59, 59, 999);
-			if (postDate > to) return false;
-		}
+		if (from && postDate < parseDateBound(from, false)) return false;
+		if (toDate && postDate > parseDateBound(toDate, true)) return false;
 		return true;
 	}
 
@@ -750,6 +805,7 @@
 	// threshold only applies to the pure Threads view.
 	const activeThreads = $derived.by(() => {
 		if (viewSource === 'reposts') return repostThreads;
+		if (viewSource === 'likes') return likeThreads;
 		if (viewSource !== 'both') return allThreads;
 		// Dedupe by rootUri so a self-repost doesn't collide with an owned thread.
 		const threadUris = new Set(allThreads.map((thread) => thread.rootUri));
@@ -757,7 +813,13 @@
 	});
 	const effectiveThreshold = $derived(viewSource === 'threads' ? threshold : 1);
 	const contentNoun = $derived(
-		viewSource === 'reposts' ? 'repost' : viewSource === 'both' ? 'post' : 'thread'
+		viewSource === 'reposts'
+			? 'repost'
+			: viewSource === 'likes'
+				? 'liked post'
+				: viewSource === 'both'
+					? 'post'
+					: 'thread'
 	);
 	const sortedThreads = $derived([...activeThreads].sort(compareThreadValues));
 
@@ -1058,6 +1120,7 @@
 		progress = { phase: '', current: 0, total: 0 };
 		abortController = null;
 		engagementHydrationController = null;
+		engagementJob = null;
 		engagementCountsByUri = cachedEngagementCounts;
 		engagementTargetPostCount = restoredEngagementTarget;
 		cachedRepoFeedItems = cache.repoFeedItems ?? null;
@@ -1361,13 +1424,13 @@
 		wholeThreadController?.abort();
 		wholeThreadController = null;
 		wholeThreadFetching = false;
-		repostsController?.abort();
-		repostsController = null;
-		repostsFetching = false;
-		repostsPhase = 'idle';
+		sourceController?.abort();
+		sourceController = null;
+		sourceFetching = false;
 		engagementHydrationController?.abort();
 		engagementHydrationController = null;
 		engagementHydrationContext = null;
+		engagementJob = null;
 		engagementAttemptedPostUris = new Set();
 		engagementHydratedCount = 0;
 		engagementCountsByUri = {};
@@ -1770,6 +1833,7 @@
 		engagementHydrationController?.abort();
 		engagementHydrationController = null;
 		engagementHydrationContext = null;
+		engagementJob = null;
 		cachedRepoFeedItems = null;
 		cachedHydrationFeedItems = null;
 		cachedEngagementDid = null;
@@ -1975,6 +2039,7 @@
 		engagementHydrationController?.abort();
 		engagementHydrationController = null;
 		engagementHydrationContext = { sourceFeedItems, hydrationFeedItems, did, searchJob, total };
+		engagementJob = null;
 		cachedRepoFeedItems = sourceFeedItems;
 		cachedHydrationFeedItems = hydrationFeedItems;
 		cachedEngagementDid = did;
@@ -2197,21 +2262,59 @@
 		void runWholeThreadFetch(sortedThreads, 'all');
 	}
 
-	// Switch the gallery source. The first time reposts (or Both) are requested we fetch
-	// them; once loaded, toggling is instant.
+	// Switch the gallery source. The first time reposts (or Both) or likes are requested
+	// we fetch them; once loaded, toggling is instant.
 	function setViewSource(next: ViewSource) {
 		if (next === viewSource) return;
-		if ((next === 'reposts' || next === 'both') && !repostsLoaded) {
-			void fetchReposts(next);
+		const kind: SubjectSource | null =
+			next === 'reposts' || next === 'both' ? 'reposts' : next === 'likes' ? 'likes' : null;
+		const loaded = kind === 'reposts' ? repostsLoaded : kind === 'likes' ? likesLoaded : true;
+		// Already streaming this kind: just show what has arrived so far.
+		if (kind && !loaded && !(sourceFetching && sourceFetchKind === kind)) {
+			void fetchSubjectSource(kind, next);
 			return;
 		}
 		viewSource = next;
 	}
 
-	// Download each loaded account's repo CAR, extract its reposts, hydrate the reposted
-	// posts, and turn each into a single-post thread so the gallery can render them.
-	async function fetchReposts(target: ViewSource = 'reposts') {
-		if (repostsFetching) return;
+	/** Repost/like records for a DID: from memory, the kept CAR, or a fresh download. */
+	async function getRepoSubjectRecords(
+		did: string,
+		signal: AbortSignal,
+		onPhase: (phase: SubjectFetchPhase, downloadedBytes?: number) => void
+	): Promise<{ records: RepoSubjectRecords; fromMemory: boolean }> {
+		const remembered = repoSubjectRecordsByDid.get(did);
+		if (remembered) return { records: remembered, fromMemory: true };
+
+		let carBytes = repoCarBytesByDid.get(did);
+		const fromMemory = Boolean(carBytes);
+		if (carBytes) {
+			onPhase('memory');
+		} else {
+			onPhase('downloading');
+			const download = await downloadRepoCar(did, {
+				signal,
+				onDownloadProgress: (progress) => onPhase('downloading', progress.receivedBytes)
+			});
+			carBytes = download.carBytes;
+			onPhase('parsing');
+		}
+		// Let the phase paint before the synchronous WASM parse.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+		const records = await parseRepoSubjectRecordsFromCar(did, carBytes);
+		repoSubjectRecordsByDid.set(did, records);
+		repoCarBytesByDid.delete(did);
+		return { records, fromMemory };
+	}
+
+	// Collect each loaded account's reposts (or likes), then hydrate the referenced posts
+	// through the shared scheduler, streaming them into the view as single-post threads.
+	async function fetchSubjectSource(kind: SubjectSource, target: ViewSource) {
+		if (sourceFetching) {
+			toastInfo(`Still fetching ${sourceFetchKind} — stop it first.`);
+			return;
+		}
 		const accounts =
 			repoAccounts.length > 0
 				? repoAccounts.map((account) => ({ did: account.did, handle: account.handle }))
@@ -2223,88 +2326,172 @@
 			return;
 		}
 
-		repostsController?.abort();
+		sourceController?.abort();
 		const controller = new AbortController();
-		repostsController = controller;
-		repostsFetching = true;
-		repostsPhase = 'downloading';
-		repostsProgress = { current: 0, total: 0 };
+		sourceController = controller;
+		sourceFetchKind = kind;
+		sourceFetching = true;
+		viewSource = target;
 
-		const threads: SelfReplyThread[] = [];
+		subjectJob = {
+			kind,
+			status: 'running',
+			startedAt: Date.now(),
+			hydrateStartedAt: null,
+			finishedAt: null,
+			accounts: accounts.map((account) => ({
+				...account,
+				phase: 'waiting',
+				fromMemory: false,
+				records: 0,
+				downloadedBytes: 0
+			})),
+			total: 0,
+			alreadyDone: 0,
+			toFetch: 0,
+			processed: 0,
+			fetched: 0,
+			unavailable: 0,
+			failed: 0
+		};
+		const job = subjectJob;
+
+		// Subject URIs newest first, deduped across accounts.
+		const order: string[] = [];
 		const seen = new Set<string>();
-		let missingCount = 0;
+
+		const publish = () => {
+			const threads: SelfReplyThread[] = [];
+			let missing = 0;
+			for (const uri of order) {
+				const post = subjectPostCache.get(uri);
+				if (post) threads.push({ rootPost: post, depth: 1, rootUri: post.uri });
+				else if (unavailableSubjectUris.has(uri)) missing += 1;
+			}
+			if (kind === 'likes') {
+				likeThreads = threads;
+				likesMissingCount = missing;
+			} else {
+				repostThreads = threads;
+				repostsMissingCount = missing;
+			}
+			job.unavailable = missing;
+		};
+		let publishTimer: ReturnType<typeof setTimeout> | null = null;
+		const schedulePublish = () => {
+			publishTimer ??= setTimeout(() => {
+				publishTimer = null;
+				publish();
+			}, 800);
+		};
 
 		try {
-			for (const account of accounts) {
-				if (controller.signal.aborted) return;
-				const result = await loadRepoReposts(account.did, {
-					signal: controller.signal,
-					onDownloadProgress: () => {
-						repostsPhase = 'downloading';
-					},
-					onParseProgress: (count) => {
-						repostsPhase = 'parsing';
-						repostsProgress = { current: 0, total: count };
-					},
-					onHydrateProgress: ({ completed, total }) => {
-						repostsPhase = 'hydrating';
-						repostsProgress = { current: completed, total };
+			for (const [index, account] of accounts.entries()) {
+				const row = job.accounts[index];
+				const { records, fromMemory } = await getRepoSubjectRecords(
+					account.did,
+					controller.signal,
+					(phase, bytes) => {
+						row.phase = phase;
+						if (bytes != null) row.downloadedBytes = bytes;
 					}
-				});
-				if (controller.signal.aborted) return;
-
-				for (const repost of result.reposts) {
-					const post = result.posts.get(repost.subjectUri);
-					if (!post) {
-						missingCount += 1;
-						continue;
-					}
-					if (seen.has(post.uri)) continue;
-					seen.add(post.uri);
-					threads.push({ rootPost: post, depth: 1, rootUri: post.uri });
+				);
+				const list = kind === 'likes' ? records.likes : records.reposts;
+				row.fromMemory = fromMemory;
+				row.records = list.length;
+				row.phase = 'hydrating';
+				for (const record of list) {
+					if (seen.has(record.subjectUri)) continue;
+					seen.add(record.subjectUri);
+					order.push(record.subjectUri);
 				}
 			}
 
-			if (controller.signal.aborted) return;
-
-			repostThreads = threads;
-			repostsMissingCount = missingCount;
-			repostsLoaded = true;
-
-			if (threads.length === 0) {
-				toastInfo(
-					missingCount > 0
-						? 'Found reposts, but none of the reposted posts could be loaded.'
-						: 'No reposts found in this repo.'
-				);
-				// "Both" can still show the thread list even with no reposts.
-				if (target === 'both') viewSource = 'both';
-				return;
-			}
-
-			viewSource = target;
-			toastSuccess(
-				`Loaded ${threads.length.toLocaleString()} repost${threads.length === 1 ? '' : 's'}${missingCount > 0 ? ` (${missingCount.toLocaleString()} unavailable)` : ''}.`
+			const toFetch = order.filter(
+				(uri) => !subjectPostCache.has(uri) && !unavailableSubjectUris.has(uri)
 			);
+			job.total = order.length;
+			job.alreadyDone = order.length - toFetch.length;
+			job.toFetch = toFetch.length;
+			job.hydrateStartedAt = Date.now();
+			publish();
+
+			const result = await hydrateSubjectPosts(toFetch, {
+				scheduler: subjectScheduler,
+				signal: controller.signal,
+				label: kind,
+				onBatch: ({ uris, posts }) => {
+					if (controller.signal.aborted) return;
+					const returned = new Set<string>();
+					for (const post of posts) {
+						subjectPostCache.set(post.uri, post);
+						returned.add(post.uri);
+					}
+					for (const uri of uris) {
+						if (!returned.has(uri)) unavailableSubjectUris.add(uri);
+					}
+					job.processed += uris.length;
+					job.fetched += posts.length;
+					schedulePublish();
+				}
+			});
+
+			job.failed = result.failedUris;
+			publish();
+			for (const row of job.accounts) row.phase = 'done';
+			job.status = 'done';
+			// Only mark loaded when nothing is left to retry; otherwise a later click resumes.
+			if (kind === 'likes') likesLoaded = result.failedUris === 0;
+			else repostsLoaded = result.failedUris === 0;
+
+			const shown = kind === 'likes' ? likeThreads.length : repostThreads.length;
+			const noun = kind === 'likes' ? 'like' : 'repost';
+			if (order.length === 0) {
+				toastInfo(`No ${noun}s found in this repo.`);
+			} else {
+				toastSuccess(
+					`Loaded ${shown.toLocaleString()} ${noun}${shown === 1 ? '' : 's'}${
+						result.failedUris > 0 ? ` (${result.failedUris.toLocaleString()} failed — retry from the panel)` : ''
+					}.`
+				);
+			}
 		} catch (err: any) {
-			if (err?.name !== 'AbortError' && !controller.signal.aborted) {
-				toastError(err?.message || 'Failed to fetch reposts.');
+			publish();
+			if (err?.name === 'AbortError' || controller.signal.aborted) {
+				job.status = 'stopped';
+			} else {
+				job.status = 'failed';
+				const row = job.accounts.find((account) => account.phase !== 'done' && account.phase !== 'hydrating');
+				if (row) {
+					row.phase = 'failed';
+					row.error = err?.message;
+				}
+				toastError(err?.message || `Failed to fetch ${kind}.`);
 			}
 		} finally {
-			if (repostsController === controller) repostsController = null;
-			repostsFetching = false;
-			repostsPhase = 'idle';
-			repostsProgress = { current: 0, total: 0 };
+			if (publishTimer) clearTimeout(publishTimer);
+			job.finishedAt = Date.now();
+			if (sourceController === controller) sourceController = null;
+			sourceFetching = false;
 		}
 	}
 
-	const repostsProgressLabel = $derived.by(() => {
-		if (repostsPhase === 'downloading') return 'Downloading repo…';
-		if (repostsPhase === 'parsing') return 'Reading reposts…';
-		if (repostsProgress.total > 0) {
-			return `Hydrating reposts ${repostsProgress.current.toLocaleString()}/${repostsProgress.total.toLocaleString()}…`;
-		}
-		return 'Fetching reposts…';
+	function stopSubjectFetch() {
+		sourceController?.abort();
+	}
+
+	function resumeSubjectFetch() {
+		if (!subjectJob) return;
+		const kind = subjectJob.kind;
+		if (kind === 'engagement') return;
+		void fetchSubjectSource(kind, kind === 'reposts' && viewSource === 'both' ? 'both' : kind);
+	}
+
+	const sourceProgressLabel = $derived.by(() => {
+		if (!subjectJob) return `Fetching ${sourceFetchKind}…`;
+		if (subjectJob.total === 0) return `Reading ${sourceFetchKind}…`;
+		const done = subjectJob.alreadyDone + subjectJob.processed;
+		return `Loading ${sourceFetchKind} ${done.toLocaleString()}/${subjectJob.total.toLocaleString()}…`;
 	});
 
 	// --- Timeline viewer (date-range selector + selective hydration) ---
@@ -2312,6 +2499,7 @@
 	let timelineHydrationProgress = $state({ current: 0, total: 0 });
 	let timelineHydrationController: AbortController | null = null;
 	let showTimeline = $state(true);
+	let showHeatmap = $state(true);
 
 	function msToDateInput(ms: number): string {
 		const d = new Date(ms);
@@ -2425,6 +2613,10 @@
 		};
 		engagementHydrationController?.abort();
 		engagementHydrationController = null;
+		if (engagementJob?.status === 'running') {
+			engagementJob.status = 'stopped';
+			engagementJob.finishedAt = Date.now();
+		}
 		saveViewer2MemoryCache();
 	}
 
@@ -2441,6 +2633,35 @@
 			engagementHydrationContext !== context ||
 			controller.signal.aborted;
 
+		// Batches that still failed after the scheduler's retries; skipped for the rest of
+		// this run and left unattempted so Resume retries them.
+		const failedThisRun = new Set<string>();
+		const hydratedBefore = engagementHydratedCount;
+		const startedAt = Date.now();
+		engagementJob = {
+			kind: 'engagement',
+			status: 'running',
+			startedAt,
+			hydrateStartedAt: startedAt,
+			finishedAt: null,
+			accounts: [],
+			total: context.total,
+			alreadyDone: engagementAttemptedPostUris.size,
+			toFetch: Math.max(0, context.total - engagementAttemptedPostUris.size),
+			processed: 0,
+			fetched: 0,
+			unavailable: repoStats.missingCount,
+			failed: 0
+		};
+		const job = engagementJob;
+		const setProgress = (current: number) => {
+			engagementHydrationProgress = { current, total: context.total };
+			job.processed = Math.max(0, current - job.alreadyDone);
+			job.fetched = engagementHydratedCount - hydratedBefore;
+			job.unavailable = repoStats.missingCount;
+			job.failed = failedThisRun.size;
+		};
+
 		try {
 			// Thread-first pass over the full pending feed: one getPostThread call
 			// covers a whole thread, versus 25 posts per getPosts call. Running it
@@ -2454,12 +2675,10 @@
 				const { hydratedUris } = await hydrateFeedItemsThreadEngagement(pendingAll, {
 					signal: controller.signal,
 					threadConcurrency: ENGAGEMENT_THREAD_CONCURRENCY,
+					scheduler: subjectScheduler,
 					onProgress: ({ completed }) => {
 						if (isStale()) return;
-						engagementHydrationProgress = {
-							current: Math.min(context.total, attemptedBeforeThreads + completed),
-							total: context.total
-						};
+						setProgress(Math.min(context.total, attemptedBeforeThreads + completed));
 					}
 				});
 				if (isStale()) return;
@@ -2480,10 +2699,7 @@
 						hydratedCount: engagementHydratedCount,
 						missingCount: Math.max(0, engagementAttemptedPostUris.size - engagementHydratedCount)
 					};
-					engagementHydrationProgress = {
-						current: engagementAttemptedPostUris.size,
-						total: context.total
-					};
+					setProgress(engagementAttemptedPostUris.size);
 					applyEngagementCountsToActiveViews(threadCounts);
 					scheduleViewer2MemoryCacheSave();
 				}
@@ -2496,7 +2712,7 @@
 
 				const pending = context.hydrationFeedItems.filter((item) => {
 					const uri = feedItemUri(item);
-					return uri !== null && !engagementAttemptedPostUris.has(uri);
+					return uri !== null && !engagementAttemptedPostUris.has(uri) && !failedThisRun.has(uri);
 				});
 				if (pending.length === 0) break;
 
@@ -2511,12 +2727,10 @@
 					concurrency: ENGAGEMENT_HYDRATION_CONCURRENCY,
 					// Thread candidates were already fetched in the full-feed pass above.
 					minThreadFetchPosts: Number.POSITIVE_INFINITY,
+					scheduler: subjectScheduler,
 					onProgress: ({ completed }) => {
 						if (isStale()) return;
-						engagementHydrationProgress = {
-							current: Math.min(context.total, alreadyAttempted + completed),
-							total: context.total
-						};
+						setProgress(Math.min(context.total, alreadyAttempted + completed));
 					}
 				});
 
@@ -2524,8 +2738,10 @@
 					return;
 				}
 
+				const chunkFailed = new Set(engagement.failedUris);
 				for (const uri of chunkUris) {
-					engagementAttemptedPostUris.add(uri);
+					if (chunkFailed.has(uri)) failedThisRun.add(uri);
+					else engagementAttemptedPostUris.add(uri);
 				}
 				const chunkCounts = collectEngagementCountsFromFeedItems(chunk);
 				Object.assign(engagementCountsByUri, chunkCounts);
@@ -2535,10 +2751,7 @@
 					hydratedCount: engagementHydratedCount,
 					missingCount: Math.max(0, engagementAttemptedPostUris.size - engagementHydratedCount)
 				};
-				engagementHydrationProgress = {
-					current: engagementAttemptedPostUris.size,
-					total: context.total
-				};
+				setProgress(engagementAttemptedPostUris.size);
 				applyEngagementCountsToActiveViews(chunkCounts);
 				scheduleViewer2MemoryCacheSave();
 
@@ -2554,8 +2767,10 @@
 				updateStats: false
 			});
 			refreshDisplayedThreadsNow(allThreads);
-			engagementHydrationState = repoStats.missingCount > 0 ? 'partial' : 'done';
-			engagementHydrationProgress = { current: context.total, total: context.total };
+			engagementHydrationState =
+				repoStats.missingCount > 0 || failedThisRun.size > 0 ? 'partial' : 'done';
+			setProgress(engagementAttemptedPostUris.size);
+			job.status = 'done';
 			if (threadSortMode === 'liked' || threadSortMode === 'reposted' || threadSortMode === 'quoted') {
 				toastInfo('Engagement counts updated.');
 			}
@@ -2573,10 +2788,13 @@
 				return;
 			}
 			engagementHydrationState = 'failed';
+			job.status = 'failed';
 		} finally {
 			if (engagementHydrationController === controller) {
 				engagementHydrationController = null;
 			}
+			if (job.status === 'running') job.status = 'stopped';
+			job.finishedAt ??= Date.now();
 		}
 	}
 
@@ -2592,6 +2810,7 @@
 		engagementHydrationController?.abort();
 		engagementHydrationController = null;
 		engagementHydrationContext = null;
+		engagementJob = null;
 		engagementAttemptedPostUris = new Set();
 		engagementHydratedCount = appendMode ? Object.keys(engagementCountsByUri).length : 0;
 		if (!appendMode) {
@@ -2636,13 +2855,20 @@
 			wholeThreadTruncated = false;
 			wholeThreadSourceLabel = '';
 			showWholeThreadReader = false;
-			repostsController?.abort();
-			repostsController = null;
-			repostsFetching = false;
-			repostsPhase = 'idle';
+			sourceController?.abort();
+			sourceController = null;
+			sourceFetching = false;
+			subjectJob = null;
+			repoCarBytesByDid.clear();
+			repoSubjectRecordsByDid.clear();
+			subjectPostCache.clear();
+			unavailableSubjectUris.clear();
 			repostThreads = [];
 			repostsLoaded = false;
 			repostsMissingCount = 0;
+			likeThreads = [];
+			likesLoaded = false;
+			likesMissingCount = 0;
 			viewSource = 'threads';
 		}
 		hasSearched = true;
@@ -2705,6 +2931,11 @@
 			progress = { phase: downloadPhase, current: 0, total: 0 };
 			const repo = await loadRepoFeedItems(did, authorInfo, {
 				signal: controller.signal,
+				// Kept (not parsed) so a later Reposts/Likes click doesn't re-download the repo.
+				onCarBytes: (carBytes) => {
+					repoCarBytesByDid.set(did, carBytes);
+					repoSubjectRecordsByDid.delete(did);
+				},
 				onDownloadProgress: (downloadProgress) => {
 					latestDownloadedBytes = downloadProgress.receivedBytes;
 					progress =
@@ -3196,7 +3427,9 @@
 		followLoadController?.abort();
 		engagementHydrationController?.abort();
 		wholeThreadController?.abort();
-		repostsController?.abort();
+		sourceController?.abort();
+		subjectScheduler.dispose();
+		if (subjectSnapshotTimer) clearTimeout(subjectSnapshotTimer);
 		flushViewer2MemoryCacheSave();
 	});
 </script>
@@ -3609,30 +3842,58 @@
 								<button
 									type="button"
 									class:active={viewSource === 'reposts'}
-									disabled={repostsFetching}
+									disabled={sourceFetching && sourceFetchKind !== 'reposts' && !repostsLoaded}
 									onclick={() => setViewSource('reposts')}
 									title="Every post this account has reposted"
 								>
-									🔁 Reposts{repostsLoaded ? ` (${repostThreads.length.toLocaleString()})` : ''}
+									🔁 Reposts{repostsLoaded || repostThreads.length > 0 ? ` (${repostThreads.length.toLocaleString()})` : ''}
+								</button>
+								<button
+									type="button"
+									class:active={viewSource === 'likes'}
+									disabled={sourceFetching && sourceFetchKind !== 'likes' && !likesLoaded}
+									onclick={() => setViewSource('likes')}
+									title="Every post this account has liked"
+								>
+									♥ Likes{likesLoaded || likeThreads.length > 0 ? ` (${likeThreads.length.toLocaleString()})` : ''}
 								</button>
 								<button
 									type="button"
 									class:active={viewSource === 'both'}
-									disabled={repostsFetching}
+									disabled={sourceFetching && sourceFetchKind !== 'reposts' && !repostsLoaded}
 									onclick={() => setViewSource('both')}
 									title="Threads and reposts together"
 								>
 									Both{repostsLoaded ? ` (${(allThreads.length + repostThreads.length).toLocaleString()})` : ''}
 								</button>
 							</div>
-							{#if repostsFetching}
-								<span class="source-toggle-note">{repostsProgressLabel}</span>
-							{:else if viewSource !== 'threads' && repostsMissingCount > 0}
-								<span class="source-toggle-note" title="Deleted, blocked, or hidden reposted posts">
-									{repostsMissingCount.toLocaleString()} unavailable
+							{#if sourceFetching}
+								<span class="source-toggle-note">{sourceProgressLabel}</span>
+							{:else if viewSource === 'likes' ? likesMissingCount > 0 : viewSource !== 'threads' && repostsMissingCount > 0}
+								<span class="source-toggle-note" title="Deleted, blocked, or hidden posts">
+									{(viewSource === 'likes' ? likesMissingCount : repostsMissingCount).toLocaleString()} unavailable
 								</span>
 							{/if}
 						</div>
+						{#if subjectJob}
+							<SubjectFetchDashboard
+								job={subjectJob}
+								snapshot={subjectSchedulerSnapshot}
+								postsPerRequest={GET_POSTS_BATCH_SIZE}
+								onstop={stopSubjectFetch}
+								onresume={resumeSubjectFetch}
+								onclose={() => (subjectJob = null)}
+							/>
+						{/if}
+						{#if engagementJob}
+							<SubjectFetchDashboard
+								job={engagementJob}
+								snapshot={subjectSchedulerSnapshot}
+								onstop={stopEngagementHydration}
+								onresume={startEngagementHydration}
+								onclose={() => (engagementJob = null)}
+							/>
+						{/if}
 					{/if}
 
 					{#if activeThreads.length > 0}
@@ -3835,6 +4096,14 @@
 							</button>
 							<button
 								type="button"
+								class="timeline-toggle-btn"
+								onclick={() => (showHeatmap = !showHeatmap)}
+								aria-expanded={showHeatmap}
+							>
+								{showHeatmap ? '▾ Hide heatmap' : '▸ Show heatmap'}
+							</button>
+							<button
+								type="button"
 								class="timeline-toggle-btn blast-toggle"
 								class:active={blastMode}
 								disabled={!blastMode && displayedThreads.length === 0}
@@ -3876,6 +4145,19 @@
 									onhydrate={hydrateTimelineRange}
 									onselect={handleTimelineSelect}
 									onopenpost={handleTimelineOpenPost}
+									selectedFrom={dateFrom}
+									selectedTo={dateTo}
+									oncollapse={() => (showTimeline = false)}
+								/>
+							{/if}
+							{#if showHeatmap}
+								<ActivityHeatmap
+									feedItems={cachedRepoFeedItems ?? []}
+									{engagementCountsByUri}
+									selectedFrom={dateFrom}
+									selectedTo={dateTo}
+									onselect={handleTimelineSelect}
+									oncollapse={() => (showHeatmap = false)}
 								/>
 							{/if}
 						</div>
@@ -3998,9 +4280,9 @@
 					<div class="empty-state">
 						{#if viewSource !== 'threads'}
 							{#if activeThreads.length === 0}
-								<p>No {viewSource === 'both' ? 'posts' : 'reposts'} found for this account.</p>
+								<p>No {viewSource === 'both' ? 'posts' : viewSource === 'likes' ? 'liked posts' : 'reposts'} found for this account.</p>
 							{:else}
-								<p>No {viewSource === 'both' ? 'posts' : 'reposts'} match the current filters.</p>
+								<p>No {viewSource === 'both' ? 'posts' : viewSource === 'likes' ? 'liked posts' : 'reposts'} match the current filters.</p>
 								<p class="empty-hint">
 									{#if renderMode === 'gallery' && galleryContentMode !== 'all'}
 										Try switching Gallery back to All or adjusting the date range.

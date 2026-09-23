@@ -97,6 +97,19 @@
 		indexByUri: Map<string, number>;
 		parentByUri: Map<string, ThreadPost>;
 	};
+	/** One reply level fanned out: the replies to `parentUri`, browsed with `focusUri`
+	 * centred. Browsing is a preview; the lane changes only when the fan is committed. */
+	type BranchFan = {
+		laneId: string;
+		parentUri: string;
+		focusUri: string;
+	};
+	type BranchRailStep = {
+		post: ThreadPost;
+		/** Replies to this step's parent, including this one. */
+		siblings: number;
+		state: 'path' | 'current' | 'ahead';
+	};
 	/** Board structure: everything that does not depend on measured card heights. */
 	type BoardModel = {
 		lanes: LaneRenderModel[];
@@ -131,21 +144,6 @@
 		summaryPosts?: ThreadPost[];
 	};
 	type WinningMoveHandler = (details: WinningMoveDetails) => void;
-	type FetchModeTaskKind = 'scan-post' | 'open-lane';
-	type FetchModeTaskStatus = 'pending' | 'running' | 'done' | 'skipped' | 'error';
-	type FetchModeQueueItem = {
-		id: string;
-		kind: FetchModeTaskKind;
-		status: FetchModeTaskStatus;
-		sourceUri: string;
-		sourceLaneId: string;
-		targetUri?: string;
-		targetHandle?: string;
-		direction?: QuoteLaneDirection;
-		label: string;
-		detail: string;
-		error?: string;
-	};
 		type ParallelBoardViewProps = {
 			thread: BoardThread;
 			mainLaneAnchorUri?: string | null;
@@ -179,16 +177,21 @@
 	const STEP_X = CARD_WIDTH + 72;
 	const STEP_Y = CARD_HEIGHT + CARD_GAP;
 	const DEPTH_HEADROOM_ROWS = 3;
-	const TREE_FAN_STEP_X = CARD_WIDTH + 38;
 	const LANE_MARKER_WIDTH = 86;
 	const LANE_MARKER_HEIGHT = 192;
 	const LANE_MARKER_GAP = 24;
-	const PADDING_X = 52;
+	// One card width of empty board beside the outermost lanes, plus the original margin.
+	const PADDING_X = CARD_WIDTH + 52;
 	const PADDING_Y = 44;
 	// Below this zoom, cards render as lightweight previews at their measured size.
 	const LOW_DETAIL_ZOOM = 0.35;
 	// Shadow cards deeper in a stack sit behind the others; render only the nearest ones.
+	const TREE_FAN_STEP_X = CARD_WIDTH + 38;
 	const SHADOW_STACK_RENDER_LIMIT = 8;
+	const BRANCH_FAN_PAGE = 40;
+	const BRANCH_FAN_REPLY_LIMIT = 40;
+	// The rail shows this many steps around the current one; longer chains are elided.
+	const BRANCH_RAIL_WINDOW = 40;
 	const MINIMAP_REDRAW_MS = 120;
 	const QUOTE_PICKER_PAGE = 60;
 	const GALLERY_PAGE = 120;
@@ -196,10 +199,6 @@
 			const ZOOM_MIN = 0.1;
 			const ZOOM_MAX = 1.5;
 			const ZOOM_STEP = 0.1;
-		const FETCH_MODE_DELAY_MS = 300;
-		const FETCH_MODE_MAX_TASKS = 1000;
-		const FETCH_MODE_VISIBLE_ITEMS = 9;
-		const FETCH_MODE_CONCURRENCY = 3;
 		const BULK_LANE_CONCURRENCY = 5;
 		const BULK_LANE_FLUSH_SIZE = 12;
 		const BULK_LANE_FLUSH_MS = 250;
@@ -225,6 +224,7 @@
 				{ keys: ['Shift + h/j/k/l', 'Shift + arrows'], description: 'Scroll the selected post card without changing selection' },
 				{ keys: ['a', 's'], description: 'Switch backward or forward through stacked reply branches on the selected lane' },
 				{ keys: ['t'], description: 'Expand or collapse the selected lane into a fan-shaped tree view' },
+				{ keys: ['b', 'Double-click'], description: 'Fan out the replies at the selected card: ←/→ browse, ↓/↑ go deeper or back up, Enter shows the branch on the board' },
 				{ keys: ['e'], description: 'Load the full conversation for the selected lane (lanes start with the post, its parents and its replies)' },
 				{ keys: ['/', 'u'], description: 'Focus lane text search or author search' },
 				{ keys: ['1-9'], description: 'Pick quote posts, or jump to numbered child branches in tree view' },
@@ -281,27 +281,21 @@
 		let postQuotes = $state.raw<Record<string, QuotePostFeedState>>({});
 		let bulkQuoteLaneLoads = $state.raw<Record<string, boolean>>({});
 		let openQuotePickerCardKey = $state<string | null>(null);
-		let fetchModeQueue = $state.raw<FetchModeQueueItem[]>([]);
 		let fetchModeRunning = $state(false);
 		let fetchModePaused = $state(false);
-		let showFetchModePanel = $state(true);
-		let fetchModeRunId = $state(0);
-		let nextFetchModeRunId = 1;
-		let fetchModeStatusMessage = $state('');
-		let fetchModeProcessedCount = $state(0);
-			let fetchModeWorker: Worker | null = null;
-			let fetchModeAbort: AbortController | null = null;
+		let showFetchModePanel = $state(false);
+		let fetchModeWorker: Worker | null = null;
 		let nextFetchModeHydrationRequestId = 1;
 		const fetchModeHydrationRequests = new Map<
 			number,
 			{ resolve: (thread: BoardThread) => void; reject: (error: Error) => void }
 		>();
-		let fetchModeQueuedTaskIds = new Set<string>();
-		let fetchModeQueuedScanUris = new Set<string>();
-		let fetchModeQueuedLaneTargets = new Set<string>();
-		let fetchModeReachedTaskLimit = false;
 		let laneActiveChainIds = $state.raw<Record<string, string>>({});
 	let expandedLaneId = $state<string | null>(null);
+	let branchFan = $state<BranchFan | null>(null);
+	let branchFanRenderLimit = $state(BRANCH_FAN_PAGE);
+	let branchFanStripEl: HTMLDivElement | undefined = $state();
+	let branchRailEl: HTMLElement | undefined = $state();
 	let activeLaneId = $state(MAIN_LANE_ID);
 	let activeCardKey = $state('');
 	let detailModalTarget = $state<{ laneId: string; postUri: string } | null>(null);
@@ -444,7 +438,7 @@
 	function threadWithImageOverrides(boardThread: BoardThread): BoardThread {
 		return { ...boardThread, rootPost: postWithImageOverrides(boardThread.rootPost) };
 	}
-	let showGallery = $state(true);
+	let showGallery = $state(false);
 	let galleryRenderLimit = $state(GALLERY_PAGE);
 	let quotePickerRenderLimit = $state(QUOTE_PICKER_PAGE);
 
@@ -577,9 +571,13 @@
 		return { order, indexByUri, parentByUri };
 	}
 
+	// One shared formatter: toLocaleDateString with options builds a new one per call,
+	// which is slow for every card that mounts.
+	const cardDateFormat = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
 	function formatDate(iso: string): string {
 		const d = new Date(iso);
-		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+		return Number.isNaN(d.getTime()) ? 'Invalid Date' : cardDateFormat.format(d);
 	}
 
 			function formatCount(n: number): string {
@@ -771,13 +769,115 @@
 
 		const laneCardLayoutCache = new LaneCardLayoutCache();
 
+		// Lane order beside each source post. 'loaded' is plain load order.
+		type LaneSortMode = 'loaded' | 'posts' | 'newest' | 'oldest';
+		const LANE_SORT_MODES: { value: LaneSortMode; label: string }[] = [
+			{ value: 'loaded', label: 'Load order' },
+			{ value: 'posts', label: 'Most posts' },
+			{ value: 'newest', label: 'Newest' },
+			{ value: 'oldest', label: 'Oldest' }
+		];
+		const LANE_SORT_KEY = 'parallelboard:lane-sort:v1';
+		let laneSortMode = $state<LaneSortMode>(loadLaneSortMode());
+
+		function loadLaneSortMode(): LaneSortMode {
+			try {
+				const saved = typeof localStorage === 'undefined' ? null : localStorage.getItem(LANE_SORT_KEY);
+				return LANE_SORT_MODES.some((mode) => mode.value === saved) ? (saved as LaneSortMode) : 'loaded';
+			} catch {
+				return 'loaded';
+			}
+		}
+
+		function setLaneSortMode(mode: LaneSortMode) {
+			laneSortMode = mode;
+			try {
+				localStorage.setItem(LANE_SORT_KEY, mode);
+			} catch {
+				// Storage unavailable: the order still applies for this visit.
+			}
+		}
+
+		/** Creation time of a lane's anchor post (the quote post), cached per thread. */
+		const laneAnchorTimeCache = new WeakMap<ThreadPost, Map<string, number>>();
+
+		function getLaneAnchorTime(lane: LaneRenderModel): number {
+			const rootPost = lane.thread.rootPost;
+			let byAnchor = laneAnchorTimeCache.get(rootPost);
+			if (!byAnchor) {
+				byAnchor = new Map();
+				laneAnchorTimeCache.set(rootPost, byAnchor);
+			}
+			let time = byAnchor.get(lane.anchorUri);
+			if (time === undefined) {
+				let anchor = rootPost;
+				const stack = [rootPost];
+				while (stack.length) {
+					const post = stack.pop()!;
+					if (post.uri === lane.anchorUri) {
+						anchor = post;
+						break;
+					}
+					for (const child of post.children) stack.push(child);
+				}
+				time = Date.parse(anchor.createdAt);
+				if (!Number.isFinite(time)) time = 0;
+				byAnchor.set(lane.anchorUri, time);
+			}
+			return time;
+		}
+
+		/** Placement order for `assignLaneColumns`. Each lane is inserted right beside its
+		 * source, so the lane placed last ends up nearest: every sibling group is fed worst
+		 * first, and lanes nearer the main lane go first so a nested lane never places its
+		 * parent out of turn. */
+		function orderLanePlacements(
+			entries: ReadyQuoteLaneEntry[],
+			laneById: Map<string, LaneRenderModel>,
+			mode: Exclude<LaneSortMode, 'loaded'>
+		): ReadyQuoteLaneEntry[] {
+			const entryById = new Map(entries.map((entry) => [entry.quotedUri, entry]));
+			const nestingById = new Map<string, number>();
+			const nesting = (id: string): number => {
+				const path: string[] = [];
+				let current: string | undefined = id;
+				let base = 0;
+				while (current && entryById.has(current)) {
+					const known = nestingById.get(current);
+					if (known !== undefined) {
+						base = known;
+						break;
+					}
+					if (path.includes(current)) break;
+					path.push(current);
+					current = entryById.get(current)!.sourceLaneId;
+				}
+				for (let index = path.length - 1; index >= 0; index--) nestingById.set(path[index], ++base);
+				return nestingById.get(id) ?? 1;
+			};
+			// Higher scores sit nearer the source.
+			const score = (lane: LaneRenderModel): number => {
+				if (mode === 'posts') return getPostDepthMapCached(lane.thread.rootPost).size;
+				const time = getLaneAnchorTime(lane);
+				return mode === 'newest' ? time : -time;
+			};
+			return entries
+				.map((entry) => {
+					const lane = laneById.get(entry.quotedUri);
+					return { entry, nesting: nesting(entry.quotedUri), score: lane ? score(lane) : -Infinity };
+				})
+				.sort((a, b) => a.nesting - b.nesting || a.score - b.score || a.entry.loadedAt - b.entry.loadedAt)
+				.map(({ entry }) => entry);
+		}
+
 		function buildBoardModel(
 			mainThread: BoardThread,
 			mainAnchorUri: string | null,
 			readyQuoteEntries: ReadyQuoteLaneEntry[],
 			quoteEntries: ResolvedQuoteLaneEntry[],
 			activeChainByLane: Record<string, string>,
-			expandedLane: string | null
+			expandedLane: string | null,
+			sortMode: LaneSortMode
 		): BoardModel {
 			const laneById = new Map<string, LaneRenderModel>();
 			const depthByLanePostUri = new Map<string, Map<string, number>>();
@@ -887,7 +987,9 @@
 				}
 			}
 
-			const columns = assignLaneColumns(MAIN_LANE_ID, readyQuoteEntries.map((entry) => ({
+			const placementEntries =
+				sortMode === 'loaded' ? readyQuoteEntries : orderLanePlacements(readyQuoteEntries, laneById, sortMode);
+			const columns = assignLaneColumns(MAIN_LANE_ID, placementEntries.map((entry) => ({
 				id: entry.quotedUri, sourceLaneId: entry.sourceLaneId, direction: entry.direction
 			})));
 			for (const lane of orderedLanes) lane.column = columns.get(lane.id) ?? 0;
@@ -943,6 +1045,14 @@
 			}
 
 			const connectors: LaneConnector[] = [];
+			const connectorKeys = new Set<string>();
+
+			function pushConnector(connector: LaneConnector) {
+				// Multiple quote entries can resolve to the same card pair (e.g. in fetch mode).
+				if (connectorKeys.has(connector.key)) return;
+				connectorKeys.add(connector.key);
+				connectors.push(connector);
+			}
 
 			for (const lane of orderedLanes) {
 				lane.x = PADDING_X + (lane.column - minColumn) * STEP_X;
@@ -957,7 +1067,7 @@
 					registerLaneCard({ ...localCard, x: lane.x + localCard.x, row });
 				}
 				for (const connector of localLayout.connectors) {
-					connectors.push({
+					pushConnector({
 						...connector,
 						from: cardsByKey.get(connector.from.key)!,
 						to: cardsByKey.get(connector.to.key)!
@@ -976,7 +1086,7 @@
 						cardsByLanePost.get(`${entry.targetLaneId}:${entry.targetPostUri}`) ??
 						cardsByPostUri.get(entry.targetPostUri);
 					if (!sourceCard || !quoteCard) continue;
-					connectors.push({
+					pushConnector({
 						key: `spawn:${quoteCard.key}->${sourceCard.key}`,
 						from: quoteCard,
 						to: sourceCard,
@@ -997,7 +1107,7 @@
 						card.post.uri === entry.sourceUri &&
 						targetCard.laneId === entry.quotedUri &&
 						targetCard.post.uri === entry.quotedUri;
-					connectors.push({
+					pushConnector({
 						key: `${isPrimarySpawn ? 'spawn' : 'reference'}:${card.key}->${targetCard.key}`,
 						from: card,
 						to: targetCard,
@@ -1115,42 +1225,6 @@
 			))
 		);
 
-		let fetchModePendingCount = $derived.by(() =>
-			fetchModeQueue.filter((item) => item.status === 'pending').length
-		);
-		let fetchModeActiveCount = $derived.by(() =>
-			fetchModeQueue.filter((item) => item.status === 'running').length
-		);
-		let fetchModeErrorCount = $derived.by(() =>
-			fetchModeQueue.filter((item) => item.status === 'error').length
-		);
-		let visibleFetchModeQueue = $derived.by(() => {
-			const activeItems = fetchModeQueue.filter((item) => item.status === 'running');
-			const isProcessed = (item: FetchModeQueueItem) =>
-				item.status === 'done' || item.status === 'skipped' || item.status === 'error';
-			const processedLaneItems = fetchModeQueue
-				.filter((item) => item.kind === 'open-lane' && isProcessed(item))
-				.slice(-FETCH_MODE_VISIBLE_ITEMS)
-				.reverse();
-			const processedScanItems = fetchModeQueue
-				.filter((item) => item.kind === 'scan-post' && isProcessed(item))
-				.slice(-FETCH_MODE_VISIBLE_ITEMS)
-				.reverse();
-			const remainingProcessedSlots = Math.max(
-				0,
-				FETCH_MODE_VISIBLE_ITEMS - activeItems.length - processedLaneItems.length
-			);
-			const processedItems = [
-				...processedLaneItems,
-				...processedScanItems.slice(0, remainingProcessedSlots)
-			];
-			const remainingSlots = Math.max(0, FETCH_MODE_VISIBLE_ITEMS - activeItems.length - processedItems.length);
-			const nextItems = fetchModeQueue
-				.filter((item) => item.status === 'pending')
-				.slice(0, remainingSlots);
-			return [...activeItems, ...processedItems, ...nextItems].slice(0, FETCH_MODE_VISIBLE_ITEMS);
-		});
-
 		let boardModel = $derived.by(() =>
 			buildBoardModel(
 				mainThread,
@@ -1158,7 +1232,8 @@
 				readyQuoteLanes,
 				resolvedQuoteEntries,
 				laneActiveChainIds,
-				expandedLaneId
+				expandedLaneId,
+				laneSortMode
 			)
 		);
 		let rowLayout = $derived.by(() => computeRowLayout(boardModel, cardHeights, expandedLaneId));
@@ -1208,6 +1283,72 @@
 			? boardModel.cardsByKey.get(`${detailModalTarget.laneId}:${detailModalTarget.postUri}`) ?? null
 			: null
 	);
+	let branchFanLane = $derived(branchFan ? boardModel.laneById.get(branchFan.laneId) ?? null : null);
+	let branchFanParent = $derived.by(() => {
+		if (!branchFan || !branchFanLane) return null;
+		return lanePostByUri(getLaneTreeNavigationCached(branchFanLane.thread.rootPost), branchFan.parentUri) ?? null;
+	});
+	let branchFanSiblings = $derived(branchFanParent?.children ?? []);
+	let branchFanFocusIndex = $derived(
+		Math.max(0, branchFanSiblings.findIndex((post) => post.uri === branchFan?.focusUri))
+	);
+	let branchFanFocus = $derived(branchFanSiblings[branchFanFocusIndex] ?? null);
+	let branchFanCanAscend = $derived(
+		Boolean(branchFanLane && branchFanParent &&
+			getLaneTreeNavigationCached(branchFanLane.thread.rootPost).parentByUri.has(branchFanParent.uri))
+	);
+	let branchFanBoardUris = $derived(
+		new Set(branchFanLane ? getLaneActivePosts(branchFanLane).map((post) => post.uri) : [])
+	);
+
+	/** Root-to-current path of the fan preview, or of the selected lane's active chain with
+	 * the posts below the selection shown as "ahead". Long chains keep a window around the
+	 * current step. */
+	let branchRail = $derived.by(() => {
+		let laneId: string;
+		let posts: ThreadPost[];
+		let currentIndex: number;
+		let navigation: LaneTreeNavigation;
+		if (branchFan && branchFanLane && branchFanFocus) {
+			laneId = branchFanLane.id;
+			navigation = getLaneTreeNavigationCached(branchFanLane.thread.rootPost);
+			posts = [branchFanFocus];
+			for (let parent = navigation.parentByUri.get(branchFanFocus.uri); parent; parent = navigation.parentByUri.get(parent.uri)) {
+				posts.push(parent);
+			}
+			posts.reverse();
+			currentIndex = posts.length - 1;
+		} else if (activeCard && activeLane) {
+			laneId = activeLane.id;
+			navigation = getLaneTreeNavigationCached(activeLane.thread.rootPost);
+			posts = getLaneActivePosts(activeLane);
+			currentIndex = posts.findIndex((post) => post.uri === activeCard.post.uri);
+			if (currentIndex < 0) {
+				// Off the active chain (a tree fan card): show the card's own path from the root.
+				posts = [activeCard.post];
+				for (let parent = navigation.parentByUri.get(activeCard.post.uri); parent; parent = navigation.parentByUri.get(parent.uri)) {
+					posts.push(parent);
+				}
+				posts.reverse();
+				currentIndex = posts.length - 1;
+			}
+		} else {
+			return null;
+		}
+		const start = Math.max(0, Math.min(currentIndex - BRANCH_RAIL_WINDOW / 2, posts.length - BRANCH_RAIL_WINDOW));
+		const end = Math.min(posts.length, start + BRANCH_RAIL_WINDOW);
+		const steps: BranchRailStep[] = [];
+		for (let index = start; index < end; index++) {
+			const post = posts[index];
+			steps.push({
+				post,
+				siblings: navigation.parentByUri.get(post.uri)?.children.length ?? 1,
+				state: index === currentIndex ? 'current' : index < currentIndex ? 'path' : 'ahead'
+			});
+		}
+		return { laneId, steps, hiddenBefore: start, hiddenAfter: posts.length - end };
+	});
+
 	let treeBoardLane = $derived.by(() =>
 		treeBoardTarget ? boardModel.laneById.get(treeBoardTarget.laneId) ?? null : null
 	);
@@ -1449,6 +1590,41 @@
 		};
 	}
 
+	const CARD_MOVE_DURATION = 340;
+	const CARD_MOVE_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
+	const cardElements = new Map<string, HTMLElement>();
+	const cardMoves = new WeakMap<HTMLElement, { animation: Animation; dx: number; dy: number }>();
+	let cardMoveOrigins = new Map<string, { x: number; y: number }>();
+	let cardMoveModel: BoardModel | null = null;
+	let rowAnchorShift: { layout: RowLayout; delta: number } | null = null;
+
+	function trackCardElement(node: HTMLElement, key: string) {
+		cardElements.set(key, node);
+		return {
+			destroy() {
+				if (cardElements.get(key) === node) cardElements.delete(key);
+			}
+		};
+	}
+
+	/** Plays a card's move from `(dx, dy)` away back to its laid-out position. A card that
+	 * is still gliding continues from where it is on screen instead of jumping. */
+	function animateCardMove(el: HTMLElement, dx: number, dy: number) {
+		const running = cardMoves.get(el);
+		if (running && running.animation.playState === 'running') {
+			const remaining = 1 - (running.animation.effect?.getComputedTiming().progress ?? 1);
+			dx += running.dx * remaining;
+			dy += running.dy * remaining;
+			running.animation.cancel();
+		}
+		if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+		const animation = el.animate([{ translate: `${dx}px ${dy}px` }, { translate: '0px 0px' }], {
+			duration: CARD_MOVE_DURATION,
+			easing: CARD_MOVE_EASING
+		});
+		cardMoves.set(el, { animation, dx, dy });
+	}
+
 	function cardIsGhosted(card: LaneCard): boolean {
 		return Boolean(expandedLaneId && card.laneId !== expandedLaneId);
 	}
@@ -1519,9 +1695,9 @@
 	};
 
 	function collectLaneSearchMatches(predicate: (post: ThreadPost) => boolean): LaneSearchMatch[] {
-		const lanesToSearch = expandedSearchLane ? [expandedSearchLane] : boardModel.lanes;
 		const matches: LaneSearchMatch[] = [];
 		const seenKeys = new Set<string>();
+		const lanesToSearch = expandedSearchLane ? [expandedSearchLane] : boardModel.lanes;
 		for (const lane of lanesToSearch) {
 			for (const post of findMatchingPosts(lane.thread.rootPost, predicate)) {
 				const key = `${lane.id}:${post.uri}`;
@@ -1797,6 +1973,11 @@
 
 		const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
 
+		if (branchFan && !treeBoardTarget && !detailModalTarget) {
+			await handleBranchFanKey(event, key);
+			return;
+		}
+
 		if (key === 'Escape') {
 			event.preventDefault();
 			if (treeBoardTarget) {
@@ -1898,6 +2079,13 @@
 				activeCard?.laneId === activeLane.id ? activeCard.post.uri : undefined,
 				'auto'
 			);
+			return;
+		}
+
+		if (key === 'b' && activeCard) {
+			event.preventDefault();
+			closeShortcutsHelp();
+			openBranchFan(activeCard.laneId, activeCard.post.uri);
 			return;
 		}
 
@@ -2624,6 +2812,183 @@
 		await stepLaneBranch(card, 1);
 	}
 
+	function lanePostByUri(navigation: LaneTreeNavigation, uri: string): ThreadPost | undefined {
+		const index = navigation.indexByUri.get(uri);
+		return index === undefined ? undefined : navigation.order[index];
+	}
+
+	function getLaneNavigation(laneId: string): LaneTreeNavigation | null {
+		const lane = boardModel.laneById.get(laneId);
+		return lane ? getLaneTreeNavigationCached(lane.thread.rootPost) : null;
+	}
+
+	/** Posts of the lane's active chain, root first: what the board currently shows. */
+	function getLaneActivePosts(lane: LaneRenderModel): ThreadPost[] {
+		return (lane.chains.find((chain) => chain.id === lane.activeChainId) ?? lane.chains[0])?.posts ?? [];
+	}
+
+	/** The reply to `post` on the lane's active chain, else its first reply. */
+	function preferredFanReply(lane: LaneRenderModel, post: ThreadPost): ThreadPost | undefined {
+		const activePosts = getLaneActivePosts(lane);
+		const depth = getPostDepthMapCached(lane.thread.rootPost).get(post.uri);
+		if (depth !== undefined && activePosts[depth]?.uri === post.uri && activePosts[depth + 1]) {
+			return activePosts[depth + 1];
+		}
+		return post.children[0];
+	}
+
+	function getCardSiblingCount(card: LaneCard): number {
+		return getLaneNavigation(card.laneId)?.parentByUri.get(card.post.uri)?.children.length ?? 1;
+	}
+
+	function setBranchFan(next: BranchFan) {
+		if (next.parentUri !== branchFan?.parentUri || next.laneId !== branchFan?.laneId) {
+			branchFanRenderLimit = BRANCH_FAN_PAGE;
+		}
+		const navigation = getLaneNavigation(next.laneId);
+		const parent = navigation ? lanePostByUri(navigation, next.parentUri) : undefined;
+		const focusIndex = parent?.children.findIndex((post) => post.uri === next.focusUri) ?? 0;
+		branchFanRenderLimit = Math.max(branchFanRenderLimit, focusIndex + BRANCH_FAN_PAGE / 2);
+		openQuotePickerCardKey = null;
+		closeShortcutsHelp();
+		branchFan = next;
+	}
+
+	/** Fans out the reply level `postUri` sits on; the root has none, so its replies open. */
+	function openBranchFan(laneId: string, postUri: string) {
+		const lane = boardModel.laneById.get(laneId);
+		const navigation = getLaneNavigation(laneId);
+		const post = navigation ? lanePostByUri(navigation, postUri) : undefined;
+		if (!lane || !navigation || !post) return;
+		const parent = navigation.parentByUri.get(post.uri);
+		if (parent) {
+			setBranchFan({ laneId, parentUri: parent.uri, focusUri: post.uri });
+			return;
+		}
+		const reply = preferredFanReply(lane, post);
+		if (reply) setBranchFan({ laneId, parentUri: post.uri, focusUri: reply.uri });
+	}
+
+	function closeBranchFan() {
+		branchFan = null;
+	}
+
+	function stepBranchFan(step: -1 | 1) {
+		if (!branchFan) return;
+		const next = branchFanSiblings[branchFanFocusIndex + step];
+		if (next) setBranchFan({ ...branchFan, focusUri: next.uri });
+	}
+
+	/** Moves the fan down to the focused post's replies. */
+	function descendBranchFan(replyUri?: string) {
+		if (!branchFan || !branchFanLane || !branchFanFocus) return;
+		const reply =
+			branchFanFocus.children.find((post) => post.uri === replyUri) ??
+			preferredFanReply(branchFanLane, branchFanFocus);
+		if (!reply) return;
+		setBranchFan({ laneId: branchFan.laneId, parentUri: branchFanFocus.uri, focusUri: reply.uri });
+	}
+
+	function ascendBranchFan() {
+		if (!branchFan || !branchFanParent) return;
+		const grandparent = getLaneNavigation(branchFan.laneId)?.parentByUri.get(branchFanParent.uri);
+		if (!grandparent) return;
+		setBranchFan({ laneId: branchFan.laneId, parentUri: grandparent.uri, focusUri: branchFanParent.uri });
+	}
+
+	/** Shows the focused reply's branch on the board: the active chain if it already runs
+	 * through that reply, otherwise the longest chain that does. */
+	async function commitBranchFan() {
+		if (!branchFan || !branchFanLane) return;
+		const { laneId, focusUri } = branchFan;
+		const lane = branchFanLane;
+		const depth = getPostDepthMapCached(lane.thread.rootPost).get(focusUri);
+		const chainId =
+			depth !== undefined && getLaneActivePosts(lane)[depth]?.uri === focusUri
+				? lane.activeChainId
+				: getLaneAnchorActiveChainId(lane.thread.rootPost, focusUri);
+		branchFan = null;
+		await setLaneActiveChain(laneId, chainId, focusUri);
+	}
+
+	async function handleBranchFanKey(event: KeyboardEvent, key: string) {
+		const actions: Record<string, () => void | Promise<void>> = {
+			Escape: closeBranchFan,
+			b: closeBranchFan,
+			h: () => stepBranchFan(-1),
+			ArrowLeft: () => stepBranchFan(-1),
+			l: () => stepBranchFan(1),
+			ArrowRight: () => stepBranchFan(1),
+			j: () => descendBranchFan(),
+			ArrowDown: () => descendBranchFan(),
+			k: ascendBranchFan,
+			ArrowUp: ascendBranchFan,
+			Backspace: ascendBranchFan,
+			Enter: commitBranchFan
+		};
+		const action = actions[key];
+		if (!action) return;
+		// Also stops a focused fan card's native Enter click from committing twice.
+		event.preventDefault();
+		await action();
+	}
+
+	function handleBranchRailStep(laneId: string, postUri: string) {
+		if (branchFan) {
+			openBranchFan(laneId, postUri);
+			return;
+		}
+		void focusCard(`${laneId}:${postUri}`);
+	}
+
+	/** Centres `el` in the horizontal scroller `scroller` without scrolling the page. */
+	function centerInScroller(scroller: HTMLElement, el: HTMLElement, behavior: ScrollBehavior) {
+		scroller.scrollTo({
+			left: el.offsetLeft + el.offsetWidth / 2 - scroller.clientWidth / 2,
+			behavior
+		});
+	}
+
+	let branchFanScrollTimer = 0;
+
+	/** When scrolling the strip settles, the card nearest its centre becomes the focus, so
+	 * the reply lane below follows whatever is in the middle. */
+	function handleBranchFanScroll() {
+		window.clearTimeout(branchFanScrollTimer);
+		branchFanScrollTimer = window.setTimeout(() => {
+			const strip = branchFanStripEl;
+			if (!strip || !branchFan) return;
+			const center = strip.scrollLeft + strip.clientWidth / 2;
+			let nearest: HTMLElement | null = null;
+			let nearestDistance = Infinity;
+			for (const el of strip.querySelectorAll<HTMLElement>('[data-fan-uri]')) {
+				const distance = Math.abs(el.offsetLeft + el.offsetWidth / 2 - center);
+				if (distance < nearestDistance) {
+					nearest = el;
+					nearestDistance = distance;
+				}
+			}
+			const uri = nearest?.dataset.fanUri;
+			if (uri && uri !== branchFan.focusUri) setBranchFan({ ...branchFan, focusUri: uri });
+		}, 140);
+	}
+
+	/** Vertical wheel scrolls a horizontal strip sideways. */
+	function wheelScrollsX(node: HTMLElement) {
+		const onWheel = (event: WheelEvent) => {
+			if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+			if (node.scrollWidth <= node.clientWidth) return;
+			event.preventDefault();
+			node.scrollLeft += event.deltaY;
+		};
+		node.addEventListener('wheel', onWheel, { passive: false });
+		return {
+			destroy() {
+				node.removeEventListener('wheel', onWheel);
+			}
+		};
+	}
+
 		function getLaneEntryByUri(uri: string | null | undefined): QuoteLaneEntry | undefined {
 			return uri ? quoteLanes[uri] : undefined;
 		}
@@ -2780,20 +3145,26 @@
 		const EMPTY_LOAD_SNAPSHOT: SchedulerSnapshot = {
 			running: [],
 			queued: 0,
-			queuedByKind: { quotes: 0, thread: 0 },
+			queuedByKind: { quotes: 0, thread: 0, posts: 0 },
 			completed: 0,
 			failed: 0,
 			cancelled: 0,
 			retried: 0,
 			concurrency: 0,
 			maxConcurrency: 0,
-			pausedUntil: 0
+			pausedUntil: 0,
+			budget: null
 		};
 		let loadSnapshot = $state.raw<SchedulerSnapshot>(EMPTY_LOAD_SNAPSHOT);
 		let loadSnapshotFrame = 0;
+		// The Bluesky API allows ~3,000 requests per 5 minutes per IP and its 429s carry no
+		// readable retry-after, so stay under it; the margin covers requests that do not go
+		// through this queue (full-thread hydration, other tabs).
+		const REQUEST_BUDGET = { requests: 2500, windowMs: 5 * 60_000 };
 		const requestScheduler = new RequestScheduler({
 			maxConcurrency: 6,
 			initialConcurrency: 4,
+			rateLimit: REQUEST_BUDGET,
 			onChange: publishLoadSnapshot
 		});
 
@@ -2919,13 +3290,21 @@
 		}
 
 		/** Replaces a lane's partial tree (post, parents, replies) with the whole conversation. */
-		async function loadFullThreadForLane(laneId: string) {
+		async function loadFullThreadForLane(
+			laneId: string,
+			options: { priority?: RequestPriority; signal?: AbortSignal } = {}
+		) {
 			const lane = boardModel.laneById.get(laneId);
 			if (!lane || fullThreadLoads[laneId]?.status === 'loading') return;
 			const boardRootUri = thread.rootPost.uri;
 			setFullThreadLoad(laneId, { status: 'loading' });
 			try {
-				const full = await loadBoardThread(lane.anchorUri, { priority: 0, handle: lane.handle, full: true });
+				const full = await loadBoardThread(lane.anchorUri, {
+					priority: options.priority ?? 0,
+					signal: options.signal,
+					handle: lane.handle,
+					full: true
+				});
 				if (thread.rootPost.uri !== boardRootUri) return;
 				if (laneId === MAIN_LANE_ID) {
 					mainThreadOverride = full;
@@ -3435,6 +3814,7 @@
 	}
 
 	async function openTreeBoard(card: LaneCard) {
+		branchFan = null;
 		await focusCard(card.key);
 		treeBoardTarget = {
 			laneId: card.laneId,
@@ -3616,7 +3996,16 @@
 		}
 
 		function startLaneJob(sourceCard: LaneCard): LiveLaneJob {
-			const job: LiveLaneJob = {
+			const job = createLaneJob(sourceCard);
+			laneJobs.set(job.id, job);
+			showLoadingPanel = true;
+			publishLaneJobs();
+			return job;
+		}
+
+		/** A job that is not listed in the Loading panel (fetch mode tracks its own progress). */
+		function createLaneJob(sourceCard: LaneCard, controller = new AbortController()): LiveLaneJob {
+			return {
 				id: nextLaneJobId++,
 				sourceKey: sourceCard.key,
 				sourceUri: sourceCard.post.uri,
@@ -3631,12 +4020,8 @@
 				failed: 0,
 				loading: 0,
 				recent: [],
-				controller: new AbortController()
+				controller
 			};
-			laneJobs.set(job.id, job);
-			showLoadingPanel = true;
-			publishLaneJobs();
-			return job;
 		}
 
 		function recordLaneJobItem(job: LiveLaneJob, item: LaneJobItem) {
@@ -3729,11 +4114,6 @@
 			}
 		}
 
-		let fetchModeRemainingCount = $derived(fetchModePendingCount + fetchModeActiveCount);
-		let fetchModeProgressPercent = $derived.by(() => {
-			const total = fetchModeProcessedCount + fetchModeRemainingCount;
-			return total > 0 ? (fetchModeProcessedCount / total) * 100 : 0;
-		});
 
 		let showLoadingActivity = $derived(
 			laneCreationJobs.length > 0 ||
@@ -3753,13 +4133,23 @@
 
 		/** Creates lanes for quote posts as they stream in. Standalone quotes become lanes
 		 * immediately; threads load through the shared queue while discovery continues. */
-		function createBulkLaneLoader(sourceCard: LaneCard, job: LiveLaneJob) {
+		function createBulkLaneLoader(
+			sourceCard: LaneCard,
+			job: LiveLaneJob,
+			options: {
+				priority?: RequestPriority;
+				/** Entries as they land on the board (ready, linked or failed), after the write. */
+				onResolved?: (entries: QuoteLaneEntry[]) => void;
+			} = {}
+		) {
+			const { priority = 1, onResolved } = options;
 			const seenUris = new Set<string>();
 			const outstanding = new Set<Promise<void>>();
 			const placeholderUris = new Set<string>();
 			let pendingEntries: Record<string, QuoteLaneEntry> = {};
 			let pendingChainIds: Record<string, string> = {};
 			let lastFlushAt = Date.now();
+			let trailingFlushTimer = 0;
 
 			const flushPending = async (force = false) => {
 				const pendingCount = Object.keys(pendingEntries).length;
@@ -3770,8 +4160,15 @@
 				const flushSize = Math.max(BULK_LANE_FLUSH_SIZE, Math.floor(laneCount / 8));
 				const flushMs = Math.min(2000, BULK_LANE_FLUSH_MS + laneCount * 2);
 				if (!force && pendingCount < flushSize && Date.now() - lastFlushAt < flushMs) {
+					// Finished lanes still appear if no other load completes after them.
+					trailingFlushTimer ||= window.setTimeout(() => {
+						trailingFlushTimer = 0;
+						void flushPending();
+					}, flushMs - (Date.now() - lastFlushAt));
 					return;
 				}
+				clearTimeout(trailingFlushTimer);
+				trailingFlushTimer = 0;
 				const entries = pendingEntries;
 				const chainIds = pendingChainIds;
 				pendingEntries = {};
@@ -3779,13 +4176,17 @@
 				lastFlushAt = Date.now();
 				// Skip entries the user closed or retried meanwhile.
 				const nextQuoteLanes = { ...quoteLanes };
+				const applied: QuoteLaneEntry[] = [];
 				for (const [uri, entry] of Object.entries(entries)) {
-					if (nextQuoteLanes[uri]?.status === 'loading') nextQuoteLanes[uri] = entry;
+					if (nextQuoteLanes[uri]?.status !== 'loading') continue;
+					nextQuoteLanes[uri] = entry;
+					applied.push(entry);
 				}
 				quoteLanes = nextQuoteLanes;
 				if (Object.keys(chainIds).length > 0) {
 					laneActiveChainIds = { ...laneActiveChainIds, ...chainIds };
 				}
+				if (applied.length) onResolved?.(applied);
 				await yieldToBrowser();
 			};
 
@@ -3797,7 +4198,7 @@
 				try {
 					const quotedThread = await loadBoardThread(quotePost.uri, {
 						signal: job.controller.signal,
-						priority: 1,
+						priority,
 						handle
 					});
 					const rootUri = quotedThread.rootUri || quotedThread.rootPost.uri;
@@ -3857,6 +4258,8 @@
 				job.completed += instantCount;
 				if (Object.keys(instantEntries).length > 0) {
 					quoteLanes = { ...quoteLanes, ...instantEntries };
+					const resolved = Object.values(instantEntries).filter((entry) => entry.status !== 'loading');
+					if (resolved.length) onResolved?.(resolved);
 				}
 				for (const quotePost of postsToFetch) {
 					const base = baseByUri.get(quotePost.uri);
@@ -3902,18 +4305,44 @@
 				[sourceCard.post.uri]: true
 			};
 			const job = startLaneJob(sourceCard);
-			const lanes = createBulkLaneLoader(sourceCard, job);
+			try {
+				await streamQuoteLanes(sourceCard, job);
+			} finally {
+				bulkQuoteLaneLoads = {
+					...bulkQuoteLaneLoads,
+					[sourceCard.post.uri]: false
+				};
+			}
+		}
 
+		/** Pages through every quote of `sourceCard` and turns them into lanes as they
+		 * arrive (the "Create all quote lanes" pipeline). `job` carries progress and the
+		 * abort signal; it only shows in the Loading panel if it was registered. */
+		async function streamQuoteLanes(
+			sourceCard: LaneCard,
+			job: LiveLaneJob,
+			options: {
+				priority?: RequestPriority;
+				onPage?: (posts: ThreadPost[]) => void;
+				onResolved?: (entries: QuoteLaneEntry[]) => void;
+			} = {}
+		) {
+			const priority = options.priority ?? 1;
+			const lanes = createBulkLaneLoader(sourceCard, job, { priority, onResolved: options.onResolved });
+			const addPage = async (posts: ThreadPost[]) => {
+				options.onPage?.(posts);
+				await lanes.add(posts);
+			};
 			try {
 				const quoteState = getQuoteFeedState(sourceCard.post);
 				if (quoteState.loadedAll && quoteState.posts.length > 0) {
-					await lanes.add(quoteState.posts);
+					await addPage(quoteState.posts);
 				} else {
 					const quotePosts = await loadQuotesForPost(sourceCard.post, {
 						fetchAll: true,
-						onPage: lanes.add,
+						onPage: addPage,
 						signal: job.controller.signal,
-						priority: 1
+						priority
 					});
 					if (!quotePosts && !job.controller.signal.aborted) {
 						job.phase = 'error';
@@ -3936,41 +4365,28 @@
 				job.discoveryDone = true;
 				job.loading = 0;
 				publishLaneJobs();
-				bulkQuoteLaneLoads = {
-					...bulkQuoteLaneLoads,
-					[sourceCard.post.uri]: false
-				};
 			}
 		}
 
+			/** Lets the browser render between board updates. Hidden tabs get no animation
+			 * frames, so there a short timeout keeps background lane jobs moving. */
 			function yieldToBrowser(): Promise<void> {
 				if (typeof window === 'undefined') return Promise.resolve();
 				return new Promise((resolve) => {
-					window.requestAnimationFrame(() => resolve());
+					if (document.hidden) {
+						setTimeout(resolve, 50);
+						return;
+					}
+					const timeout = setTimeout(() => {
+						cancelAnimationFrame(frame);
+						resolve();
+					}, 250);
+					const frame = requestAnimationFrame(() => {
+						clearTimeout(timeout);
+						resolve();
+					});
 				});
 		}
-
-		function isFetchModeRunActive(runId: number): boolean {
-			return fetchModeRunning && fetchModeRunId === runId;
-		}
-
-			function advanceFetchModeRunId(): number {
-				const runId = nextFetchModeRunId;
-				nextFetchModeRunId += 1;
-				fetchModeRunId = runId;
-				return runId;
-			}
-
-			function initializeFetchModeTracking() {
-				fetchModeQueuedTaskIds = new Set<string>();
-				fetchModeQueuedScanUris = new Set<string>();
-				fetchModeQueuedLaneTargets = new Set<string>(
-					Object.entries(quoteLanes)
-						.filter(([, entry]) => entry.status !== 'error')
-						.map(([quotedUri]) => quotedUri)
-				);
-				fetchModeReachedTaskLimit = false;
-			}
 
 			function ensureFetchModeWorker(): Worker | null {
 				if (typeof Worker === 'undefined') return null;
@@ -3984,22 +4400,15 @@
 				return worker;
 			}
 
-			/** A crashed worker takes its dispatch queue and every hydration with it. Pending
-			 * hydrations reject as infrastructure failures, so they retry on the main thread. */
+			/** A crashed worker takes every hydration with it. Pending hydrations reject as
+			 * infrastructure failures, so they retry on the main thread. */
 			function handleFetchModeWorkerFailure() {
 				fetchModeWorker?.terminate();
 				fetchModeWorker = null;
 				for (const request of fetchModeHydrationRequests.values()) {
-					request.reject(new WorkerUnavailableError('Fetch mode worker failed.'));
+					request.reject(new WorkerUnavailableError('Thread worker failed.'));
 				}
 				fetchModeHydrationRequests.clear();
-				if (fetchModeRunning) {
-					fetchModeAbort?.abort();
-					advanceFetchModeRunId();
-					fetchModeRunning = false;
-					fetchModePaused = false;
-					fetchModeStatusMessage = 'Fetch mode worker failed.';
-				}
 			}
 
 			function teardownFetchModeWorker() {
@@ -4011,10 +4420,6 @@
 				fetchModeHydrationRequests.clear();
 			}
 
-			function postFetchModeWorkerMessage(message: Record<string, unknown>) {
-				fetchModeWorker?.postMessage(message);
-			}
-
 			function canHydrateThreadsInFetchModeWorker(): boolean {
 				return platform.name === defaultBoardPlatform.name && platform.loadThread === getBlueskyFullThread;
 			}
@@ -4024,7 +4429,7 @@
 				if (signal.aborted) return Promise.reject(abortError());
 				const worker = ensureFetchModeWorker();
 				if (!worker) {
-					return Promise.reject(new WorkerUnavailableError('Fetch mode worker is unavailable.'));
+					return Promise.reject(new WorkerUnavailableError('Thread worker is unavailable.'));
 				}
 				const requestId = nextFetchModeHydrationRequestId;
 				nextFetchModeHydrationRequestId += 1;
@@ -4052,8 +4457,6 @@
 			function handleFetchModeWorkerMessage(event: MessageEvent) {
 				const message = event.data as {
 					type?: string;
-					runId?: number;
-					taskId?: string;
 					requestId?: number;
 					thread?: BoardThread;
 					error?: string;
@@ -4074,386 +4477,464 @@
 							});
 					fetchModeHydrationRequests.get(message.requestId)?.reject(error);
 					fetchModeHydrationRequests.delete(message.requestId);
-					return;
-				}
-				if (message.runId !== fetchModeRunId) return;
-
-				if (message.type === 'run-task' && message.taskId) {
-					void processFetchModeTask(message.taskId, message.runId);
-					return;
-				}
-
-				if (message.type === 'idle') {
-					fetchModeRunning = false;
-					fetchModePaused = false;
-					fetchModeStatusMessage = fetchModeReachedTaskLimit
-						? `Fetch mode stopped at ${FETCH_MODE_MAX_TASKS} queue items.`
-						: fetchModeQueue.some((item) => item.status === 'error')
-							? 'Fetch mode finished with errors.'
-							: 'Fetch mode complete.';
-					return;
-				}
-
-				if (message.type === 'paused') {
-					fetchModeStatusMessage = 'Fetch mode paused.';
-					return;
-				}
-
-				if (message.type === 'resumed') {
-					fetchModeStatusMessage = 'Fetch mode resumed.';
 				}
 			}
 
-			function updateFetchModeQueueItem(id: string, patch: Partial<FetchModeQueueItem>) {
-				fetchModeQueue = fetchModeQueue.map((item) => (item.id === id ? { ...item, ...patch } : item));
+		// Fetch mode: a command center that walks the board and pulls in everything around
+		// it. Each scanned post streams its quotes through the same pipeline as "Create all
+		// quote lanes" (paged discovery, shared request queue and rate budget, batched board
+		// writes, conversation linking), so nothing is fetched twice and nothing waits on a
+		// fixed delay. Posts with nothing to fetch are never queued.
+		const FETCH_MODE_SCAN_CONCURRENCY = 3;
+		const FETCH_MODE_FULL_THREAD_CONCURRENCY = 2;
+		const FETCH_MODE_RECENT_EVENTS = 8;
+		const FETCH_MODE_SETTINGS_KEY = 'parallelboard:fetch-mode:v1';
+
+		type FetchModeSettings = {
+			/** Open lanes for posts that quote a scanned post. */
+			quotes: boolean;
+			/** Open lanes for posts that a scanned post quotes. */
+			quoted: boolean;
+			/** Scan generations: 1 = posts on the board now; 0 = keep following new lanes. */
+			hops: number;
+			/** Which posts of a newly opened lane are scanned in the next generation. */
+			scope: 'anchor' | 'all';
+			/** Load the whole conversation for lanes that only have part of it. */
+			fullThreads: boolean;
+			/** Stop once this many new lanes were opened; 0 = no limit. */
+			maxLanes: number;
+		};
+		type FetchModePhase = 'idle' | 'running' | 'paused' | 'done' | 'stopped' | 'capped';
+		type FetchModeEvent = { id: number; label: string; detail: string; status: 'done' | 'linked' | 'error' };
+		type FetchModeStats = {
+			phase: FetchModePhase;
+			startedAt: number;
+			finishedAt: number;
+			postsQueued: number;
+			postsScanned: number;
+			scansRunning: number;
+			hop: number;
+			quotesFound: number;
+			quotesExpected: number;
+			lanesOpened: number;
+			lanesLinked: number;
+			lanesFailed: number;
+			fullThreadsQueued: number;
+			fullThreadsLoaded: number;
+			recent: FetchModeEvent[];
+		};
+		type FetchModeScan = { uri: string; laneId: string; hop: number };
+		type FetchModeRun = {
+			id: number;
+			settings: FetchModeSettings;
+			controller: AbortController;
+			stats: FetchModeStats;
+			queue: FetchModeScan[];
+			queueHead: number;
+			queuedUris: Set<string>;
+			scanningUris: Set<string>;
+			active: number;
+			paused: boolean;
+			laneHop: Map<string, number>;
+			fullQueue: string[];
+			fullQueued: Set<string>;
+			fullActive: number;
+			nextEventId: number;
+		};
+
+		const DEFAULT_FETCH_MODE_SETTINGS: FetchModeSettings = {
+			quotes: true,
+			quoted: true,
+			hops: 2,
+			scope: 'anchor',
+			fullThreads: false,
+			maxLanes: 1000
+		};
+		const FETCH_MODE_HOP_OPTIONS = [
+			{ value: 1, label: 'Board posts only' },
+			{ value: 2, label: '+ 1 generation of new lanes' },
+			{ value: 3, label: '+ 2 generations' },
+			{ value: 0, label: 'Keep following new lanes' }
+		];
+		const FETCH_MODE_LANE_LIMITS = [250, 1000, 5000, 0];
+
+		function emptyFetchModeStats(phase: FetchModePhase = 'idle'): FetchModeStats {
+			return {
+				phase,
+				startedAt: 0,
+				finishedAt: 0,
+				postsQueued: 0,
+				postsScanned: 0,
+				scansRunning: 0,
+				hop: 0,
+				quotesFound: 0,
+				quotesExpected: 0,
+				lanesOpened: 0,
+				lanesLinked: 0,
+				lanesFailed: 0,
+				fullThreadsQueued: 0,
+				fullThreadsLoaded: 0,
+				recent: []
+			};
+		}
+
+		function loadFetchModeSettings(): FetchModeSettings {
+			try {
+				const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(FETCH_MODE_SETTINGS_KEY);
+				const saved = raw ? (JSON.parse(raw) as Partial<FetchModeSettings>) : null;
+				return { ...DEFAULT_FETCH_MODE_SETTINGS, ...(saved && typeof saved === 'object' ? saved : {}) };
+			} catch {
+				return { ...DEFAULT_FETCH_MODE_SETTINGS };
 			}
-
-			function stopFetchMode() {
-				if (!fetchModeRunning) return;
-				const runId = fetchModeRunId;
-				postFetchModeWorkerMessage({ type: 'stop', runId });
-				advanceFetchModeRunId();
-				// Cancels this run's queued and in-flight requests. The worker stays alive
-				// because other loads (bulk lanes) may be hydrating through it.
-				fetchModeAbort?.abort();
-				fetchModeRunning = false;
-				fetchModePaused = false;
-				fetchModeStatusMessage = 'Fetch mode stopped.';
-			fetchModeQueue = fetchModeQueue.map((item) =>
-				item.status === 'pending' || item.status === 'running'
-					? { ...item, status: 'skipped', detail: 'Stopped before this item ran.' }
-					: item
-			);
 		}
 
-		function resetFetchModeState() {
-			fetchModeAbort?.abort();
-			postFetchModeWorkerMessage({ type: 'stop', runId: fetchModeRunId });
-			advanceFetchModeRunId();
-			fetchModeRunning = false;
-			fetchModePaused = false;
-			showFetchModePanel = true;
-			fetchModeQueue = [];
-			fetchModeStatusMessage = '';
-			fetchModeProcessedCount = 0;
-			initializeFetchModeTracking();
-		}
-
-		function pauseFetchMode() {
-			if (!fetchModeRunning || fetchModePaused) return;
-			fetchModePaused = true;
-			fetchModeStatusMessage = 'Fetch mode paused.';
-			postFetchModeWorkerMessage({ type: 'pause', runId: fetchModeRunId });
-		}
-
-		function resumeFetchMode() {
-			if (!fetchModeRunning || !fetchModePaused) return;
-			fetchModePaused = false;
-			fetchModeStatusMessage = 'Fetch mode resumed.';
-			postFetchModeWorkerMessage({ type: 'resume', runId: fetchModeRunId });
-		}
-
-		function closeFetchModePanel() {
-			showFetchModePanel = false;
-		}
-
-		function reopenFetchModePanel() {
-			showFetchModePanel = true;
-		}
-
-		function getFetchModeTaskStatusLabel(status: FetchModeTaskStatus): string {
-			if (status === 'running') return 'Now';
-			if (status === 'done') return 'Done';
-			if (status === 'skipped') return 'Skip';
-			if (status === 'error') return 'Error';
-			return 'Next';
-		}
-
-		function enqueueFetchModeWorkerTasks(taskIds: string[], placement: 'front' | 'back' = 'back') {
-			if (!taskIds.length) return;
-			postFetchModeWorkerMessage({ type: 'enqueue', runId: fetchModeRunId, taskIds, placement });
-		}
-
-		function enqueueFetchModeTask(
-			task: FetchModeQueueItem,
-			notifyWorker = true,
-			placement: 'front' | 'back' = 'back'
-		): boolean {
-			if (fetchModeQueuedTaskIds.has(task.id)) return false;
-			if (fetchModeQueuedTaskIds.size >= FETCH_MODE_MAX_TASKS) {
-				if (!fetchModeReachedTaskLimit) {
-					fetchModeReachedTaskLimit = true;
-					fetchModeStatusMessage = `Fetch mode paused at ${FETCH_MODE_MAX_TASKS} queue items.`;
-				}
-				return false;
+		function updateFetchModeSettings(patch: Partial<FetchModeSettings>) {
+			fetchModeSettings = { ...fetchModeSettings, ...patch };
+			try {
+				localStorage.setItem(FETCH_MODE_SETTINGS_KEY, JSON.stringify(fetchModeSettings));
+			} catch {
+				// Storage unavailable: the settings still apply for this visit.
 			}
-			fetchModeQueuedTaskIds.add(task.id);
-			fetchModeQueue = [...fetchModeQueue, task];
-			if (notifyWorker) {
-				enqueueFetchModeWorkerTasks([task.id], placement);
-			}
-			return true;
 		}
 
-		function enqueueScanCard(
-			card: LaneCard,
-			reason: string,
-			notifyWorker = true,
-			placement: 'front' | 'back' = 'back'
-		): boolean {
-			if (fetchModeQueuedScanUris.has(card.post.uri)) return false;
-			// Only a task the queue accepted marks its post; a rejected one can be retried later.
-			const accepted = enqueueFetchModeTask(
-				{
-					id: `scan:${card.post.uri}`,
-					kind: 'scan-post',
-					status: 'pending',
-					sourceUri: card.post.uri,
-					sourceLaneId: card.laneId,
-					label: `Scan @${card.post.author.handle}`,
-					detail: `${reason}: ${previewText(card.post.text)}`
-				},
-				notifyWorker,
-				placement
-			);
-			if (accepted) fetchModeQueuedScanUris.add(card.post.uri);
-			return accepted;
-		}
+		let fetchModeSettings = $state<FetchModeSettings>(loadFetchModeSettings());
+		let fetchModeStats = $state.raw<FetchModeStats>(emptyFetchModeStats());
+		let fetchModeRun: FetchModeRun | null = null;
+		let nextFetchModeRunId = 1;
+		let fetchModeStatsFrame = 0;
+		let fetchModeClock = $state(Date.now());
 
-		function enqueueLaneTask(
-			options: {
-				sourceCard: LaneCard;
-				quotedUri: string;
-				quotedHandle: string;
-				direction: QuoteLaneDirection;
-				label: string;
-				detail: string;
-			},
-			notifyWorker = true,
-			placement: 'front' | 'back' = 'front'
-		): boolean {
-			if (!options.quotedUri || options.quotedUri === options.sourceCard.post.uri) return false;
-			if (fetchModeQueuedLaneTargets.has(options.quotedUri)) return false;
-			const accepted = enqueueFetchModeTask(
-				{
-					id: `open:${options.quotedUri}`,
-					kind: 'open-lane',
-					status: 'pending',
-					sourceUri: options.sourceCard.post.uri,
-					sourceLaneId: options.sourceCard.laneId,
-					targetUri: options.quotedUri,
-					targetHandle: options.quotedHandle,
-					direction: options.direction,
-					label: options.label,
-					detail: options.detail
-				},
-				notifyWorker,
-				placement
-			);
-			if (accepted) fetchModeQueuedLaneTargets.add(options.quotedUri);
-			return accepted;
-		}
-
-		function getFetchModeStartCards(): LaneCard[] {
-			const seenUris = new Set<string>();
-			const cards: LaneCard[] = [];
-			for (const lane of boardModel.lanes) {
-				for (const card of lane.cards) {
-					if (seenUris.has(card.post.uri)) continue;
-					seenUris.add(card.post.uri);
-					cards.push(card);
-				}
-			}
-
-			if (!activeCard) return cards;
-			return cards.sort((a, b) => {
-				if (a.key === activeCard.key) return -1;
-				if (b.key === activeCard.key) return 1;
-				return 0;
+		/** Stats mutate in place; the panel gets a snapshot at most once per frame. */
+		function publishFetchModeStats() {
+			if (typeof window === 'undefined' || fetchModeStatsFrame) return;
+			fetchModeStatsFrame = requestAnimationFrame(() => {
+				fetchModeStatsFrame = 0;
+				const run = fetchModeRun;
+				if (!run) return;
+				fetchModeStats = { ...run.stats, recent: run.stats.recent.slice() };
 			});
 		}
 
-		function startFetchModeForBoard() {
-			const startCards = getFetchModeStartCards();
-			if (startCards.length === 0) {
-				showFetchModePanel = true;
-				fetchModeStatusMessage = 'No board posts available.';
+		$effect(() => {
+			if (!fetchModeRunning) return;
+			fetchModeClock = Date.now();
+			const timer = setInterval(() => (fetchModeClock = Date.now()), 1000);
+			return () => clearInterval(timer);
+		});
+
+		function fetchModeRunIsLive(run: FetchModeRun): boolean {
+			return fetchModeRun === run && !run.stats.finishedAt && !run.controller.signal.aborted;
+		}
+
+		function recordFetchModeEvent(run: FetchModeRun, event: Omit<FetchModeEvent, 'id'>) {
+			run.stats.recent = [{ id: run.nextEventId++, ...event }, ...run.stats.recent].slice(
+				0,
+				FETCH_MODE_RECENT_EVENTS
+			);
+		}
+
+		function postHasFetchWork(post: ThreadPost, settings: FetchModeSettings): boolean {
+			if (settings.quotes && post.quoteCount > 0) return true;
+			const quotedUri = post.embed?.record?.uri;
+			return Boolean(
+				settings.quoted &&
+					quotedUri &&
+					!boardModel.cardsByPostUri.has(quotedUri) &&
+					(!quoteLanes[quotedUri] || quoteLanes[quotedUri].status === 'error')
+			);
+		}
+
+		function enqueueFetchModeScan(run: FetchModeRun, card: LaneCard, hop: number) {
+			const uri = card.post.uri;
+			if (run.queuedUris.has(uri) || !postHasFetchWork(card.post, run.settings)) return;
+			run.queuedUris.add(uri);
+			run.queue.push({ uri, laneId: card.laneId, hop });
+			run.stats.postsQueued += 1;
+		}
+
+		/** Queues the next generation from a lane that just landed on the board. */
+		function followFetchModeLane(run: FetchModeRun, laneId: string, hop: number) {
+			const { settings } = run;
+			if (run.laneHop.has(laneId)) return;
+			run.laneHop.set(laneId, hop);
+			const lane = boardModel.laneById.get(laneId);
+			if (!lane) return;
+			if (settings.hops === 0 || hop <= settings.hops) {
+				if (settings.scope === 'all') {
+					for (const card of lane.cards) enqueueFetchModeScan(run, card, hop);
+				} else {
+					const anchor = boardModel.cardsByKey.get(`${laneId}:${lane.anchorUri}`);
+					if (anchor) enqueueFetchModeScan(run, anchor, hop);
+				}
+			}
+			queueFetchModeFullThread(run, laneId);
+		}
+
+		function queueFetchModeFullThread(run: FetchModeRun, laneId: string) {
+			if (!run.settings.fullThreads || run.fullQueued.has(laneId) || !canLoadFullThread(laneId)) return;
+			if (fullThreadLoads[laneId]?.status === 'loading') return;
+			run.fullQueued.add(laneId);
+			run.fullQueue.push(laneId);
+			run.stats.fullThreadsQueued += 1;
+		}
+
+		function handleFetchModeResolved(run: FetchModeRun, entries: QuoteLaneEntry[], hop: number) {
+			if (!fetchModeRunIsLive(run)) return;
+			for (const entry of entries) {
+				const handle = `@${entry.quotedHandle || 'unknown'}`;
+				if (entry.status === 'ready') {
+					run.stats.lanesOpened += 1;
+					recordFetchModeEvent(run, { label: `Opened ${handle}`, detail: `Generation ${hop}`, status: 'done' });
+					followFetchModeLane(run, entry.quotedUri, hop + 1);
+				} else if (entry.status === 'linked') {
+					run.stats.lanesLinked += 1;
+					recordFetchModeEvent(run, { label: `Linked ${handle}`, detail: 'Already on the board', status: 'linked' });
+				} else if (entry.status === 'error') {
+					run.stats.lanesFailed += 1;
+					recordFetchModeEvent(run, { label: `Failed ${handle}`, detail: entry.error ?? 'Could not load', status: 'error' });
+				}
+			}
+			const { maxLanes } = run.settings;
+			if (maxLanes > 0 && run.stats.lanesOpened >= maxLanes) {
+				finishFetchMode(run, 'capped');
 				return;
 			}
-			if (fetchModeRunning) {
-				stopFetchMode();
-				return;
+			publishFetchModeStats();
+			pumpFetchMode(run);
+		}
+
+		async function scanFetchModePost(run: FetchModeRun, scan: FetchModeScan) {
+			const card =
+				boardModel.cardsByKey.get(`${scan.laneId}:${scan.uri}`) ?? boardModel.cardsByPostUri.get(scan.uri);
+			if (!card) return;
+			const { settings, controller } = run;
+			const work: Promise<void>[] = [];
+
+			const record = card.post.embed?.record;
+			if (settings.quoted && record?.uri && postHasFetchWork({ ...card.post, quoteCount: 0 }, settings)) {
+				work.push(
+					openQuoteLane({
+						quotedUri: record.uri,
+						quotedHandle: record.author.handle || '',
+						sourceUri: card.post.uri,
+						sourceLaneId: card.laneId,
+						direction: 'outbound',
+						suppressFocus: true,
+						signal: controller.signal,
+						priority: 2
+					}).then(() => {
+						const entry = quoteLanes[record.uri];
+						if (entry) handleFetchModeResolved(run, [entry], scan.hop);
+					})
+				);
 			}
 
-			const worker = ensureFetchModeWorker();
-			if (!worker) {
-				showFetchModePanel = true;
-				fetchModeStatusMessage = 'Fetch mode worker is unavailable in this browser.';
-				return;
+			if (settings.quotes && card.post.quoteCount > 0) {
+				run.stats.quotesExpected += card.post.quoteCount;
+				run.scanningUris.add(card.post.uri);
+				work.push(
+					streamQuoteLanes(card, createLaneJob(card, controller), {
+						priority: 2,
+						onPage: (posts) => {
+							run.stats.quotesFound += posts.length;
+							publishFetchModeStats();
+						},
+						onResolved: (entries) => handleFetchModeResolved(run, entries, scan.hop)
+					}).finally(() => run.scanningUris.delete(card.post.uri))
+				);
 			}
+			await Promise.allSettled(work);
+		}
 
-			const runId = advanceFetchModeRunId();
-			fetchModeAbort?.abort();
-			fetchModeAbort = new AbortController();
+		function pumpFetchMode(run: FetchModeRun) {
+			if (!fetchModeRunIsLive(run)) return;
+			while (!run.paused && run.active < FETCH_MODE_SCAN_CONCURRENCY && run.queueHead < run.queue.length) {
+				const scan = run.queue[run.queueHead++];
+				run.active += 1;
+				run.stats.scansRunning = run.active;
+				run.stats.hop = Math.max(run.stats.hop, scan.hop);
+				void scanFetchModePost(run, scan).finally(() => {
+					run.active -= 1;
+					run.stats.scansRunning = run.active;
+					run.stats.postsScanned += 1;
+					publishFetchModeStats();
+					pumpFetchMode(run);
+				});
+			}
+			while (!run.paused && run.fullActive < FETCH_MODE_FULL_THREAD_CONCURRENCY && run.fullQueue.length) {
+				const laneId = run.fullQueue.shift()!;
+				run.fullActive += 1;
+				void loadFullThreadForLane(laneId, { priority: 2, signal: run.controller.signal }).finally(() => {
+					run.fullActive -= 1;
+					if (fullThreadLoads[laneId]?.status === 'loaded') {
+						run.stats.fullThreadsLoaded += 1;
+						// The whole conversation may hold more quoted posts to scan.
+						const hop = run.laneHop.get(laneId) ?? 1;
+						const lane = boardModel.laneById.get(laneId);
+						if (lane && run.settings.scope === 'all' && (run.settings.hops === 0 || hop <= run.settings.hops)) {
+							for (const card of lane.cards) enqueueFetchModeScan(run, card, hop);
+						}
+					}
+					publishFetchModeStats();
+					pumpFetchMode(run);
+				});
+			}
+			const idle =
+				run.active === 0 &&
+				run.fullActive === 0 &&
+				run.queueHead >= run.queue.length &&
+				run.fullQueue.length === 0;
+			if (idle && !run.paused) finishFetchMode(run, 'done');
+			else publishFetchModeStats();
+		}
+
+		function startFetchMode() {
+			if (fetchModeRun && fetchModeRunIsLive(fetchModeRun)) return;
+			const settings = { ...fetchModeSettings };
+			const run: FetchModeRun = {
+				id: nextFetchModeRunId++,
+				settings,
+				controller: new AbortController(),
+				stats: { ...emptyFetchModeStats('running'), startedAt: Date.now() },
+				queue: [],
+				queueHead: 0,
+				queuedUris: new Set(),
+				scanningUris: new Set(),
+				active: 0,
+				paused: false,
+				laneHop: new Map(),
+				fullQueue: [],
+				fullQueued: new Set(),
+				fullActive: 0,
+				nextEventId: 1
+			};
+			fetchModeRun = run;
 			fetchModeRunning = true;
 			fetchModePaused = false;
 			showFetchModePanel = true;
-			fetchModeQueue = [];
-			fetchModeProcessedCount = 0;
-			initializeFetchModeTracking();
-			fetchModeStatusMessage = `Fetch mode started across ${startCards.length} board post${startCards.length === 1 ? '' : 's'}.`;
-
-			for (const card of startCards) {
-				enqueueScanCard(card, card.key === activeCard?.key ? 'Selected post' : 'Board post', false);
+			// The selected post first, then the board lane by lane.
+			if (activeCard) enqueueFetchModeScan(run, activeCard, 1);
+			for (const lane of boardModel.lanes) {
+				run.laneHop.set(lane.id, 1);
+				for (const card of lane.cards) enqueueFetchModeScan(run, card, 1);
+				queueFetchModeFullThread(run, lane.id);
 			}
-			worker.postMessage({
-				type: 'start',
-				runId,
-				delayMs: FETCH_MODE_DELAY_MS,
-				maxConcurrent: FETCH_MODE_CONCURRENCY,
-				taskIds: fetchModeQueue.map((item) => item.id)
-			});
+			fetchModeStats = { ...run.stats, recent: [] };
+			pumpFetchMode(run);
 		}
 
-		async function processFetchModeTask(taskId: string, runId: number) {
-			const task = fetchModeQueue.find((item) => item.id === taskId);
-			if (!task) {
-				postFetchModeWorkerMessage({ type: 'complete', runId, taskId });
-				return;
-			}
-
-			updateFetchModeQueueItem(task.id, { status: 'running' });
-			fetchModeStatusMessage = task.label;
-
-			try {
-				if (task.kind === 'scan-post') {
-					const sourceCard =
-						boardModel.cardsByKey.get(`${task.sourceLaneId}:${task.sourceUri}`) ??
-						boardModel.cardsByPostUri.get(task.sourceUri);
-					if (!sourceCard) {
-						updateFetchModeQueueItem(task.id, {
-							status: 'skipped',
-							detail: 'This post is no longer visible on the board.'
-						});
-					} else {
-						let queuedCount = 0;
-						const record = sourceCard.post.embed?.record;
-						if (record?.uri) {
-							queuedCount += enqueueLaneTask({
-									sourceCard,
-									quotedUri: record.uri,
-									quotedHandle: record.author.handle || '',
-									direction: 'outbound',
-									label: `Open quoted @${record.author.handle || 'unknown'}`,
-									detail: previewText(record.text)
-								})
-									? 1
-									: 0;
-						}
-
-						const quoteState = getQuoteFeedState(sourceCard.post);
-						if (sourceCard.post.quoteCount > 0 || quoteState.posts.length > 0) {
-							const quotePosts =
-								quoteState.loadedAll && quoteState.posts.length > 0
-									? quoteState.posts
-									: await loadQuotesForPost(sourceCard.post, {
-											fetchAll: true,
-											signal: fetchModeAbort?.signal,
-											priority: 2
-										});
-							if (!isFetchModeRunActive(runId)) return;
-							if (!quotePosts && sourceCard.post.quoteCount > 0) {
-								throw new Error(getQuoteFeedState(sourceCard.post).error || 'Could not load quote posts.');
-							}
-
-							const { instantEntries, instantReadyUris, postsToFetch } =
-								partitionQuoteLaneCandidates(sourceCard, quotePosts ?? [], {
-									skipUris: fetchModeQueuedLaneTargets
-								});
-
-							if (Object.keys(instantEntries).length > 0) {
-								for (const quotedUri of Object.keys(instantEntries)) {
-									fetchModeQueuedLaneTargets.add(quotedUri);
-								}
-								quoteLanes = { ...quoteLanes, ...instantEntries };
-								queuedCount += Object.keys(instantEntries).length;
-								await tick();
-								if (!isFetchModeRunActive(runId)) return;
-								for (const quotedUri of instantReadyUris) {
-									const laneCard = boardModel.cardsByPostUri.get(quotedUri);
-									if (laneCard) {
-										enqueueScanCard(laneCard, 'Opened lane');
-									}
-								}
-							}
-
-							for (const quotePost of postsToFetch) {
-								queuedCount += enqueueLaneTask({
-									sourceCard,
-									quotedUri: quotePost.uri,
-									quotedHandle: quotePost.author.handle || '',
-									direction: 'inbound',
-									label: `Open quote post @${quotePost.author.handle || 'unknown'}`,
-									detail: previewText(quotePost.text)
-								})
-									? 1
-									: 0;
-							}
-						}
-
-						updateFetchModeQueueItem(task.id, {
-							status: 'done',
-							detail:
-								queuedCount > 0
-									? `${queuedCount} quote lane${queuedCount === 1 ? '' : 's'} opened or queued.`
-									: 'No new quote lanes found.'
-						});
-					}
-				} else if (task.targetUri) {
-					await openQuoteLane({
-						quotedUri: task.targetUri,
-						quotedHandle: task.targetHandle ?? '',
-						sourceUri: task.sourceUri,
-						sourceLaneId: task.sourceLaneId,
-						direction: task.direction ?? 'outbound',
-						suppressFocus: true,
-						signal: fetchModeAbort?.signal,
-						priority: 2
-					});
-					if (!isFetchModeRunActive(runId)) return;
-					await tick();
-					const entry = quoteLanes[task.targetUri];
-					if (entry?.status === 'error') {
-						throw new Error(entry.error || 'Could not load this quote.');
-					}
-					const resolvedTargetCard = isResolvedQuoteLaneEntry(entry)
-						? getResolvedQuoteTargetCard(entry)
-						: undefined;
-					const targetCard = resolvedTargetCard ?? boardModel.cardsByPostUri.get(task.targetUri);
-					if (targetCard) {
-						enqueueScanCard(targetCard, 'Opened lane', true, 'front');
-					}
-					updateFetchModeQueueItem(task.id, {
-						status: 'done',
-						detail: targetCard ? 'Lane opened and queued for scan.' : 'Lane request finished.'
-					});
-				}
-			} catch (error) {
-				if (isFetchModeRunActive(runId)) {
-					updateFetchModeQueueItem(task.id, {
-						status: 'error',
-						error: error instanceof Error ? error.message : 'Fetch mode task failed.'
-					});
-				}
-			} finally {
-				if (isFetchModeRunActive(runId)) {
-					fetchModeProcessedCount += 1;
-					await tick();
-					await yieldToBrowser();
-					postFetchModeWorkerMessage({ type: 'complete', runId, taskId });
-				}
-			}
+		function finishFetchMode(run: FetchModeRun, phase: FetchModePhase) {
+			if (fetchModeRun !== run || run.stats.finishedAt) return;
+			run.stats.phase = phase;
+			run.stats.finishedAt = Date.now();
+			run.stats.scansRunning = 0;
+			// Stopping (or hitting the lane limit) cancels this run's queued requests; lanes
+			// that have not loaded yet are taken off the board by their loaders.
+			if (phase !== 'done') run.controller.abort();
+			for (const uri of run.scanningUris) resumeQuoteLoad(uri);
+			fetchModeRunning = false;
+			fetchModePaused = false;
+			fetchModeStats = { ...run.stats, recent: run.stats.recent.slice() };
 		}
+
+		function stopFetchMode() {
+			if (fetchModeRun) finishFetchMode(fetchModeRun, 'stopped');
+		}
+
+		function pauseFetchMode() {
+			const run = fetchModeRun;
+			if (!run || !fetchModeRunIsLive(run) || run.paused) return;
+			run.paused = true;
+			run.stats.phase = 'paused';
+			fetchModePaused = true;
+			// Quote pages stop after the page in flight; queued thread loads still finish.
+			for (const uri of run.scanningUris) pauseQuoteLoad(uri);
+			publishFetchModeStats();
+		}
+
+		function resumeFetchMode() {
+			const run = fetchModeRun;
+			if (!run || !fetchModeRunIsLive(run) || !run.paused) return;
+			run.paused = false;
+			run.stats.phase = 'running';
+			fetchModePaused = false;
+			for (const uri of run.scanningUris) resumeQuoteLoad(uri);
+			pumpFetchMode(run);
+		}
+
+		function resetFetchModeState() {
+			fetchModeRun?.controller.abort();
+			fetchModeRun = null;
+			fetchModeRunning = false;
+			fetchModePaused = false;
+			fetchModeStats = emptyFetchModeStats();
+		}
+
+		function toggleFetchModePanel() {
+			showFetchModePanel = !showFetchModePanel;
+		}
+
+		/** What a run with the current settings would fetch from the board as it is now. */
+		let fetchModePlan = $derived.by(() => {
+			if (!showFetchModePanel || fetchModeRunning) return null;
+			const settings = fetchModeSettings;
+			const seen = new Set<string>();
+			let posts = 0;
+			let quotes = 0;
+			let quotePages = 0;
+			let quoted = 0;
+			for (const lane of boardModel.lanes) {
+				for (const card of lane.cards) {
+					const post = card.post;
+					if (seen.has(post.uri)) continue;
+					seen.add(post.uri);
+					if (!postHasFetchWork(post, settings)) continue;
+					posts += 1;
+					if (settings.quotes && post.quoteCount > 0) {
+						quotes += post.quoteCount;
+						quotePages += Math.ceil(post.quoteCount / 100);
+					}
+					const quotedUri = post.embed?.record?.uri;
+					if (settings.quoted && quotedUri && postHasFetchWork({ ...post, quoteCount: 0 }, settings)) quoted += 1;
+				}
+			}
+			const cap = settings.maxLanes > 0 ? settings.maxLanes : Infinity;
+			// Quote posts without replies or parents become lanes with no request.
+			const requests = quotePages + Math.min(quotes + quoted, cap);
+			const minutes = (requests / REQUEST_BUDGET.requests) * (REQUEST_BUDGET.windowMs / 60_000);
+			const fullThreads = settings.fullThreads
+				? boardModel.lanes.filter((lane) => canLoadFullThread(lane.id)).length
+				: 0;
+			return { posts, quotes, quotePages, quoted, requests, minutes, fullThreads };
+		});
+
+		function formatDuration(ms: number): string {
+			const seconds = Math.max(0, Math.round(ms / 1000));
+			if (seconds < 60) return `${seconds}s`;
+			const minutes = Math.floor(seconds / 60);
+			if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
+			return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+		}
+
+		let fetchModeHeadline = $derived.by(() => {
+			const stats = fetchModeStats;
+			const elapsed = (stats.finishedAt || fetchModeClock) - stats.startedAt;
+			switch (stats.phase) {
+				case 'running':
+					return `Running · ${formatDuration(elapsed)}`;
+				case 'paused':
+					return 'Paused · queued requests finish, nothing new starts';
+				case 'done':
+					return `Finished in ${formatDuration(elapsed)}`;
+				case 'stopped':
+					return `Stopped after ${formatDuration(elapsed)}`;
+				case 'capped':
+					return `Stopped at the ${formatCount(stats.lanesOpened)}-lane limit`;
+				default:
+					return 'Choose what to fetch, then start';
+			}
+		});
+
 
 		async function handleQuotePostLaneAction(sourceCard: LaneCard, quotePost: ThreadPost) {
 			openQuotePickerCardKey = null;
@@ -4560,7 +5041,6 @@
 		let minimapOrigin = $state({ x: 0, y: 0 });
 		let minimapDrawTimer = 0;
 		let lastMinimapDrawAt = 0;
-		let minimapViewportFrame = 0;
 
 		function scheduleMinimapRefresh() {
 			if (typeof window === 'undefined' || minimapDrawTimer || minimapFrame) return;
@@ -4572,14 +5052,6 @@
 					updateMinimap();
 				});
 			}, wait);
-		}
-
-		function scheduleMinimapViewportUpdate() {
-			if (typeof window === 'undefined' || minimapViewportFrame) return;
-			minimapViewportFrame = requestAnimationFrame(() => {
-				minimapViewportFrame = 0;
-				updateMinimapViewport();
-			});
 		}
 
 		function updateMinimapViewport() {
@@ -5152,8 +5624,10 @@
 			if (!anchor || !boardEl || anchor.left !== boardEl.scrollLeft || anchor.top !== boardEl.scrollTop) {
 				lastUserScrollAt = performance.now();
 			}
-			scheduleMinimapViewportUpdate();
-			scheduleViewportRefresh();
+			// Read geometry now: layout is still clean at scroll time, whereas in a later
+			// frame callback it may follow card mounts and force a synchronous layout.
+			updateMinimapViewport();
+			refreshViewportRect();
 		}
 
 		$effect(() => {
@@ -5176,6 +5650,7 @@
 			});
 			laneActiveChainIds = buildSeedLaneActiveChainIds(seedQuoteLanes);
 			expandedLaneId = null;
+			branchFan = null;
 			activeLaneId = MAIN_LANE_ID;
 			activeCardKey = `${MAIN_LANE_ID}:${initialMainAnchorUri}`;
 			lastHandledRequestedFocusUri = null;
@@ -5208,6 +5683,37 @@
 			if (!boardModel.laneById.has(expandedLaneId)) {
 				expandedLaneId = null;
 			}
+		});
+
+		// A fan whose lane closed or whose level vanished (the thread reloaded) closes.
+		$effect(() => {
+			if (branchFan && !branchFanFocus) branchFan = null;
+		});
+
+		// Keep the focused fan card centred as the focus moves.
+		$effect(() => {
+			const uri = branchFan?.focusUri;
+			const strip = branchFanStripEl;
+			if (!uri || !strip) return;
+			untrack(() => {
+				void tick().then(() => {
+					const el = strip.querySelector<HTMLElement>(`[data-fan-uri="${CSS.escape(uri)}"]`);
+					if (el) centerInScroller(strip, el, prefersReducedMotion() ? 'auto' : 'smooth');
+				});
+			});
+		});
+
+		// Keep the current rail step in view.
+		$effect(() => {
+			const rail = branchRailEl;
+			const current = branchRail?.steps.find((step) => step.state === 'current')?.post.uri;
+			if (!rail || !current) return;
+			untrack(() => {
+				void tick().then(() => {
+					const el = rail.querySelector<HTMLElement>(`[data-rail-uri="${CSS.escape(current)}"]`);
+					if (el) centerInScroller(rail, el, 'auto');
+				});
+			});
 		});
 
 		$effect(() => {
@@ -5245,11 +5751,41 @@
 					(nextIndex >= 0 && nextIndex < layout.tops.length ? layout.tops[nextIndex] : previous.tops[anchorIndex]);
 				const delta = nextY - previousY;
 				if (delta === 0) return;
+				rowAnchorShift = { layout, delta };
 				boardEl.scrollTop += delta * scale;
 				// This correction is not user scrolling; background measuring keeps going.
 				expectedAnchorScroll = { left: boardEl.scrollLeft, top: boardEl.scrollTop };
 				// Keep an in-flight scroll animation moving relative to the content.
 				if (boardScrollAnimation) boardScrollAnimation.startTop += delta * scale;
+			});
+		});
+
+		// Structural moves (lanes arriving, branch switches, tree fans opening or folding)
+		// glide with FLIP: a card jumps to its new left/top, then a `translate` animation
+		// plays the offset back to zero on the compositor, so no frame relayouts the board.
+		// Row re-measurement alone never animates. Offsets include the row-anchor scroll
+		// correction, so a card the correction already keeps still does not move on screen.
+		$effect(() => {
+			const cards = renderedCards;
+			const model = boardModel;
+			const layout = rowLayout;
+			untrack(() => {
+				const structural = cardMoveModel !== null && cardMoveModel !== model;
+				cardMoveModel = model;
+				const anchorDelta = rowAnchorShift?.layout === layout ? rowAnchorShift.delta : 0;
+				rowAnchorShift = null;
+				const animate = structural && !prefersReducedMotion();
+				const next = new Map<string, { x: number; y: number }>();
+				for (const card of cards) {
+					const x = card.x;
+					const y = layout.canvasOffsetY + cardTop(card);
+					next.set(card.key, { x, y });
+					if (!animate) continue;
+					const previous = cardMoveOrigins.get(card.key);
+					const el = cardElements.get(card.key);
+					if (previous && el) animateCardMove(el, previous.x - x, previous.y - y + anchorDelta);
+				}
+				cardMoveOrigins = next;
 			});
 		});
 
@@ -5396,9 +5932,9 @@
 			handleFullscreenChange();
 			scheduleMinimapRefresh();
 			return () => {
-				advanceFetchModeRunId();
-				fetchModeRunning = false;
-				fetchModePaused = false;
+				fetchModeRun?.controller.abort();
+				fetchModeRun = null;
+				if (fetchModeStatsFrame) cancelAnimationFrame(fetchModeStatsFrame);
 				teardownFetchModeWorker();
 				document.removeEventListener('pointerdown', handleDocumentPointerDown);
 				document.removeEventListener('fullscreenchange', handleFullscreenChange);
@@ -5411,7 +5947,6 @@
 				cancelAnimationFrame(minimapFrame);
 				minimapFrame = 0;
 			}
-			if (minimapViewportFrame) cancelAnimationFrame(minimapViewportFrame);
 			if (minimapDrawTimer) window.clearTimeout(minimapDrawTimer);
 			if (cardHeightFrame) cancelAnimationFrame(cardHeightFrame);
 			if (laneJobFrame) cancelAnimationFrame(laneJobFrame);
@@ -5422,6 +5957,35 @@
 		};
 		});
 	</script>
+
+{#snippet branchFanCardBody(post: ThreadPost, onBoard: boolean)}
+	<span class="branch-fan-card-head">
+		{#if post.author.avatar}
+			<img src={post.author.avatar} alt="" class="card-avatar" loading="lazy" decoding="async" />
+		{/if}
+		<span class="card-author-copy">
+			<strong class="card-handle">@{post.author.handle}</strong>
+			<span class="card-date">{formatDate(post.createdAt)}</span>
+		</span>
+		{#if onBoard}
+			<span class="branch-fan-on-board" title="This reply is on the board's current branch">on board</span>
+		{/if}
+	</span>
+	<span class="branch-fan-card-text">{getCardTextValue(post)}</span>
+	<span class="branch-fan-card-stats">
+		<span>{post.children.length} {post.children.length === 1 ? 'reply' : 'replies'}</span>
+		<span>{formatCount(post.likeCount)} likes</span>
+		{#if post.embed?.images?.length}
+			<span>{post.embed.images.length} image{post.embed.images.length === 1 ? '' : 's'}</span>
+		{/if}
+		{#if post.embed?.video}
+			<span>video</span>
+		{/if}
+		{#if post.embed?.record}
+			<span>quotes @{post.embed.record.author.handle}</span>
+		{/if}
+	</span>
+{/snippet}
 
 <div class="parallel-board-layout" bind:this={parallelBoardLayoutEl}>
 	<div class="parallel-board-info">
@@ -5440,14 +6004,31 @@
 			/>
 		{/if}
 			<button
-					type="button"
-					class="board-mode-btn"
-					class:board-mode-btn-active={fetchModeRunning}
-					title="Queue quote lanes from every board post"
-					onclick={startFetchModeForBoard}
-				>
-				{fetchModeRunning ? 'Stop fetch mode' : 'Fetch mode'}
+				type="button"
+				class="board-mode-btn"
+				class:board-mode-btn-active={fetchModeRunning || showFetchModePanel}
+				title="Choose what to pull in around the board, then follow the run"
+				aria-expanded={showFetchModePanel}
+				onclick={toggleFetchModePanel}
+			>
+				{fetchModeRunning ? (fetchModePaused ? 'Fetch mode · paused' : 'Fetch mode · running') : 'Fetch mode'}
 			</button>
+			<label
+				class="board-mode-btn board-sort-control"
+				class:board-mode-btn-active={laneSortMode !== 'loaded'}
+				title="Order of quote lanes beside their source post; the first sits nearest"
+			>
+				<span>Sort lanes</span>
+				<select
+					class="board-sort-select"
+					value={laneSortMode}
+					onchange={(event) => setLaneSortMode((event.currentTarget as HTMLSelectElement).value as LaneSortMode)}
+				>
+					{#each LANE_SORT_MODES as mode (mode.value)}
+						<option value={mode.value}>{mode.label}</option>
+					{/each}
+				</select>
+			</label>
 		</div>
 
 	{#if celebrationBurst}
@@ -5466,6 +6047,251 @@
 				{/each}
 			</div>
 		</div>
+	{/if}
+
+	{#if showFetchModePanel}
+		{@const stats = fetchModeStats}
+		<section class="fetch-mode-panel fetch-center wobbly-border-light" aria-live="polite" aria-label="Fetch mode">
+			<div class="fetch-mode-panel-head">
+				<div>
+					<strong class="fetch-mode-panel-title">Fetch mode</strong>
+					<p class="fetch-mode-panel-status">{fetchModeHeadline}</p>
+				</div>
+				<div class="fetch-mode-panel-actions">
+					{#if fetchModeRunning}
+						<button
+							type="button"
+							class="fetch-mode-pause-btn"
+							onclick={fetchModePaused ? resumeFetchMode : pauseFetchMode}
+						>
+							{fetchModePaused ? 'Resume' : 'Pause'}
+						</button>
+						<button type="button" class="fetch-mode-stop-btn" onclick={stopFetchMode}>Stop</button>
+					{/if}
+					<button
+						type="button"
+						class="fetch-mode-close-btn"
+						aria-label="Hide fetch mode"
+						onclick={toggleFetchModePanel}
+					>
+						×
+					</button>
+				</div>
+			</div>
+
+			<div class="fetch-center-body">
+			<fieldset class="fetch-center-settings" disabled={fetchModeRunning}>
+				<legend>What to fetch</legend>
+				<label class="fetch-center-check">
+					<input
+						type="checkbox"
+						checked={fetchModeSettings.quotes}
+						onchange={(event) =>
+							updateFetchModeSettings({ quotes: (event.currentTarget as HTMLInputElement).checked })}
+					/>
+					<span>Quote posts <small>posts that quote a board post, opened as lanes</small></span>
+				</label>
+				<label class="fetch-center-check">
+					<input
+						type="checkbox"
+						checked={fetchModeSettings.quoted}
+						onchange={(event) =>
+							updateFetchModeSettings({ quoted: (event.currentTarget as HTMLInputElement).checked })}
+					/>
+					<span>Quoted posts <small>posts that a board post quotes</small></span>
+				</label>
+				<label class="fetch-center-check">
+					<input
+						type="checkbox"
+						checked={fetchModeSettings.fullThreads}
+						onchange={(event) =>
+							updateFetchModeSettings({ fullThreads: (event.currentTarget as HTMLInputElement).checked })}
+					/>
+					<span>Full threads <small>whole conversations for lanes that only have part (several requests each)</small></span>
+				</label>
+				<label class="fetch-center-field">
+					<span>Follow new lanes</span>
+					<select
+						value={String(fetchModeSettings.hops)}
+						onchange={(event) =>
+							updateFetchModeSettings({ hops: Number((event.currentTarget as HTMLSelectElement).value) })}
+					>
+						{#each FETCH_MODE_HOP_OPTIONS as option (option.value)}
+							<option value={String(option.value)}>{option.label}</option>
+						{/each}
+					</select>
+				</label>
+				<label class="fetch-center-field">
+					<span>Scan in new lanes</span>
+					<select
+						value={fetchModeSettings.scope}
+						onchange={(event) =>
+							updateFetchModeSettings({
+								scope: (event.currentTarget as HTMLSelectElement).value as FetchModeSettings['scope']
+							})}
+					>
+						<option value="anchor">The quote post</option>
+						<option value="all">Every post in the lane</option>
+					</select>
+				</label>
+				<label class="fetch-center-field">
+					<span>Stop after</span>
+					<select
+						value={String(fetchModeSettings.maxLanes)}
+						onchange={(event) =>
+							updateFetchModeSettings({ maxLanes: Number((event.currentTarget as HTMLSelectElement).value) })}
+					>
+						{#each FETCH_MODE_LANE_LIMITS as limit (limit)}
+							<option value={String(limit)}>{limit ? `${formatCount(limit)} new lanes` : 'No limit'}</option>
+						{/each}
+					</select>
+				</label>
+			</fieldset>
+
+			{#if fetchModePlan}
+				{@const plan = fetchModePlan}
+				<div class="fetch-center-plan">
+					<strong class="fetch-center-heading">Plan for the board as it is now</strong>
+					{#if plan.posts === 0 && plan.fullThreads === 0}
+						<p>Nothing to fetch with these settings.</p>
+					{:else}
+						<ul class="fetch-center-plan-list">
+							<li>{formatCount(plan.posts)} post{plan.posts === 1 ? '' : 's'} to scan</li>
+							{#if plan.quotes > 0}
+								<li>~{formatCount(plan.quotes)} quote posts in {formatCount(plan.quotePages)} page{plan.quotePages === 1 ? '' : 's'}</li>
+							{/if}
+							{#if plan.quoted > 0}
+								<li>{formatCount(plan.quoted)} quoted post{plan.quoted === 1 ? '' : 's'}</li>
+							{/if}
+							{#if plan.fullThreads > 0}
+								<li>{formatCount(plan.fullThreads)} full thread{plan.fullThreads === 1 ? '' : 's'}</li>
+							{/if}
+						</ul>
+						<p class="fetch-center-estimate">
+							Up to ~{formatCount(plan.requests)} requests{fetchModeSettings.hops === 1 ? '' : ' before following new lanes'}.
+							{#if plan.minutes >= 1}
+								The rate budget ({formatCount(REQUEST_BUDGET.requests)} requests per 5 min) makes that at least
+								~{Math.ceil(plan.minutes)} min.
+							{/if}
+							Quote posts without replies need no request.
+						</p>
+					{/if}
+					<button
+						type="button"
+						class="fetch-center-start"
+						disabled={plan.posts === 0 && plan.fullThreads === 0}
+						onclick={startFetchMode}
+					>
+						{stats.phase === 'idle' ? 'Start fetching' : 'Fetch again'}
+					</button>
+				</div>
+			{/if}
+
+			{#if stats.phase !== 'idle'}
+				<div class="fetch-center-live">
+				<strong class="fetch-center-heading">This run</strong>
+				<div
+					class="lane-job-progress"
+					role="progressbar"
+					aria-label="Posts scanned"
+					aria-valuemin={0}
+					aria-valuemax={stats.postsQueued}
+					aria-valuenow={stats.postsScanned}
+				>
+					<span style="width: {stats.postsQueued ? (stats.postsScanned / stats.postsQueued) * 100 : 0}%"></span>
+				</div>
+				<dl class="fetch-center-stats">
+					<div><dt>Posts scanned</dt><dd>{formatCount(stats.postsScanned)} / {formatCount(stats.postsQueued)}</dd></div>
+					<div>
+						<dt>Quote posts found</dt>
+						<dd>
+							{formatCount(stats.quotesFound)}{stats.quotesExpected ? ` / ~${formatCount(stats.quotesExpected)}` : ''}
+						</dd>
+					</div>
+					<div><dt>Lanes opened</dt><dd>{formatCount(stats.lanesOpened)}</dd></div>
+					<div><dt>Linked</dt><dd>{formatCount(stats.lanesLinked)}</dd></div>
+					<div>
+						<dt>Failed</dt>
+						<dd class:fetch-mode-error-count={stats.lanesFailed > 0}>{formatCount(stats.lanesFailed)}</dd>
+					</div>
+					<div><dt>Generation</dt><dd>{stats.hop}</dd></div>
+					{#if stats.fullThreadsQueued > 0}
+						<div>
+							<dt>Full threads</dt>
+							<dd>{formatCount(stats.fullThreadsLoaded)} / {formatCount(stats.fullThreadsQueued)}</dd>
+						</div>
+					{/if}
+				</dl>
+				{#if fetchModeRunning}
+					<p class="fetch-center-requests">
+						{loadSnapshot.running.length} requests running · {formatCount(loadSnapshot.queued)} waiting{#if loadSnapshot.budget}
+							· {formatCount(loadSnapshot.budget.used)} / {formatCount(loadSnapshot.budget.limit)} of the 5-min budget{/if}
+					</p>
+					{#if rateLimitSecondsLeft > 0}
+						<p class="loading-rate-limit">Rate limited. Resuming in {rateLimitSecondsLeft}s.</p>
+					{/if}
+				{/if}
+				{#if stats.recent.length > 0}
+					<ol class="fetch-mode-queue">
+						{#each stats.recent as event (event.id)}
+							<li
+								class="fetch-mode-task"
+								class:fetch-mode-task-done={event.status === 'done'}
+								class:fetch-mode-task-skipped={event.status === 'linked'}
+								class:fetch-mode-task-error={event.status === 'error'}
+							>
+								<span class="fetch-mode-task-state">
+									{event.status === 'done' ? 'Lane' : event.status === 'linked' ? 'Link' : 'Error'}
+								</span>
+								<span class="fetch-mode-task-copy">
+									<strong>{event.label}</strong>
+									<span>{event.detail}</span>
+								</span>
+							</li>
+						{/each}
+					</ol>
+				{/if}
+				</div>
+			{/if}
+			</div>
+		</section>
+	{/if}
+
+	{#if branchRail}
+		<nav class="branch-rail" aria-label="Branch path" bind:this={branchRailEl}>
+			{#if branchRail.hiddenBefore > 0}
+				<span class="branch-rail-gap">{branchRail.hiddenBefore} above</span>
+			{/if}
+			{#each branchRail.steps as step, index (step.post.uri)}
+				{#if index > 0 || branchRail.hiddenBefore > 0}
+					<span class="branch-rail-sep" aria-hidden="true">▸</span>
+				{/if}
+				<button
+					type="button"
+					class="branch-rail-step"
+					class:branch-rail-step-current={step.state === 'current'}
+					class:branch-rail-step-ahead={step.state === 'ahead'}
+					data-rail-uri={step.post.uri}
+					title={previewText(step.post.text, 140)}
+					onclick={() => handleBranchRailStep(branchRail!.laneId, step.post.uri)}
+				>
+					@{step.post.author.handle}
+				</button>
+				{#if step.siblings > 1}
+					<button
+						type="button"
+						class="branch-rail-chip"
+						title="Fan out the {step.siblings} replies at this step"
+						onclick={() => openBranchFan(branchRail!.laneId, step.post.uri)}
+					>
+						▾{step.siblings}
+					</button>
+				{/if}
+			{/each}
+			{#if branchRail.hiddenAfter > 0}
+				<span class="branch-rail-gap">{branchRail.hiddenAfter} below</span>
+			{/if}
+		</nav>
 	{/if}
 
 	<div class="parallel-board-shell">
@@ -5625,11 +6451,16 @@
 									<div class="loading-row">
 										<span>Fetch mode{fetchModePaused ? ' (paused)' : ''}</span>
 										<span>
-											{formatCount(fetchModeProcessedCount)} done · {formatCount(fetchModeRemainingCount)} to go
+											{formatCount(fetchModeStats.postsScanned)} / {formatCount(fetchModeStats.postsQueued)} posts ·
+											{formatCount(fetchModeStats.lanesOpened)} lanes
 										</span>
 									</div>
 									<div class="lane-job-progress">
-										<span style="width: {fetchModeProgressPercent}%"></span>
+										<span
+											style="width: {fetchModeStats.postsQueued
+												? (fetchModeStats.postsScanned / fetchModeStats.postsQueued) * 100
+												: 0}%"
+										></span>
 									</div>
 								</div>
 							{/if}
@@ -5810,77 +6641,6 @@
 				{/if}
 				</div>
 			{/if}
-				{#if fetchModeQueue.length > 0 || fetchModeStatusMessage}
-					{#if showFetchModePanel}
-						<section class="fetch-mode-panel wobbly-border-light" aria-live="polite">
-							<div class="fetch-mode-panel-head">
-								<div>
-									<strong class="fetch-mode-panel-title">Fetch mode</strong>
-									<p class="fetch-mode-panel-status">{fetchModeStatusMessage || 'Idle'}</p>
-								</div>
-								<div class="fetch-mode-panel-actions">
-									{#if fetchModeRunning}
-										<button
-											type="button"
-											class="fetch-mode-pause-btn"
-											onclick={fetchModePaused ? resumeFetchMode : pauseFetchMode}
-										>
-											{fetchModePaused ? 'Resume' : 'Pause'}
-										</button>
-										<button type="button" class="fetch-mode-stop-btn" onclick={stopFetchMode}>Stop</button>
-									{/if}
-									<button
-										type="button"
-										class="fetch-mode-close-btn"
-										aria-label="Hide fetch mode"
-										onclick={closeFetchModePanel}
-									>
-										×
-									</button>
-								</div>
-							</div>
-								<div class="lane-job-progress" aria-hidden="true">
-									<span style="width: {fetchModeProgressPercent}%"></span>
-								</div>
-								<div class="fetch-mode-counts">
-									<span>{fetchModeActiveCount} active</span>
-									<span>{fetchModePendingCount} queued</span>
-									<span>{fetchModeProcessedCount} processed</span>
-									<span>{fetchModeRemainingCount} to go</span>
-								{#if fetchModeErrorCount > 0}
-									<span class="fetch-mode-error-count">{fetchModeErrorCount} errors</span>
-								{/if}
-							</div>
-							{#if visibleFetchModeQueue.length > 0}
-								<ol class="fetch-mode-queue">
-									{#each visibleFetchModeQueue as item, itemIndex (item.id + ':' + itemIndex)}
-										<li
-											class="fetch-mode-task"
-											class:fetch-mode-task-running={item.status === 'running'}
-											class:fetch-mode-task-done={item.status === 'done'}
-											class:fetch-mode-task-skipped={item.status === 'skipped'}
-											class:fetch-mode-task-error={item.status === 'error'}
-										>
-											<span class="fetch-mode-task-state">{getFetchModeTaskStatusLabel(item.status)}</span>
-											<span class="fetch-mode-task-copy">
-												<strong>{item.label}</strong>
-												<span>{item.error || item.detail}</span>
-											</span>
-										</li>
-									{/each}
-								</ol>
-							{/if}
-						</section>
-					{:else}
-						<button
-							type="button"
-							class="fetch-mode-reopen-btn wobbly-border-light"
-							onclick={reopenFetchModePanel}
-						>
-							Fetch mode
-						</button>
-					{/if}
-				{/if}
 
 		</div>
 
@@ -5977,6 +6737,7 @@
 								{#each renderedCards as card (card.key)}
 									<article
 										use:measureCardHeight={{ key: card.key, enabled: !cardRendersLite(card) }}
+										use:trackCardElement={card.key}
 										class="dimension-card big-dimension-card"
 										class:lite-dimension-card={cardRendersLite(card)}
 										class:active-dimension-card={card.key === activeCardKey}
@@ -5998,10 +6759,16 @@
 											role="button"
 											tabindex="0"
 											aria-label={`Select post by @${card.post.author.handle}`}
-											title="Select this post"
+											title="Select this post (double-click to fan out its replies)"
 											onclick={(event) => {
 												if ((event.target as HTMLElement).closest('button, a, video')) return;
 												selectCard(card);
+											}}
+											ondblclick={(event) => {
+												if ((event.target as HTMLElement).closest('button, a, video')) return;
+												// Double-click also selects a word; the fan replaces that intent.
+												window.getSelection()?.removeAllRanges();
+												openBranchFan(card.laneId, card.post.uri);
 											}}
 											onkeydown={(event) => {
 												if ((event.target as HTMLElement).closest('button, a, video')) return;
@@ -6046,6 +6813,19 @@
 														{getFullThreadButtonLabel(card.laneId)}
 													</button>
 												{/if}
+												{#if card.visibility === 'active' && getCardSiblingCount(card) > 1}
+													<button
+														type="button"
+														class="card-branch-btn"
+														title="Fan out the {getCardSiblingCount(card)} replies at this level (b)"
+														onclick={(event) => {
+															event.stopPropagation();
+															openBranchFan(card.laneId, card.post.uri);
+														}}
+													>
+														Fan {getCardSiblingCount(card)}
+													</button>
+												{/if}
 												{#if hasLaneBranchSwitch(card)}
 													<button
 														type="button"
@@ -6077,6 +6857,19 @@
 											</div>
 
 												<div class="card-badges">
+													{#if card.isLaneRoot}
+														{@const laneThread = boardModel.laneById.get(card.laneId)?.thread}
+														{#if laneThread}
+															<span
+																class="card-post-count"
+																title={laneThread.isTruncated
+																	? 'Posts loaded in this conversation; more exist (load the full thread for all of them)'
+																	: 'Posts in this conversation'}
+															>
+																{formatCount(getPostDepthMapCached(laneThread.rootPost).size)}{laneThread.isTruncated ? '+' : ''} posts
+															</span>
+														{/if}
+													{/if}
 													<span>{formatCount(card.post.replyCount)} replies</span>
 													{#if card.post.quoteCount > 0}
 														<span>{formatCount(card.post.quoteCount)} quotes</span>
@@ -6501,6 +7294,136 @@
 							</div>
 						</div>
 					</div>
+
+					{#if branchFan && branchFanLane && branchFanParent && branchFanFocus}
+						<div class="branch-fan-layer">
+							<button
+								type="button"
+								class="branch-fan-dismiss"
+								aria-label="Close reply fan"
+								onclick={closeBranchFan}
+							></button>
+							<section class="branch-fan" aria-label="Reply branches">
+								<header class="branch-fan-head">
+									<span class="card-lane-token">{branchFanLane.label}</span>
+									<button
+										type="button"
+										class="branch-fan-up"
+										disabled={!branchFanCanAscend}
+										title={branchFanCanAscend
+											? `Go up to @${branchFanParent.author.handle}'s level (↑)`
+											: 'This is the top level: these reply to the root post'}
+										onclick={ascendBranchFan}
+									>
+										↑ Up
+									</button>
+									<button
+										type="button"
+										class="branch-fan-parent"
+										disabled={!branchFanCanAscend}
+										title={branchFanCanAscend ? `Go up to @${branchFanParent.author.handle}'s level (↑)` : undefined}
+										onclick={ascendBranchFan}
+									>
+										<span class="branch-fan-kicker">Replies to</span>
+										<strong>@{branchFanParent.author.handle}</strong>
+										<span class="branch-fan-parent-text">{previewText(branchFanParent.text, 140)}</span>
+									</button>
+									<span class="branch-fan-count">
+										{branchFanFocusIndex + 1} of {branchFanSiblings.length}
+									</span>
+									<button
+										type="button"
+										class="panel-close-btn"
+										aria-label="Close reply fan"
+										onclick={closeBranchFan}
+									>
+										×
+									</button>
+								</header>
+
+								{#key `${branchFan.laneId}:${branchFan.parentUri}`}
+									<div
+										class="branch-fan-strip"
+										data-reveal-root
+										bind:this={branchFanStripEl}
+										use:wheelScrollsX
+										onscroll={handleBranchFanScroll}
+									>
+										{#each branchFanSiblings.slice(0, branchFanRenderLimit) as post, index (post.uri)}
+											<button
+												type="button"
+												class="branch-fan-card"
+												class:branch-fan-card-focus={index === branchFanFocusIndex}
+												data-fan-uri={post.uri}
+												style="--fan-offset: {clamp(index - branchFanFocusIndex, -6, 6)}; --fan-delay: {Math.min(Math.abs(index - branchFanFocusIndex), 8) * 30}ms;"
+												title={index === branchFanFocusIndex ? 'Show this branch on the board' : 'Focus this reply'}
+												onclick={() => {
+													if (index === branchFanFocusIndex) void commitBranchFan();
+													else setBranchFan({ ...branchFan!, focusUri: post.uri });
+												}}
+											>
+												{@render branchFanCardBody(post, branchFanBoardUris.has(post.uri))}
+											</button>
+										{/each}
+										{#if branchFanSiblings.length > branchFanRenderLimit}
+											<div
+												class="branch-fan-sentinel"
+												use:revealWhenVisible={() => (branchFanRenderLimit += BRANCH_FAN_PAGE)}
+											></div>
+										{/if}
+									</div>
+								{/key}
+
+								{#if branchFanSiblings.length > 1 && branchFanSiblings.length <= 24}
+									<div class="branch-fan-dots" aria-hidden="true">
+										{#each branchFanSiblings as post, index (post.uri)}
+											<span class:branch-fan-dot-focus={index === branchFanFocusIndex}></span>
+										{/each}
+									</div>
+								{/if}
+
+								<div class="branch-fan-replies">
+									<p class="branch-fan-replies-label">
+										Replies to @{branchFanFocus.author.handle} ({branchFanFocus.children.length})
+									</p>
+									{#if branchFanFocus.children.length > 0}
+										<div class="branch-fan-reply-strip" use:wheelScrollsX>
+											{#each branchFanFocus.children.slice(0, BRANCH_FAN_REPLY_LIMIT) as reply (reply.uri)}
+												<button
+													type="button"
+													class="branch-fan-card branch-fan-reply"
+													title="Go down to this reply's level"
+													onclick={() => descendBranchFan(reply.uri)}
+												>
+													{@render branchFanCardBody(reply, branchFanBoardUris.has(reply.uri))}
+												</button>
+											{/each}
+											{#if branchFanFocus.children.length > BRANCH_FAN_REPLY_LIMIT}
+												<span class="branch-fan-more">
+													+{branchFanFocus.children.length - BRANCH_FAN_REPLY_LIMIT} more, go down to see them all
+												</span>
+											{/if}
+										</div>
+									{:else}
+										<p class="branch-fan-empty">No replies below this post.</p>
+									{/if}
+								</div>
+
+								<footer class="branch-fan-foot">
+									<span class="branch-fan-hints">
+										<kbd>←</kbd><kbd>→</kbd> browse
+										<kbd>↓</kbd> go down
+										<kbd>↑</kbd> go up
+										<kbd>Enter</kbd> show on board
+										<kbd>Esc</kbd> close
+									</span>
+									<button type="button" class="card-branch-btn" onclick={() => void commitBranchFan()}>
+										Show this branch on the board
+									</button>
+								</footer>
+							</section>
+						</div>
+					{/if}
 
 					<div class="board-aux-controls">
 						<div class="board-shortcuts-help" bind:this={shortcutsHelpEl}>
@@ -7030,7 +7953,7 @@
 
 	.dimension-pill,
 	.dimension-meta {
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		font-size: 0.82rem;
 	}
 
@@ -7051,7 +7974,7 @@
 		border: 1px solid rgba(61, 64, 91, 0.16);
 		background: rgba(255, 252, 245, 0.96);
 		color: #3f354a;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		font-size: 0.78rem;
 		font-weight: 700;
 		cursor: pointer;
@@ -7086,7 +8009,7 @@
 		border: 1px solid rgba(63, 56, 78, 0.22);
 		background: rgba(246, 241, 228, 0.96);
 		color: #44354f;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		font-size: 0.9rem;
 		font-weight: 700;
 		cursor: pointer;
@@ -7104,6 +8027,23 @@
 			background: #8260a9;
 			color: white;
 		}
+
+	.board-sort-control {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		padding-block: 5px;
+	}
+
+	.board-sort-select {
+		padding: 3px 6px;
+		border: 1px solid rgba(61, 64, 91, 0.2);
+		border-radius: 999px;
+		background: white;
+		color: inherit;
+		font: inherit;
+		cursor: pointer;
+	}
 
 	/* One column on the right: loading, search, fetch mode. Collapsed panels are
 	   stacked buttons; open ones scroll on their own so the column never grows past the board. */
@@ -7148,7 +8088,7 @@
 			border: 1px solid rgba(61, 64, 91, 0.14);
 			background: rgba(255, 252, 245, 0.96);
 			box-shadow: 0 18px 42px rgba(26, 35, 44, 0.12);
-			font-family: 'Courier New', monospace;
+			font-family: inherit;
 			font-size: 0.72rem;
 			font-weight: 700;
 			color: #554b67;
@@ -7178,7 +8118,7 @@
 
 		.fetch-mode-panel-status {
 			margin: 3px 0 0;
-			font-family: 'Courier New', monospace;
+			font-family: inherit;
 			font-size: 0.74rem;
 			line-height: 1.35;
 			color: #433b4e;
@@ -7196,7 +8136,7 @@
 			flex-shrink: 0;
 			padding: 6px 10px;
 			border-radius: 999px;
-			font-family: 'Courier New', monospace;
+			font-family: inherit;
 			font-size: 0.68rem;
 			font-weight: 700;
 			cursor: pointer;
@@ -7226,7 +8166,7 @@
 			display: flex;
 			flex-wrap: wrap;
 			gap: 6px;
-			font-family: 'Courier New', monospace;
+			font-family: inherit;
 			font-size: 0.66rem;
 			color: #6d647a;
 		}
@@ -7263,11 +8203,6 @@
 			border: 1px solid rgba(77, 66, 96, 0.1);
 		}
 
-		.fetch-mode-task-running {
-			background: rgba(235, 245, 255, 0.96);
-			border-color: rgba(58, 117, 196, 0.2);
-		}
-
 		.fetch-mode-task-done {
 			background: rgba(240, 255, 246, 0.9);
 		}
@@ -7287,7 +8222,7 @@
 			padding: 3px 5px;
 			border-radius: 999px;
 			background: rgba(61, 64, 91, 0.1);
-			font-family: 'Courier New', monospace;
+			font-family: inherit;
 			font-size: 0.58rem;
 			font-weight: 700;
 			text-transform: uppercase;
@@ -7301,7 +8236,7 @@
 		}
 
 		.fetch-mode-task-copy strong {
-			font-family: 'Courier New', monospace;
+			font-family: inherit;
 			font-size: 0.68rem;
 			color: #342d3d;
 			overflow: hidden;
@@ -7314,6 +8249,181 @@
 			line-height: 1.32;
 			color: #6d647a;
 			word-break: break-word;
+		}
+
+		/* Fetch mode command center, above the board: settings, plan and live stats side by side. */
+		.fetch-center {
+			max-height: none;
+			overflow: visible;
+			padding: 12px 14px;
+		}
+
+		.fetch-center .fetch-mode-panel-head {
+			position: static;
+			margin: 0;
+			padding: 0;
+			background: none;
+		}
+
+		.fetch-center-body {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+			gap: 14px;
+			align-items: start;
+		}
+
+		.fetch-center-live {
+			display: grid;
+			gap: 8px;
+		}
+
+		.fetch-center-settings {
+			display: grid;
+			gap: 7px;
+			min-width: 0;
+			margin: 0;
+			padding: 0;
+			border: none;
+		}
+
+		.fetch-center-settings:disabled {
+			opacity: 0.6;
+		}
+
+		.fetch-center-settings legend,
+		.fetch-center-heading {
+			padding: 0;
+			font-size: 0.66rem;
+			font-weight: 700;
+			letter-spacing: 0.08em;
+			text-transform: uppercase;
+			color: #655678;
+		}
+
+		.fetch-center-check {
+			display: grid;
+			grid-template-columns: auto minmax(0, 1fr);
+			gap: 8px;
+			align-items: start;
+			font-size: 0.76rem;
+			font-weight: 700;
+			color: #342d3d;
+			cursor: pointer;
+		}
+
+		.fetch-center-check input {
+			margin: 2px 0 0;
+			accent-color: #6f61ff;
+		}
+
+		.fetch-center-check small {
+			display: block;
+			font-size: 0.68rem;
+			font-weight: 400;
+			color: #6d647a;
+		}
+
+		.fetch-center-field {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			font-size: 0.74rem;
+			color: #342d3d;
+		}
+
+		.fetch-center-field select {
+			min-width: 0;
+			max-width: 60%;
+			padding: 4px 6px;
+			border: 1px solid rgba(61, 64, 91, 0.2);
+			border-radius: 8px;
+			background: white;
+			color: inherit;
+			font: inherit;
+			font-size: 0.72rem;
+		}
+
+		.fetch-center-plan {
+			display: grid;
+			gap: 6px;
+			padding: 9px;
+			border-radius: 10px;
+			background: rgba(111, 97, 255, 0.07);
+			border: 1px solid rgba(111, 97, 255, 0.18);
+		}
+
+		.fetch-center-plan p,
+		.fetch-center-plan-list {
+			margin: 0;
+			font-size: 0.72rem;
+			line-height: 1.4;
+			color: #433b4e;
+		}
+
+		.fetch-center-plan-list {
+			padding-left: 18px;
+		}
+
+		.fetch-center-estimate {
+			color: #6d647a;
+		}
+
+		.fetch-center-start {
+			justify-self: start;
+			padding: 7px 14px;
+			border: 1px solid rgba(111, 97, 255, 0.5);
+			border-radius: 999px;
+			background: #6f61ff;
+			color: white;
+			font-family: inherit;
+			font-size: 0.74rem;
+			font-weight: 700;
+			cursor: pointer;
+		}
+
+		.fetch-center-start:disabled {
+			opacity: 0.5;
+			cursor: default;
+		}
+
+		.fetch-center-stats {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 6px;
+			margin: 0;
+		}
+
+		.fetch-center-stats div {
+			padding: 6px 8px;
+			border-radius: 8px;
+			background: rgba(68, 53, 79, 0.06);
+		}
+
+		.fetch-center-stats dt {
+			font-size: 0.62rem;
+			letter-spacing: 0.04em;
+			text-transform: uppercase;
+			color: #6d647a;
+		}
+
+		.fetch-center-stats dd {
+			margin: 2px 0 0;
+			font-family: inherit;
+			font-size: 0.82rem;
+			font-weight: 700;
+			color: #342d3d;
+		}
+
+		.fetch-center-stats dd.fetch-mode-error-count {
+			color: #a33226;
+		}
+
+		.fetch-center-requests {
+			margin: 0;
+			font-family: inherit;
+			font-size: 0.68rem;
+			color: #6d647a;
 		}
 
 .tree-search-wrap {
@@ -7366,7 +8476,7 @@
 	.tree-search-subtitle {
 		margin: 4px 0 0;
 		font-size: 0.78rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		color: #6b6175;
 	}
 
@@ -7453,7 +8563,7 @@
 		margin: 0;
 		font-size: 0.72rem;
 		line-height: 1.4;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		color: #6f6480;
 	}
 
@@ -7461,7 +8571,7 @@
 		margin: 0;
 		padding: 9px 11px;
 		font-size: 0.82rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		pointer-events: auto;
 	}
 
@@ -7485,7 +8595,7 @@
 		align-items: center;
 		justify-content: center;
 		gap: 2px;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 	}
 
 	.board-zoom-input {
@@ -7552,6 +8662,437 @@
 		gap: 10px;
 	}
 
+	/* Reply fan: one reply level spread into a strip over the board, with the focused
+	   reply's own replies underneath. */
+	.branch-fan-layer {
+		position: absolute;
+		inset: 0;
+		z-index: 40;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 18px;
+	}
+
+	.branch-fan-dismiss {
+		position: absolute;
+		inset: 0;
+		border: 0;
+		border-radius: 20px;
+		background: rgba(38, 33, 48, 0.42);
+		cursor: zoom-out;
+	}
+
+	.branch-fan {
+		position: relative;
+		width: 100%;
+		max-height: 100%;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding: 14px 0 12px;
+		border-radius: 20px;
+		border: 4px solid rgba(45, 41, 55, 0.92);
+		background: linear-gradient(180deg, rgba(252, 246, 232, 0.98), rgba(244, 237, 221, 0.98));
+		box-shadow: 0 24px 48px rgba(24, 20, 30, 0.3);
+		overflow: hidden;
+	}
+
+	.branch-fan-head {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 0 16px;
+		min-width: 0;
+	}
+
+	.branch-fan-up {
+		flex-shrink: 0;
+		padding: 5px 11px;
+		border-radius: 999px;
+		border: 1px solid rgba(111, 97, 255, 0.38);
+		background: rgba(111, 97, 255, 0.12);
+		color: #5b47d0;
+		font: inherit;
+		font-size: 0.72rem;
+		font-weight: 700;
+		cursor: pointer;
+	}
+
+	.branch-fan-up:hover:not(:disabled) {
+		background: #6f61ff;
+		border-color: #6f61ff;
+		color: white;
+	}
+
+	.branch-fan-up:disabled {
+		opacity: 0.35;
+		cursor: default;
+	}
+
+	.branch-fan-parent {
+		flex: 1;
+		min-width: 0;
+		margin: 0;
+		padding: 4px 8px;
+		border: 0;
+		border-radius: 10px;
+		background: transparent;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: 0.82rem;
+		color: #40394a;
+	}
+
+	.branch-fan-parent:hover:not(:disabled) {
+		background: rgba(111, 97, 255, 0.1);
+	}
+
+	.branch-fan-parent:disabled {
+		cursor: default;
+	}
+
+	.branch-fan-kicker {
+		margin-right: 4px;
+		font-size: 0.66rem;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: #8d8477;
+	}
+
+	.branch-fan-parent-text {
+		margin-left: 6px;
+		color: #6a6276;
+	}
+
+	.branch-fan-count {
+		flex-shrink: 0;
+		font-size: 0.74rem;
+		font-weight: 700;
+		color: #5b47d0;
+	}
+
+	.branch-fan-strip,
+	.branch-fan-reply-strip {
+		position: relative;
+		display: flex;
+		align-items: flex-start;
+		gap: 16px;
+		overflow-x: auto;
+		overscroll-behavior-x: contain;
+		scrollbar-width: thin;
+	}
+
+	/* End padding lets the first and last cards reach the centre. */
+	.branch-fan-strip {
+		padding: 8px calc(50% - 140px) 14px;
+		scroll-snap-type: x proximity;
+	}
+
+	.branch-fan-reply-strip {
+		gap: 12px;
+		padding: 4px 16px 8px;
+	}
+
+	.branch-fan-card {
+		flex: 0 0 280px;
+		max-height: 290px;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 12px;
+		border-radius: 16px;
+		border: 3px solid rgba(103, 95, 124, 0.42);
+		background: linear-gradient(180deg, rgba(252, 244, 226, 0.99), rgba(244, 236, 218, 0.99));
+		box-shadow: 0 10px 16px rgba(36, 32, 44, 0.12);
+		color: inherit;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+		overflow: hidden;
+		scroll-snap-align: center;
+		opacity: 0.74;
+		transform: scale(0.94);
+		transition:
+			transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+			opacity 0.22s ease,
+			border-color 0.22s ease;
+		/* Fanning out: each card starts tucked toward the focused one and slides into place. */
+		animation: branch-fan-out 0.44s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+		animation-delay: var(--fan-delay, 0ms);
+	}
+
+	.branch-fan-card:hover {
+		opacity: 0.94;
+	}
+
+	.branch-fan-card:focus-visible {
+		outline: 3px solid rgba(111, 97, 255, 0.88);
+		outline-offset: 3px;
+	}
+
+	.branch-fan-card-focus {
+		opacity: 1;
+		transform: none;
+		border-color: #6f61ff;
+		box-shadow: 0 0 0 4px rgba(111, 97, 255, 0.16), 0 16px 24px rgba(36, 32, 44, 0.2);
+	}
+
+	.branch-fan-reply {
+		flex-basis: 220px;
+		max-height: 190px;
+		opacity: 0.9;
+		transform: none;
+		animation: none;
+		scroll-snap-align: none;
+	}
+
+	@keyframes branch-fan-out {
+		from {
+			opacity: 0;
+			transform: translateX(calc(var(--fan-offset, 0) * -62%)) rotate(calc(var(--fan-offset, 0) * 3deg)) scale(0.86);
+		}
+	}
+
+	.branch-fan-card-head {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.branch-fan-card-head .card-author-copy {
+		flex: 1;
+	}
+
+	.branch-fan-on-board {
+		flex-shrink: 0;
+		padding: 2px 7px;
+		border-radius: 999px;
+		background: rgba(124, 85, 158, 0.14);
+		color: #6c498d;
+		font-size: 0.6rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+
+	.branch-fan-card-text {
+		display: -webkit-box;
+		-webkit-line-clamp: 8;
+		line-clamp: 8;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+		font-size: 0.84rem;
+		line-height: 1.45;
+		color: #342f39;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+
+	.branch-fan-reply .branch-fan-card-text {
+		-webkit-line-clamp: 4;
+		line-clamp: 4;
+	}
+
+	.branch-fan-card-stats {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px 10px;
+		margin-top: auto;
+		font-size: 0.68rem;
+		color: #8d8477;
+	}
+
+	.branch-fan-sentinel {
+		flex: 0 0 1px;
+		align-self: stretch;
+	}
+
+	.branch-fan-dots {
+		display: flex;
+		justify-content: center;
+		gap: 6px;
+	}
+
+	.branch-fan-dots span {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: rgba(103, 95, 124, 0.3);
+	}
+
+	.branch-fan-dots .branch-fan-dot-focus {
+		background: #6f61ff;
+	}
+
+	.branch-fan-replies {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		border-top: 2px dashed rgba(103, 95, 124, 0.28);
+		padding-top: 8px;
+	}
+
+	.branch-fan-replies-label,
+	.branch-fan-empty {
+		margin: 0;
+		padding: 0 16px;
+		font-size: 0.72rem;
+		font-weight: 700;
+		color: #6a6276;
+	}
+
+	.branch-fan-empty {
+		font-weight: 400;
+	}
+
+	.branch-fan-more {
+		flex-shrink: 0;
+		align-self: center;
+		font-size: 0.72rem;
+		color: #8d8477;
+	}
+
+	.branch-fan-foot {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		padding: 0 16px;
+	}
+
+	.branch-fan-hints {
+		font-size: 0.7rem;
+		color: #6a6276;
+	}
+
+	.branch-fan-hints kbd {
+		padding: 1px 6px;
+		border-radius: 6px;
+		border: 1px solid rgba(82, 72, 106, 0.22);
+		background: rgba(255, 255, 255, 0.7);
+		font-family: inherit;
+		font-size: 0.68rem;
+	}
+
+	/* Branch rail above the board: the path from the root to the current post; ▾n opens a
+	   fan at that step. */
+	.branch-rail {
+		display: flex;
+		align-items: center;
+		gap: 3px;
+		width: fit-content;
+		max-width: 100%;
+		padding: 5px 8px;
+		border-radius: 999px;
+		background: rgba(41, 34, 52, 0.92);
+		color: #f7f1e5;
+		box-shadow: 0 10px 22px rgba(16, 13, 20, 0.28);
+		overflow-x: auto;
+		scrollbar-width: none;
+		white-space: nowrap;
+		font-size: 0.74rem;
+	}
+
+	.branch-rail::-webkit-scrollbar {
+		display: none;
+	}
+
+	.branch-rail-step,
+	.branch-rail-chip {
+		flex-shrink: 0;
+		color: inherit;
+		font: inherit;
+		cursor: pointer;
+	}
+
+	.branch-rail-step {
+		max-width: 150px;
+		padding: 3px 8px;
+		border: 0;
+		border-radius: 999px;
+		background: transparent;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		opacity: 0.78;
+	}
+
+	.branch-rail-step:hover {
+		background: rgba(255, 255, 255, 0.14);
+		opacity: 1;
+	}
+
+	.branch-rail-step-current {
+		background: #6f61ff;
+		font-weight: 700;
+		opacity: 1;
+	}
+
+	.branch-rail-step-current:hover {
+		background: #6f61ff;
+	}
+
+	.branch-rail-step-ahead {
+		opacity: 0.46;
+	}
+
+	.branch-rail-chip {
+		padding: 1px 7px;
+		border: 1px solid rgba(255, 255, 255, 0.26);
+		border-radius: 999px;
+		background: rgba(255, 255, 255, 0.12);
+		font-size: 0.66rem;
+		font-weight: 700;
+	}
+
+	.branch-rail-chip:hover {
+		background: #f7f1e5;
+		color: #3f354a;
+	}
+
+	.branch-rail-sep,
+	.branch-rail-gap {
+		flex-shrink: 0;
+		opacity: 0.46;
+	}
+
+	.branch-rail-gap {
+		padding: 0 4px;
+		font-size: 0.68rem;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.branch-fan-card {
+			animation: none;
+			transition: none;
+		}
+	}
+
+	@media (max-width: 640px) {
+		.branch-fan-layer {
+			padding: 8px;
+		}
+
+		.branch-fan-card {
+			flex-basis: 240px;
+		}
+
+		.branch-fan-strip {
+			padding-inline: calc(50% - 120px);
+		}
+
+		.branch-fan-hints {
+			display: none;
+		}
+	}
+
 	.board-shortcuts-help {
 		position: relative;
 	}
@@ -7574,7 +9115,7 @@
 
 	.board-shortcuts-title {
 		margin: 0;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		font-size: 0.76rem;
 		font-weight: 700;
 		letter-spacing: 0.08em;
@@ -7624,7 +9165,7 @@
 		border-radius: 999px;
 		background: rgba(255, 255, 255, 0.14);
 		border: 1px solid rgba(255, 255, 255, 0.18);
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		font-size: 0.7rem;
 		font-weight: 700;
 	}
@@ -7663,6 +9204,12 @@
 	.parallel-board.panning {
 		cursor: grabbing;
 		user-select: none;
+	}
+
+	/* Cards slide under a still pointer while panning; without this each one runs its
+	   hover lift and shadow transition as it passes. Pointer capture keeps the pan going. */
+	.parallel-board.panning .dimension-card {
+		pointer-events: none;
 	}
 
 	.parallel-board-canvas {
@@ -7794,13 +9341,13 @@
 		writing-mode: vertical-lr;
 		text-orientation: upright;
 		font-size: 1.6rem;
-		font-family: 'Times New Roman', serif;
+		font-family: inherit;
 		font-style: italic;
 		letter-spacing: 0.04em;
 	}
 
 	.lane-marker-title {
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		font-size: 0.72rem;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
@@ -7813,7 +9360,7 @@
 		border-radius: 999px;
 		background: rgba(255, 255, 255, 0.14);
 		color: #f7f1e5;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		font-size: 0.64rem;
 		font-weight: 700;
 		letter-spacing: 0.04em;
@@ -8009,8 +9556,8 @@
 		transform: translate(var(--card-shift-x, 0px), var(--card-shift-y, 0px)) scale(var(--card-scale, 1));
 		transform-origin: center center;
 		opacity: var(--card-opacity, 1);
+		/* Position changes are animated in script (FLIP on `translate`), never via left/top. */
 		transition:
-			left 0.34s cubic-bezier(0.22, 1, 0.36, 1),
 			transform 0.26s cubic-bezier(0.22, 1, 0.36, 1),
 			box-shadow 0.2s ease,
 			opacity 0.2s ease;
@@ -8186,7 +9733,7 @@
 	.card-focus-token {
 		padding: 4px 8px;
 		border-radius: 999px;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		font-size: 0.64rem;
 		font-weight: 700;
 		text-transform: uppercase;
@@ -8221,7 +9768,7 @@
 		background: rgba(59, 53, 71, 0.08);
 		color: #514866;
 		font-size: 0.64rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		font-weight: 700;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
@@ -8257,7 +9804,7 @@
 
 	.card-handle {
 		font-size: 0.83rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		color: #40394a;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -8270,7 +9817,7 @@
 
 	.card-date {
 		font-size: 0.68rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		color: #8d8477;
 	}
 
@@ -8279,7 +9826,7 @@
 		font-size: 0.84rem;
 		line-height: 1.48;
 		color: #342f39;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 		word-break: break-word;
@@ -8337,8 +9884,14 @@
 		border-radius: 999px;
 		background: rgba(57, 55, 68, 0.08);
 		font-size: 0.65rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		color: #5b5566;
+	}
+
+	.card-badges .card-post-count {
+		background: rgba(130, 96, 169, 0.16);
+		color: #5a3f7a;
+		font-weight: 700;
 	}
 
 	.card-media-grid {
@@ -8378,7 +9931,7 @@
 		overflow: auto;
 		background: rgba(20, 17, 26, 0.88);
 		color: #fff;
-		font-family: system-ui, sans-serif;
+		font-family: inherit;
 		font-size: 0.72rem;
 		font-weight: 600;
 		line-height: 1.35;
@@ -8408,7 +9961,7 @@
 		border-radius: 999px;
 		background: rgba(20, 17, 26, 0.82);
 		color: #fff;
-		font-family: system-ui, sans-serif;
+		font-family: inherit;
 		font-size: 0.65rem;
 		font-weight: 800;
 		line-height: 1.2;
@@ -8479,7 +10032,7 @@
 	.card-inline-link-copy span,
 	.card-inline-quote-copy,
 	.card-inline-quote-text {
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 	}
 
 	.card-inline-link-copy strong {
@@ -8578,7 +10131,7 @@
 
 	.card-quote-label {
 		font-size: 0.62rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 		color: #7e7791;
@@ -8586,7 +10139,7 @@
 
 	.card-quote-handle {
 		font-size: 0.74rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		color: #4b4257;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -8600,7 +10153,7 @@
 		background: rgba(124, 85, 158, 0.1);
 		color: #6f4e91;
 		font-size: 0.7rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		font-weight: 700;
 		cursor: pointer;
 	}
@@ -8641,7 +10194,7 @@
 	.card-quote-status {
 		margin: 0;
 		font-size: 0.64rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		color: #675f75;
 	}
 
@@ -8683,7 +10236,7 @@
 	.card-quote-picker-shortcut-note {
 		margin: 0;
 		font-size: 0.64rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		color: #766d86;
 	}
 
@@ -8746,7 +10299,7 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 8px;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 	}
 
 	.card-quote-picker-post-header {
@@ -8818,7 +10371,7 @@
 		margin: 0;
 		font-size: 0.7rem;
 		line-height: 1.35;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		color: #6a6276;
 	}
 
@@ -8835,7 +10388,7 @@
 	.tree-mode-nav-btn {
 		padding: 2px 8px;
 		font-size: 0.75rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		background: #f5edd8;
 		border: 1px solid #d4c5a0;
 		border-radius: 3px;
@@ -8870,7 +10423,7 @@
 	.tree-mode-nav-counter {
 		font-size: 0.7rem;
 		color: #999;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		min-width: 40px;
 		text-align: center;
 	}
@@ -8889,7 +10442,7 @@
 	.tree-mode-children-label {
 		font-size: 0.65rem;
 		color: #999;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 	}
 
 	.tree-mode-child-btn {
@@ -8973,7 +10526,7 @@
 	.detail-quote-label,
 	.detail-quote-text {
 		margin: 0;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 	}
 
 	.detail-kicker {
@@ -9008,7 +10561,7 @@
 		background: #fffdf7;
 		color: #44354f;
 		font-size: 0.72rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		font-weight: 700;
 		text-decoration: none;
 		cursor: pointer;
@@ -9031,7 +10584,7 @@
 		flex-wrap: wrap;
 		gap: 10px;
 		font-size: 0.72rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		color: #6e667c;
 	}
 
@@ -9109,7 +10662,7 @@
 
 	.detail-link-copy strong,
 	.detail-link-copy span {
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 	}
 
 	.detail-link-copy strong {
@@ -9150,7 +10703,7 @@
 
 	.detail-quote-handle {
 		font-size: 0.84rem;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 		color: #3d3646;
 	}
 
@@ -9227,7 +10780,7 @@
 	.tree-board-modal-kicker,
 	.tree-board-modal-subtitle {
 		margin: 0;
-		font-family: 'Courier New', monospace;
+		font-family: inherit;
 	}
 
 	.tree-board-modal-kicker {
@@ -9377,7 +10930,7 @@
 	}
 
 	.board-gallery {
-		padding: 12px 16px 16px;
+		padding: 10px 14px;
 		background: var(--card-bg, #fffcf6);
 	}
 
@@ -9386,7 +10939,10 @@
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 8px 14px;
-		margin-bottom: 10px;
+	}
+
+	.board-gallery-head + * {
+		margin-top: 8px;
 	}
 
 	.board-gallery-toggle {
@@ -9468,9 +11024,9 @@
 
 	.board-gallery-grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-		gap: 10px;
-		max-height: 72vh;
+		grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+		gap: 6px;
+		max-height: 45vh;
 		overflow-y: auto;
 		padding-right: 4px;
 	}

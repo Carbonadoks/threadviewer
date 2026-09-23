@@ -5,6 +5,7 @@ import {
 	buildAuthorSearchQuery,
 	buildHydratableThreadFromFlatItems,
 	buildVisibleThreadFromFlatItems,
+	getFullThread,
 	getReplyParentVisibilityFromFlatItems,
 	hasMissingDirectReplies,
 	searchPostsFromAuthor
@@ -351,4 +352,67 @@ test('getReplyParentVisibilityFromFlatItems distinguishes visible parents', () =
 
 	assert.equal(status.visibility, 'visible');
 	assert.equal(status.parentAuthorDid, 'did:plc:visible');
+});
+
+test('getFullThread hydrates truncated branches without waiting for slower siblings', async () => {
+	const did = 'did:plc:thread';
+	const item = (id: string, depth: number, parent: any, replyCount: number) => {
+		const value = flatPostItem({
+			id,
+			authorDid: did,
+			handle: 'thread.test',
+			depth,
+			parentUri: parent?.uri,
+			rootUri: parent ? `at://${did}/app.bsky.feed.post/root` : undefined
+		});
+		value.value.post.replyCount = replyCount;
+		return value;
+	};
+	const root = item('root', 0, null, 2);
+	const fast = item('fast', 1, root, 1);
+	const slow = item('slow', 1, root, 1);
+	const fastReply = item('fast-reply', 2, fast, 1);
+	const fastLeaf = item('fast-leaf', 3, fastReply, 0);
+	const slowReply = item('slow-reply', 2, slow, 0);
+	const rebase = (value: any, depth: number) => ({ ...value, depth });
+
+	const log: string[] = [];
+	const responses: Record<string, any[]> = {
+		[root.uri]: [root, fast, slow],
+		[fast.uri]: [rebase(fast, 0), rebase(fastReply, 1)],
+		[fastReply.uri]: [rebase(fastReply, 0), rebase(fastLeaf, 1)],
+		[slow.uri]: [rebase(slow, 0), rebase(slowReply, 1)]
+	};
+	const fakeAgent: any = {
+		app: {
+			bsky: {
+				unspecced: {
+					getPostThreadV2: async (params: { anchor: string; below: number }) => {
+						const id = params.anchor.split('/').pop();
+						if (params.below === 0) return { data: { thread: [root] } };
+						log.push(`start ${id}`);
+						if (params.anchor === slow.uri) await new Promise((resolve) => setTimeout(resolve, 40));
+						log.push(`end ${id}`);
+						return { data: { thread: responses[params.anchor] ?? [], hasOtherReplies: false } };
+					}
+				}
+			}
+		}
+	};
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = (async () => new Response(JSON.stringify({ records: [], total: 0 }))) as typeof fetch;
+	try {
+		const thread = await getFullThread(fastReply.uri, { agent: fakeAgent });
+		assert.equal(thread.rootUri, root.uri);
+		assert.equal(thread.isTruncated, true, 'hydration found replies the first fetch was missing');
+		const fastNode = thread.rootPost.children.find((child) => child.uri === fast.uri);
+		const slowNode = thread.rootPost.children.find((child) => child.uri === slow.uri);
+		assert.deepEqual(fastNode?.children.map((child) => child.uri), [fastReply.uri]);
+		assert.deepEqual(fastNode?.children[0].children.map((child) => child.uri), [fastLeaf.uri]);
+		assert.deepEqual(slowNode?.children.map((child) => child.uri), [slowReply.uri]);
+		// The grandchild found under the fast branch starts before the slow branch returns.
+		assert.ok(log.indexOf('start fast-reply') < log.indexOf('end slow'), log.join(', '));
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
 });

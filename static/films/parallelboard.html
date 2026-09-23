@@ -1,0 +1,1805 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Parallel Board Showreel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap">
+<style>
+@font-face {
+  font-family: 'Virgil';
+  src: url('/Virgil.woff2') format('woff2');
+  font-display: swap;
+}
+:root {
+  color-scheme: dark;
+  --room: #13110e;
+  --room-2: #1c1914;
+  --paper: #fff9ea;
+  --ink: #211d18;
+  --text: #efe6d6;
+  --muted: #a89c88;
+  --line: rgba(239, 230, 214, 0.14);
+  --accent: #e07a5f;
+  --accent-ink: #1b1510;
+  --tape: rgba(255, 219, 117, 0.55);
+  --hand: 'Virgil', 'Patrick Hand', 'Comic Sans MS', cursive;
+  --mono: 'Share Tech Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+}
+html, body { background: var(--room); margin: 0; }
+[hidden] { display: none !important; }
+body {
+  color: var(--text);
+  font-family: var(--mono);
+  padding-inline: 16px;
+  padding-block: 28px 40px;
+  background:
+    radial-gradient(1200px 520px at 50% -10%, rgba(224, 122, 95, 0.10), transparent 70%),
+    var(--room);
+  min-height: 100%;
+}
+.room { max-width: 1280px; margin: 0 auto; display: grid; gap: 18px; }
+.top { display: grid; gap: 6px; }
+.eyebrow {
+  margin: 0; font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+}
+.top h1 {
+  margin: 0; font-family: var(--hand); font-weight: 400;
+  font-size: clamp(34px, 5.4vw, 60px); line-height: 1; color: var(--text); text-wrap: balance;
+}
+.top h1 span { color: var(--accent); }
+.lede { margin: 4px 0 0; max-width: 68ch; color: var(--muted); font-size: 15px; line-height: 1.5; }
+
+.stage {
+  position: relative; background: var(--paper); border-radius: 6px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 249, 234, 0.08);
+}
+.stage::before, .stage::after {
+  content: ""; position: absolute; width: 118px; height: 30px; background: var(--tape);
+  border: 1px solid rgba(113, 84, 56, 0.16); z-index: 2; pointer-events: none;
+}
+.stage::before { left: 7%; top: -12px; transform: rotate(-6deg); }
+.stage::after { right: 9%; bottom: -12px; transform: rotate(5deg); }
+#canvas-host { position: relative; width: 100%; aspect-ratio: 16 / 9; max-width: 100%; overflow: hidden; border-radius: 6px; }
+#canvas-host canvas { display: block; }
+#canvas-host.fixed canvas { width: 100% !important; height: auto !important; }
+.stage:fullscreen { background: #000; border-radius: 0; display: grid; place-items: center; }
+.stage:fullscreen::before, .stage:fullscreen::after { display: none; }
+.stage:fullscreen #canvas-host { width: min(100vw, calc(100vh * 16 / 9)); border-radius: 0; }
+
+.bigplay {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(-1.5deg);
+  font-family: var(--hand); font-size: clamp(18px, 2.6vw, 30px); color: #fffdf4;
+  background: #211d18; border: 2px solid #211d18; padding: 0.55em 1.2em 0.6em;
+  border-radius: 255px 18px 230px 20px / 16px 230px 18px 245px;
+  box-shadow: 8px 10px 0 rgba(33, 29, 24, 0.18); cursor: pointer; z-index: 3;
+  display: inline-flex; align-items: center; gap: 0.5em;
+}
+.bigplay svg { width: 0.9em; height: 0.9em; }
+.bigplay:hover { background: #e07a5f; border-color: #211d18; }
+
+.controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+  padding: 10px 12px; background: var(--room-2); border: 1px solid var(--line); border-radius: 10px;
+}
+.btn {
+  font-family: var(--mono); font-size: 14px; color: var(--text); background: transparent;
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; cursor: pointer; min-height: 36px;
+}
+.btn:hover { border-color: var(--accent); color: #fff; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); min-width: 84px; }
+.btn.primary:hover { filter: brightness(1.08); color: var(--accent-ink); }
+.btn[aria-pressed="false"] { color: var(--muted); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.clock { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 14px; min-width: 96px; }
+.scrub { position: relative; flex: 1 1 260px; min-width: 0; height: 36px; display: flex; align-items: center; }
+.scrub input { width: 100%; accent-color: var(--accent); position: relative; z-index: 1; background: transparent; }
+.ticks { position: absolute; left: 8px; right: 8px; top: 50%; height: 14px; transform: translateY(-50%); pointer-events: none; }
+.ticks i { position: absolute; top: 0; width: 1px; height: 14px; background: rgba(239, 230, 214, 0.35); }
+.rec-note { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 13px; }
+
+.chapters { display: flex; flex-wrap: wrap; gap: 8px; }
+.chap {
+  font-family: var(--mono); font-size: 13px; color: var(--muted); background: transparent;
+  border: 1px dashed var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer;
+  display: inline-flex; gap: 8px; align-items: baseline;
+}
+.chap b { font-weight: 400; color: rgba(239, 230, 214, 0.45); font-variant-numeric: tabular-nums; }
+.chap:hover { color: var(--text); border-color: var(--accent); }
+.chap[aria-current="true"] { color: var(--accent-ink); background: var(--accent); border-style: solid; border-color: var(--accent); }
+.chap[aria-current="true"] b { color: rgba(27, 21, 16, 0.6); }
+.foot { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; max-width: 90ch; }
+.foot a { color: var(--text); text-decoration-color: var(--accent); text-underline-offset: 3px; }
+.keys { color: rgba(239, 230, 214, 0.45); }
+
+@media (max-width: 560px) {
+  body { padding-block: 18px 28px; }
+  .controls { gap: 8px; }
+  .scrub { flex-basis: 100%; order: 5; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bigplay { transform: translate(-50%, -50%); }
+}
+</style>
+
+</head>
+<body>
+<main class="room">
+  <header class="top">
+    <p class="eyebrow">threadviewer.app/parallelboard · a p5.js showreel</p>
+    <h1>Thousands of lanes, <span>one board</span></h1>
+    <p class="lede">A minute and a half with Threadviewer's Parallel Board: every quote post becomes its own lane, replies fan out and unfold into trees, and fetch mode keeps pulling in more, generation after generation.</p>
+  </header>
+
+  <div class="stage" id="stage">
+    <div id="canvas-host"></div>
+    <button class="bigplay" id="bigplay" type="button">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3 L17 10 L5 17 Z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      Play the film
+    </button>
+  </div>
+
+  <div class="controls" role="group" aria-label="Playback">
+    <button class="btn primary" id="play" type="button">Play</button>
+    <span class="clock" id="clock">0:00 / 0:00</span>
+    <div class="scrub">
+      <div class="ticks" id="ticks"></div>
+      <input type="range" id="scrub" min="0" max="1000" value="0" step="1" aria-label="Seek through the film">
+    </div>
+    <button class="btn" id="sound" type="button" aria-pressed="true">Sound on</button>
+    <button class="btn" id="full" type="button">Fullscreen</button>
+    <button class="btn" id="rec" type="button" hidden>Record .webm</button>
+    <p class="rec-note" id="rec-note" hidden></p>
+  </div>
+
+  <nav class="chapters" id="chapters" aria-label="Chapters"></nav>
+
+  <p class="foot">Every control shown is a real part of the Parallel Board in <a href="https://github.com/Carbonadoks/threadviewer" target="_blank" rel="noreferrer">Carbonadoks/threadviewer</a>. The handles, posts and counts are sample data. <span class="keys">Space plays and pauses · ← → skip five seconds · F goes fullscreen.</span></p>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
+<script src="hotspots.js"></script>
+<script>
+// ─────────────────────────────────────────────────────────────
+// Follow the thread — a p5.js showreel for threadviewer.app
+// Virtual frame is 1920×1080. Every scene lives on one endless
+// sheet of grid paper and the camera flies between them.
+// ─────────────────────────────────────────────────────────────
+const W = 1920, H = 1080;
+const FLIGHT = 1.3;          // seconds spent flying between scenes
+const COLS = 4, GAPX = 2500, GAPY = 1650;
+
+let T = 0, PREV_T = 0, TOTAL = 0, BOIL = 0, GA = 1;
+let playing = false, started = false, lastMs = 0, dragging = false;
+let NIGHT = 0;
+const scenes = [];
+const K = {};
+
+// ── palette: [day, night] — lifted from src/app.css landing tokens
+const PAL = {
+  paper:  ['#fff9ea', '#161b26'],
+  grid:   ['#e9dfc6', '#222a39'],
+  grid2:  ['#e2d5b6', '#283146'],
+  ink:    ['#211d18', '#f2eadc'],
+  muted:  ['#6d6356', '#a9a293'],
+  soft:   ['#b3a892', '#5b6272'],
+  card:   ['#fffdf4', '#202837'],
+  accent: ['#e07a5f', '#4f7cff'],
+  hot:    ['#d95f43', '#ff8a6e'],
+  teal:   ['#1d7f6e', '#5cc2ae'],
+  purple: ['#8a4f83', '#c58bd0'],
+  blue:   ['#245e91', '#7fb0ff'],
+  olive:  ['#7b6a21', '#d2bd5a'],
+  root:   ['#fff1ac', '#4b4261'],
+  r1:     ['#d8f3eb', '#224a45'],
+  r2:     ['#dceafd', '#223d61'],
+  leaf:   ['#e8efb7', '#3f4b2c'],
+  branch: ['#ffd9c7', '#4a3442'],
+  quote:  ['#efd8f2', '#403454'],
+  note:   ['#fff6c9', '#26324a'],
+  map:    ['#dff1ff', '#1f3048'],
+  tape:   ['#ffdb75', '#4f7cff'],
+  shadow: ['#211d18', '#000000'],
+  dark:   ['#12201b', '#0b1411'],
+  green:  ['#5cf2a0', '#5cf2a0'],
+};
+const hexToArr = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16), 255];
+const PALA = {};
+for (const k in PAL) PALA[k] = [hexToArr(PAL[k][0]), hexToArr(PAL[k][1])];
+function mixPalette(n) {
+  for (const k in PALA) {
+    const a = PALA[k][0], b = PALA[k][1];
+    K[k] = [a[0] + (b[0] - a[0]) * n, a[1] + (b[1] - a[1]) * n, a[2] + (b[2] - a[2]) * n, 255];
+  }
+}
+mixPalette(0);
+
+// ── math
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const seg = (t, a, b) => clamp01((t - a) / (b - a));
+const eio = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+const eout = (p) => 1 - Math.pow(1 - p, 3);
+const bk = (p) => { if (p <= 0) return 0; if (p >= 1) return 1; const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2); };
+const R = (i, k = 0) => { const s = Math.sin(i * 127.1 + k * 311.7 + 0.5) * 43758.5453; return s - Math.floor(s); };
+const lerpN = (a, b, p) => a + (b - a) * p;
+const mixC = (a, b, p) => [lerpN(a[0], b[0], p), lerpN(a[1], b[1], p), lerpN(a[2], b[2], p), lerpN(a[3] ?? 255, b[3] ?? 255, p)];
+const fmtInt = (n) => Math.round(n).toLocaleString('en-US');
+
+// ── paint helpers (colors are [r,g,b,a] arrays, GA is a group alpha)
+function F(c, a = 1) { fill(c[0], c[1], c[2], (c[3] ?? 255) * a * GA); }
+function S(c, a = 1, w) { stroke(c[0], c[1], c[2], (c[3] ?? 255) * a * GA); if (w !== undefined) strokeWeight(w); }
+function withA(a, fn) { if (a <= 0.003) return; const prev = GA; GA *= a; fn(); GA = prev; }
+function vf(size) { textFont('Virgil'); textSize(size); textStyle(NORMAL); }
+function mf(size) { textFont('Share Tech Mono'); textSize(size); textStyle(NORMAL); }
+function txt(str, x, y, size, col, opts = {}) {
+  if (!str) return;
+  (opts.mono ? mf : vf)(size);
+  noStroke(); F(col, opts.a ?? 1);
+  textAlign(opts.align ?? LEFT, opts.valign ?? BASELINE);
+  if (opts.w) text(str, x, y, opts.w, opts.h ?? 2000); else text(str, x, y);
+}
+const typed = (str, p) => str.slice(0, Math.floor(str.length * clamp01(p) + 0.0001));
+
+// hand-drawn wobble: re-rolls 8 times a second, like boiling ink
+function jit(seed, amp = 1.5) { return (noise(seed * 7.13, BOIL * 1.37) - 0.5) * 2 * amp; }
+
+function roughLine(x1, y1, x2, y2, col, w = 2.5, seed = 0, a = 1) {
+  noFill();
+  for (let k = 0; k < 2; k++) {
+    const s = seed + k * 31;
+    S(col, a * (k ? 0.55 : 1), k ? w * 0.55 : w);
+    beginShape();
+    vertex(x1 + jit(s + 3, 1.4), y1 + jit(s + 4, 1.4));
+    quadraticVertex((x1 + x2) / 2 + jit(s + 1, 2.2), (y1 + y2) / 2 + jit(s + 2, 2.2), x2 + jit(s + 5, 1.4), y2 + jit(s + 6, 1.4));
+    endShape();
+  }
+}
+
+function blobPath(x, y, w, h, r, seed, a) {
+  const j = (k) => jit(seed + k * 1.7, a);
+  r = Math.min(r, w / 2, h / 2);
+  const r1 = r * (0.8 + 0.4 * R(seed, 1)), r2 = r * (0.8 + 0.4 * R(seed, 2));
+  const r3 = r * (0.8 + 0.4 * R(seed, 3)), r4 = r * (0.8 + 0.4 * R(seed, 4));
+  beginShape();
+  vertex(x + r1 + j(1), y + j(2));
+  vertex(x + w - r2 + j(3), y + j(4));
+  quadraticVertex(x + w + j(5), y + j(6), x + w + j(7), y + r2 + j(8));
+  vertex(x + w + j(9), y + h - r3 + j(10));
+  quadraticVertex(x + w + j(11), y + h + j(12), x + w - r3 + j(13), y + h + j(14));
+  vertex(x + r4 + j(15), y + h + j(16));
+  quadraticVertex(x + j(17), y + h + j(18), x + j(19), y + h - r4 + j(20));
+  vertex(x + j(21), y + r1 + j(22));
+  quadraticVertex(x + j(23), y + j(24), x + r1 + j(1), y + j(2));
+  endShape(CLOSE);
+}
+
+// sketchy card: offset flat shadow, fill, ink outline (the app's wobbly-border look)
+function blobRect(x, y, w, h, col, opts = {}) {
+  const seed = opts.seed ?? 0, r = opts.r ?? 16, a = opts.a ?? 1;
+  if (opts.shadow !== false) { noStroke(); F(K.shadow, 0.10 * a); blobPath(x + 8, y + 10, w, h, r, seed + 50, 0.8); }
+  if (col) F(col, a); else noFill();
+  if (opts.stroke === false) noStroke(); else S(opts.strokeCol ?? K.ink, a, opts.sw ?? 2.4);
+  blobPath(x, y, w, h, r, seed, opts.wob ?? 1.6);
+  if (opts.hl) { noFill(); S(K.accent, a * opts.hl, 5); blobPath(x - 7, y - 7, w + 14, h + 14, r + 6, seed + 9, 2); }
+}
+
+function bezPt(b, t) { return [bezierPoint(b[0], b[2], b[4], b[6], t), bezierPoint(b[1], b[3], b[5], b[7], t)]; }
+function bezLen(b) { let L = 0, p = bezPt(b, 0); for (let i = 1; i <= 24; i++) { const q = bezPt(b, i / 24); L += Math.hypot(q[0] - p[0], q[1] - p[1]); p = q; } return L; }
+
+// the doodle line from the landing page: fat round dots on a curve
+function dotCurve(b, prog, col, r = 3.6, gap = 15, a = 1) {
+  if (prog <= 0) return;
+  const L = bezLen(b), n = Math.floor((L * clamp01(prog)) / gap);
+  noStroke(); F(col, a);
+  for (let i = 0; i <= n; i++) {
+    const p = bezPt(b, (i * gap) / L);
+    circle(p[0] + jit(i * 3.1, 0.6), p[1] + jit(i * 5.3, 0.6), r * 2);
+  }
+}
+
+// partial rough curve with an arrowhead
+function arrowTo(x1, y1, x2, y2, prog, col, opts = {}) {
+  if (prog <= 0) return;
+  const bend = opts.bend ?? 0.18, seed = opts.seed ?? 0, w = opts.w ?? 3;
+  const dx = x2 - x1, dy = y2 - y1;
+  const b = [x1, y1, x1 + dx / 3 - dy * bend, y1 + dy / 3 + dx * bend, x1 + (2 * dx) / 3 - dy * bend, y1 + (2 * dy) / 3 + dx * bend, x2, y2];
+  const p = clamp01(prog), steps = 26;
+  noFill(); S(col, opts.a ?? 1, w);
+  beginShape();
+  for (let i = 0; i <= steps * p; i++) { const q = bezPt(b, i / steps); vertex(q[0] + jit(seed + i, 0.9), q[1] + jit(seed + i + 40, 0.9)); }
+  endShape();
+  if (p > 0.92) {
+    const e = bezPt(b, 1), d = bezPt(b, 0.9), ang = Math.atan2(e[1] - d[1], e[0] - d[0]), s = 18 * seg(p, 0.92, 1);
+    beginShape(); vertex(e[0] - Math.cos(ang - 0.45) * s, e[1] - Math.sin(ang - 0.45) * s); vertex(e[0], e[1]); vertex(e[0] - Math.cos(ang + 0.45) * s, e[1] - Math.sin(ang + 0.45) * s); endShape();
+  }
+}
+
+function tapeAt(x, y, w, h, rot, a = 1) {
+  if (a <= 0) return;
+  push(); translate(x, y); rotate(rot);
+  noStroke(); F(K.tape, 0.55 * a); rectMode(CENTER); rect(0, 0, w, h);
+  S(K.ink, 0.12 * a, 1); noFill(); rect(0, 0, w, h);
+  rectMode(CORNER); pop();
+}
+
+// swoosh underline
+function uline(x, y, w, prog, col, seed = 0, sw = 4) {
+  if (prog <= 0) return;
+  noFill(); S(col, 1, sw);
+  beginShape();
+  const n = 20;
+  for (let i = 0; i <= n * clamp01(prog); i++) { const u = i / n; vertex(x + u * w, y + Math.sin(u * Math.PI) * 6 - u * 4 + jit(seed + i, 0.8)); }
+  endShape();
+}
+
+function scribbleCircle(cx, cy, rw, rh, prog, col, seed = 0, sw = 3.5) {
+  if (prog <= 0) return;
+  noFill(); S(col, 1, sw);
+  beginShape();
+  const turns = 1.15, n = 48;
+  for (let i = 0; i <= n * clamp01(prog); i++) {
+    const u = (i / n) * turns * Math.PI * 2 - 2.2;
+    const wob = 1 + 0.05 * Math.sin(u * 3 + seed) + (i / n) * 0.06;
+    vertex(cx + Math.cos(u) * rw * wob + jit(seed + i, 0.8), cy + Math.sin(u) * rh * wob + jit(seed + i + 9, 0.8));
+  }
+  endShape();
+}
+
+// fake handwriting: a few scribbled lines
+function scribbleLines(x, y, w, lines, gap, col, prog = 1, seed = 0, a = 1) {
+  noFill();
+  for (let l = 0; l < lines; l++) {
+    const lw = w * (l === lines - 1 ? 0.55 + 0.3 * R(seed, l) : 0.82 + 0.18 * R(seed, l));
+    const p = clamp01(prog * lines - l);
+    if (p <= 0) break;
+    S(col, a, 3);
+    beginShape();
+    const n = Math.max(2, Math.floor(lw / 14));
+    for (let i = 0; i <= n * p; i++) vertex(x + (i / n) * lw, y + l * gap + Math.sin(i * 1.7 + seed + l) * 2.2 + jit(seed + l * 20 + i, 0.6));
+    endShape();
+  }
+}
+
+function chipAt(x, y, label, col, opts = {}) {
+  const size = opts.size ?? 26;
+  (opts.mono ? mf : vf)(size);
+  const w = textWidth(label) + size * 1.3, h = size * 1.75;
+  const a = opts.a ?? 1;
+  withA(a, () => {
+    blobRect(x, y, w, h, col, { r: h / 2, seed: opts.seed ?? 3, sw: 2, dashed: opts.dashed, shadow: opts.shadow });
+    txt(label, x + w / 2, y + h / 2 + size * 0.33, size, opts.textCol ?? K.ink, { align: CENTER, mono: opts.mono });
+    Hot.add(label, x, y, w, h, col === K.root || col === K.accent ? 'on' : undefined);
+  });
+  return w;
+}
+
+function cloudAt(cx, cy, rw, rh, col, seed = 0, a = 1) {
+  withA(a, () => {
+    F(col); S(K.ink, 1, 2.6);
+    beginShape();
+    const n = 80;
+    for (let i = 0; i < n; i++) {
+      const u = (i / n) * Math.PI * 2;
+      const bump = 0.86 + 0.2 * Math.abs(Math.sin(u * 3.5 + seed));
+      let y = cy + Math.sin(u) * rh * bump;
+      y = Math.min(y, cy + rh * 0.62);
+      vertex(cx + Math.cos(u) * rw * bump + jit(seed + i, 0.7), y + jit(seed + i + 90, 0.7));
+    }
+    endShape(CLOSE);
+  });
+}
+
+// scene heading: mono kicker, big hand title with swoosh, typed subtitle
+function heading(t, kicker, title, sub, opts = {}) {
+  const x = opts.x ?? 120, y = opts.y ?? 150, w = opts.w ?? 760;
+  const a1 = seg(t, -0.5, 0.2), a2 = eout(seg(t, -0.3, 0.6)), a3 = seg(t, 0.4, 1.8);
+  withA(a1, () => txt(kicker, x, y - 70, 24, K.accent, { mono: true }));
+  if (a2 > 0) {
+    push(); translate(x, y + (1 - a2) * 30);
+    withA(a2, () => txt(title, 0, 0, opts.size ?? 82, K.ink));
+    vf(opts.size ?? 82);
+    if (a2 > 0.5) Hot.heading(title, sub, 0, -(opts.size ?? 82) * 0.8, textWidth(title), opts.size ?? 82);
+    uline(0, 26, Math.min(textWidth(title), w), seg(t, 0.2, 1.1), K.accent, 7);
+    pop();
+  }
+  if (sub) txt(typed(sub, a3), x, y + 56, opts.subSize ?? 30, K.muted, { w, valign: TOP });
+}
+
+// ── scene registry & timeline
+function scene(def) { scenes.push(def); }
+
+function layoutScenes() {
+  let t = 0, idx = 0;
+  for (const s of scenes) {
+    s.flight = (idx === 0 || s.world) ? 0 : FLIGHT;
+    s.start = t;
+    t += s.flight + s.dur;
+    if (!s.world) {
+      const row = Math.floor(idx / COLS), col = idx % COLS;
+      s.col = row % 2 === 0 ? col : COLS - 1 - col;
+      s.row = row;
+      s.ox = s.col * GAPX; s.oy = row * GAPY;
+    }
+    idx++;
+  }
+  TOTAL = t;
+}
+
+function localT(s) { return T - s.start - s.flight; }
+function sceneIndexAt(tt) { let i = 0; for (let k = 0; k < scenes.length; k++) if (tt >= scenes[k].start) i = k; return i; }
+
+function sceneCam(s, t) {
+  if (s.world) return s.cam(t);
+  const c = s.cam ? s.cam(t) : { x: W / 2, y: H / 2, z: 1 + 0.035 * clamp01(t / s.dur) };
+  return { x: s.ox + c.x, y: s.oy + c.y, z: c.z };
+}
+
+function camAt(tt) {
+  const i = sceneIndexAt(tt), s = scenes[i], lt = tt - s.start - s.flight;
+  const b = sceneCam(s, Math.max(0, lt));
+  if (lt < 0 && i > 0) {
+    const pa = scenes[i - 1], a = sceneCam(pa, pa.dur);
+    const p = eio(clamp01((tt - s.start) / s.flight));
+    return { x: lerpN(a.x, b.x, p), y: lerpN(a.y, b.y, p), z: lerpN(a.z, b.z, p) * (1 - 0.45 * Math.sin(Math.PI * p)) };
+  }
+  return b;
+}
+
+// exit/entry points of each scene for the connecting thread
+function threadCurve(a, b) {
+  let p1, p2, c1, c2;
+  if (a.row === b.row) {
+    const dir = b.ox > a.ox ? 1 : -1;
+    p1 = [a.ox + (dir > 0 ? W + 40 : -40), a.oy + H * 0.62];
+    p2 = [b.ox + (dir > 0 ? -40 : W + 40), b.oy + H * 0.38];
+    c1 = [p1[0] + dir * 260, p1[1] + 180]; c2 = [p2[0] - dir * 260, p2[1] - 180];
+  } else {
+    p1 = [a.ox + W * 0.5, a.oy + H + 40];
+    p2 = [b.ox + W * 0.5, b.oy - 40];
+    c1 = [p1[0] + 320, p1[1] + 220]; c2 = [p2[0] - 320, p2[1] - 220];
+  }
+  return [p1[0], p1[1], c1[0], c1[1], c2[0], c2[1], p2[0], p2[1]];
+}
+const THREAD_COLS = ['accent', 'teal', 'purple', 'blue', 'hot', 'olive'];
+
+function drawThreadPath(cam) {
+  const zf = Math.max(1, 0.5 / cam.z);
+  const list = scenes.filter((s) => !s.world);
+  for (let i = 0; i < list.length - 1; i++) {
+    const a = list[i], b = list[i + 1];
+    const p = clamp01((T - b.start) / (b.flight * 0.8));
+    if (p <= 0) continue;
+    dotCurve(threadCurve(a, b), eio(p), K[THREAD_COLS[i % THREAD_COLS.length]], 5.5 * zf, 22 * zf, 0.8);
+  }
+}
+
+function drawGrid(cam) {
+  const hw = W / 2 / cam.z, hh = H / 2 / cam.z;
+  const x0 = cam.x - hw, x1 = cam.x + hw, y0 = cam.y - hh, y1 = cam.y + hh;
+  const step = cam.z < 0.3 ? 180 : 36;
+  strokeWeight(1 / cam.z);
+  S(K.grid, cam.z < 0.3 ? 0.6 : 1);
+  for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) line(x, y0, x, y1);
+  for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) line(x0, y, x1, y);
+}
+
+function visible(s, cam) {
+  const hw = W / 2 / cam.z, hh = H / 2 / cam.z;
+  return s.ox < cam.x + hw && s.ox + W > cam.x - hw && s.oy < cam.y + hh && s.oy + H > cam.y - hh;
+}
+
+// far-away scenes become index cards with their chapter name
+function drawLOD(s, i) {
+  const seen = T >= s.start;
+  withA(seen ? 1 : 0.25, () => {
+    blobRect(40, 40, W - 80, H - 80, K.card, { r: 40, seed: i * 11, sw: 6, wob: 3 });
+    txt(s.kicker, W / 2, H / 2 - 150, 80, K.accent, { align: CENTER, mono: true });
+    txt(s.chapter, W / 2, H / 2 + 90, 190, K.ink, { align: CENTER });
+    tapeAt(W * 0.2, 44, 360, 90, -0.08); tapeAt(W * 0.8, H - 44, 360, 90, 0.06);
+  });
+}
+
+function vignette() {
+  const g = drawingContext.createRadialGradient(W / 2, H / 2, H * 0.32, W / 2, H / 2, H * 1.0);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, NIGHT > 0.5 ? 'rgba(0,0,0,0.45)' : 'rgba(70,45,15,0.16)');
+  drawingContext.fillStyle = g;
+  drawingContext.fillRect(0, 0, W, H);
+}
+
+// scenes may declare nightUp / nightDown: [from, to] in their own local time
+function nightAt(tt) {
+  let up = 0, down = 0;
+  for (const s of scenes) {
+    const base = s.start + s.flight;
+    if (s.nightUp) up = Math.max(up, seg(tt, base + s.nightUp[0], base + s.nightUp[1]));
+    if (s.nightDown) down = Math.max(down, seg(tt, base + s.nightDown[0], base + s.nightDown[1]));
+  }
+  return eio(up) * (1 - eio(down));
+}
+
+const gauss = (i, k) => (R(i, k) + R(i, k + 1) + R(i, k + 2) - 1.5) / 1.5;
+
+// keyed values: keys are [time, ...values, glide?]; each key glides in over `glide` seconds ending at its time
+function keyed(t, keys, n, glide = 0.6) {
+  const v = keys[0].slice(1, 1 + n);
+  for (let i = 1; i < keys.length; i++) {
+    const k = keys[i], g = k[1 + n] ?? glide;
+    const p = eio(seg(t, k[0] - g, k[0]));
+    if (p <= 0) break;
+    for (let j = 0; j < n; j++) v[j] = lerpN(v[j], k[1 + j], p);
+  }
+  return v;
+}
+
+// a drawn mouse pointer: keys are [time, x, y, click?, glide?]
+function arrowShape(ox, oy) {
+  beginShape(); vertex(ox, oy); vertex(ox, oy + 44); vertex(ox + 11, oy + 34); vertex(ox + 20, oy + 52);
+  vertex(ox + 28, oy + 48); vertex(ox + 19, oy + 31); vertex(ox + 33, oy + 31); endShape(CLOSE);
+}
+function drawCursor(t, keys, a = 1) {
+  if (a <= 0.003) return;
+  Hot.cursor(t, keys);
+  let x = keys[0][1], y = keys[0][2];
+  for (let i = 1; i < keys.length; i++) {
+    const [t1, x1, y1, , g] = keys[i];
+    const p = eio(seg(t, t1 - (g ?? Math.min(0.55, t1 - keys[i - 1][0])), t1));
+    if (p <= 0) break;
+    x = lerpN(x, x1, p); y = lerpN(y, y1, p);
+  }
+  let press = 1;
+  for (const k of keys) {
+    if (!k[3]) continue;
+    const d = t - k[0];
+    if (d >= 0 && d < 0.5) { noFill(); S(K.accent, a * (1 - d / 0.5), 3); circle(k[1], k[2], 18 + d * 110); }
+    if (d >= -0.05 && d < 0.14) press = 0.86;
+    if (k[3] === 'hold' && d >= 0) { const nx = keys[keys.indexOf(k) + 1]; if (nx && t < nx[0]) press = 0.86; }
+  }
+  withA(a, () => {
+    push(); translate(x, y); scale(press);
+    noStroke(); F(K.shadow, 0.2); arrowShape(5, 6);
+    F(K.card); S(K.ink, 1, 2.6); arrowShape(0, 0);
+    pop();
+  });
+}
+// ── shared UI pieces used by several scenes
+function doodleNode(n, s, t) {
+  const p = bk(seg(t, n.at, n.at + 0.55));
+  if (p <= 0) return;
+  vf(28);
+  const w = textWidth(n.label) + 46, h = 56;
+  push(); translate(n.x, n.y); rotate(n.rot); scale(p);
+  blobRect(-w / 2, -h / 2, w, h, K[n.c], { r: 26, seed: s * 7 });
+  txt(n.label, 0, 10, 28, K.ink, { align: CENTER });
+  Hot.add(n.label, -w / 2, -h / 2, w, h);
+  pop();
+}
+function sketchButton(x, y, label, primary, press = 0, a = 1) {
+  vf(28);
+  const w = textWidth(label) + 52, h = 60;
+  push(); translate(x + w / 2, y + h / 2); scale(1 - 0.06 * Math.sin(Math.PI * press));
+  withA(a, () => {
+    blobRect(-w / 2, -h / 2, w, h, primary ? K.ink : K.note, { r: 22, seed: label.length * 3 });
+    txt(label, 0, 10, 28, primary ? K.card : K.ink, { align: CENTER });
+    Hot.add(label, -w / 2, -h / 2, w, h, press > 0 && press < 1 ? 'press' : undefined);
+  });
+  pop();
+  return w;
+}
+function chipRowLayout(x, y, labels, size = 22, gap = 10, alignRight = false) {
+  vf(size);
+  const ws = labels.map((l) => textWidth(l) + size * 1.3), h = size * 1.75;
+  let cx = alignRight ? x - ws.reduce((a, b) => a + b, 0) - gap * (labels.length - 1) : x;
+  return labels.map((label, i) => { const r = { label, x: cx, y, w: ws[i], h, cx: cx + ws[i] / 2, cy: y + h / 2 }; cx += ws[i] + gap; return r; });
+}
+function drawChipRow(rects, isActive, size = 22, a = 1, isDim) {
+  rects.forEach((r, i) => chipAt(r.x, r.y, r.label, isActive(r.label, i) ? K.root : K.card, { size, seed: 900 + i * 7 + r.label.length, shadow: false, a: a * (isDim && isDim(r.label, i) ? 0.45 : 1) }));
+}
+function drawPhoto(kind, x, y, w, h, seed) {
+  if (w < 6 || h < 6) return;
+  push();
+  drawingContext.beginPath(); drawingContext.rect(x, y, w, h); drawingContext.clip();
+  noStroke();
+  const cx = x + w / 2, cy = y + h / 2, s = Math.min(w, h);
+  if (kind.startsWith('tomato')) {
+    F(K.leaf); rect(x, y, w, h);
+    F(K.teal, 0.45); for (let k = 0; k < 6; k++) ellipse(x + R(seed, k) * w, y + R(seed, k + 9) * h, s * 0.5, s * 0.2);
+    const n = kind === 'tomato2' ? 3 : 1;
+    for (let k = 0; k < n; k++) {
+      const tx = n === 1 ? cx : x + w * (0.25 + k * 0.25), ty = cy + (n === 1 ? 0 : (k % 2 ? -1 : 1) * s * 0.12), r = s * (n === 1 ? 0.62 : 0.36);
+      F(K.hot); ellipse(tx, ty, r, r * 0.88);
+      F(K.card, 0.5); ellipse(tx - r * 0.18, ty - r * 0.16, r * 0.22, r * 0.13);
+      F(K.teal); for (let q = 0; q < 5; q++) { const a = q * 1.2566 - 1.57; ellipse(tx + Math.cos(a) * r * 0.12, ty - r * 0.4 + Math.sin(a) * r * 0.07, r * 0.2, r * 0.08); }
+    }
+  } else if (kind.startsWith('garden')) {
+    F(K.map); rect(x, y, w, h);
+    F(K.root); circle(x + w * 0.75, y + h * 0.28, s * 0.28);
+    ['olive', 'teal', 'leaf'].forEach((c, b) => {
+      F(K[c], 0.95); beginShape(); vertex(x, y + h);
+      for (let i = 0; i <= 20; i++) { const u = i / 20; vertex(x + u * w, y + h * (0.55 + b * 0.14) + Math.sin(u * 6 + b * 2 + seed) * h * 0.05); }
+      vertex(x + w, y + h); endShape(CLOSE);
+    });
+    S(K.teal, 1, 3); for (let k = 0; k < 7; k++) { const px = x + w * (0.1 + k * 0.13), py = y + h * 0.95; line(px, py, px, py - h * 0.1); }
+    noStroke();
+  } else if (kind === 'night') {
+    F([31, 48, 72, 255]); rect(x, y, w, h);
+    F([242, 234, 220, 255]); for (let k = 0; k < 26; k++) circle(x + R(seed, k) * w, y + R(seed, k + 30) * h * 0.6, 2 + R(seed, k + 60) * 3);
+    circle(x + w * 0.8, y + h * 0.22, s * 0.16);
+    noFill(); S([242, 234, 220, 255], 1, 4);
+    const wy = y + h * 0.72, r = s * 0.18;
+    circle(cx - r * 1.3, wy, r * 2); circle(cx + r * 1.3, wy, r * 2);
+    line(cx - r * 1.3, wy, cx, wy - r * 0.9); line(cx, wy - r * 0.9, cx + r * 1.3, wy); line(cx - r * 0.4, wy - r * 0.9, cx + r * 0.7, wy - r * 0.9);
+    noStroke();
+  } else if (kind === 'soup') {
+    F(K.branch); rect(x, y, w, h);
+    F(K.card); arc(cx, cy + s * 0.05, s * 0.7, s * 0.6, 0, Math.PI);
+    F(K.hot); ellipse(cx, cy + s * 0.05, s * 0.7, s * 0.14);
+    noFill(); S(K.muted, 0.7, 3);
+    for (let k = 0; k < 3; k++) { const px = cx - s * 0.15 + k * s * 0.15; beginShape(); for (let i = 0; i <= 10; i++) vertex(px + Math.sin(i * 0.9 + k) * 6, cy - s * 0.08 - i * s * 0.03); endShape(); }
+    noStroke();
+  } else {
+    F([24, 26, 32, 255]); rect(x, y, w, h);
+    F(K.card); for (let k = 0; k < Math.floor(w / 26); k++) { rect(x + 8 + k * 26, y + 6, 12, 9, 2); rect(x + 8 + k * 26, y + h - 15, 12, 9, 2); }
+    F(K.card, 0.95); triangle(cx - s * 0.12, cy - s * 0.16, cx - s * 0.12, cy + s * 0.16, cx + s * 0.17, cy);
+  }
+  pop();
+}
+function fitText(str, maxW) {
+  if (textWidth(str) <= maxW) return str;
+  let s = str;
+  while (s.length > 2 && textWidth(s + '…') > maxW) s = s.slice(0, -1);
+  return s.trimEnd() + '…';
+}
+// raw canvas bezier (fast for thousands of connectors); col is [r,g,b,a]
+function rawCurve(x1, y1, c1x, c1y, c2x, c2y, x2, y2, col, a, lw) {
+  const ctx = drawingContext;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.bezierCurveTo(c1x, c1y, c2x, c2y, x2, y2);
+  ctx.strokeStyle = 'rgba(' + (col[0] | 0) + ',' + (col[1] | 0) + ',' + (col[2] | 0) + ',' + Math.max(0, Math.min(1, a * GA)) + ')';
+  ctx.lineWidth = lw; ctx.stroke();
+}
+
+// a keyboard keycap that pops when pressed at time `at`
+function keycap(x, y, label, t, at) {
+  const d = t - at;
+  if (d < -0.05 || d > 0.9) return;
+  const a = seg(d, -0.05, 0.05) * (1 - seg(d, 0.6, 0.9)), s = 1 - 0.12 * Math.sin(Math.PI * seg(d, 0, 0.18));
+  withA(a, () => {
+    vf(34); const w = Math.max(64, textWidth(label) + 36);
+    push(); translate(x, y); scale(s);
+    blobRect(-w / 2, -32, w, 64, K.card, { r: 12, seed: label.length * 5 + 3, sw: 2.6 });
+    txt(label, 0, 12, 34, K.ink, { align: CENTER });
+    pop();
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// Parallel Board film — shared board pieces
+// ════════════════════════════════════════════════════════════
+const PB_W = 300, PB_H = 150, PB_LANE = 340, PB_ROW = 180;
+const HANDLES = ['moss.garden', 'kite.blue', 'orbital.dev', 'tomato.club', 'fern.dev', 'lighthouse.blue', 'quill.ink', 'river.social', 'pixel.garden', 'static.fm', 'owl.cafe', 'harbor.dev'];
+const QTEXTS = ['this is the one', 'a whole thread about this', 'saving this forever', 'hard disagree, here is why', 'the replies are the best part', 'ok but look at the quote tree', 'adding my two cents', 'this deserves its own lane'];
+const PCOLS = ['root', 'r1', 'r2', 'leaf', 'branch', 'quote'];
+const LINE_COLS = ['accent', 'teal', 'purple', 'blue', 'hot', 'olive'];
+const VP0 = { x: 100, y: 300, w: 1720, h: 740 };
+
+function boardView(v, cam, fn) {
+  push();
+  drawingContext.beginPath(); drawingContext.rect(v.x, v.y, v.w, v.h); drawingContext.clip();
+  translate(v.x + cam.sx, v.y + cam.sy); scale(cam.z); translate(-(cam.bx || 0), -(cam.by || 0));
+  fn();
+  pop();
+}
+const toScreen = (v, cam, bx, by) => [v.x + cam.sx + (bx - (cam.bx || 0)) * cam.z, v.y + cam.sy + (by - (cam.by || 0)) * cam.z];
+
+function viewportFrame(v, a = 1) {
+  withA(a, () => {
+    blobRect(v.x, v.y, v.w, v.h, K.card, { r: 18, seed: 1201, sw: 2.6, wob: 1 });
+    noStroke(); F(K.soft, 0.35);
+    for (let x = v.x + 30; x < v.x + v.w - 10; x += 40) for (let y = v.y + 70; y < v.y + v.h - 10; y += 40) circle(x, y, 3);
+  });
+}
+
+// a post card in board units; returns the button rects so the cursor can aim at them
+function pbCard(x, y, p, o = {}) {
+  const w = o.w ?? PB_W, h = o.h ?? PB_H, rects = [];
+  withA(o.a ?? 1, () => {
+    blobRect(x, y, w, h, K.card, { r: 12, seed: o.seed ?? 7, sw: 2.2, hl: o.hl, shadow: o.shadow });
+    noStroke(); F(K[p.c]); rect(x + 7, y + 8, 10, h - 16, 5);
+    let cx = x + 28;
+    if (p.lane) cx += chipAt(cx, y + 10, p.lane, K[p.c], { size: 14, mono: true, shadow: false, seed: 3 }) + 6;
+    if (p.root) cx += chipAt(cx, y + 10, p.root, K.note, { size: 14, shadow: false, seed: 5 }) + 6;
+    mf(15); txt(fitText('@' + p.h, x + w - cx - 12), cx, y + 30, 15, K.muted, { mono: true });
+    vf(21); txt(fitText(p.txt, w - 44), x + 28, y + 68, 21, K.ink);
+    if (p.stats && h >= 130) { mf(12); txt(fitText(p.stats, w - 44), x + 28, y + 92, 12, K.muted, { mono: true }); }
+    if (p.btns && h >= 130) {
+      let bx = x + 28;
+      p.btns.forEach((b, i) => { const bw = chipAt(bx, y + h - 38, b, i === 0 && o.btnHot ? K.accent : K.note, { size: 14, shadow: false, seed: 11 + i }); rects.push({ label: b, cx: bx + bw / 2, cy: y + h - 38 + 12 }); bx += bw + 6; });
+    }
+  });
+  return rects;
+}
+function pbLite(x, y, c, a, w = PB_W, h = PB_H, lw = 2) {
+  if (a <= 0.01) return;
+  F(K[c], a); S(K.ink, a * 0.5, lw); rect(x, y, w, h, 10);
+  noStroke(); F(K.ink, a * 0.3); rect(x + 16, y + 20, w * 0.45, 12, 6); rect(x + 16, y + 48, w * 0.78, 10, 5); rect(x + 16, y + 70, w * 0.6, 10, 5);
+}
+function shadowShells(x, y, n, spread, a, w = PB_W, h = PB_H) {
+  for (let k = Math.min(3, n); k >= 1; k--) {
+    withA(a * (0.75 - k * 0.12), () => { F(K.card); S(K.ink, 0.5, 1.8); rect(x + 14 * k * spread, y + 10 * k * spread, w, h, 12); });
+  }
+}
+function laneMarker(x, y, label, title, btn, a, w = PB_W) {
+  let rect0 = null;
+  withA(a, () => {
+    blobRect(x, y - 58, w, 44, K.paper, { r: 22, seed: label.length + 91, sw: 2, shadow: false });
+    const lw = chipAt(x + 8, y - 52, label, K.root, { size: 14, mono: true, shadow: false, seed: 93 });
+    vf(16); const bw = textWidth(btn) + 16 * 1.3;
+    txt(fitText(title, w - lw - bw - 34), x + 16 + lw, y - 29, 16, K.ink);
+    chipAt(x + w - bw - 8, y - 52, btn, K.note, { size: 16, shadow: false, seed: 95 });
+    rect0 = { cx: x + w - bw / 2 - 8, cy: y - 38 };
+  });
+  return rect0;
+}
+function branchRail(x, y, steps, a) {
+  const out = [];
+  withA(a, () => {
+    let cx = x;
+    txt('path', cx, y + 24, 16, K.muted, { mono: true }); cx += 52;
+    steps.forEach((s, i) => {
+      if (i) { txt('▸', cx + 4, y + 24, 18, K.soft); cx += 24; }
+      const col = s.state === 'current' ? K.accent : K.card;
+      withA(s.state === 'ahead' ? 0.45 : 1, () => { cx += chipAt(cx, y, s.label, col, { size: 17, shadow: false, seed: 60 + i }) + 4; });
+      if (s.sib) { const w = chipAt(cx, y, '▾' + s.sib, K.note, { size: 17, mono: true, shadow: false, seed: 70 + i }); out.push({ cx: cx + w / 2, cy: y + 15, i }); cx += w + 4; }
+    });
+  });
+  return out;
+}
+function minimapBox(x, y, w, h, nLanes, lens, view0, view1, a) {
+  withA(a, () => {
+    blobRect(x, y, w, h, K.paper, { r: 8, seed: 1301, sw: 2, shadow: false });
+    const total = Math.max(5, nLanes + 1), step = Math.max(1, Math.floor(total / 240));
+    noStroke(); F(K.ink, 0.55);
+    for (let i = 0; i < total; i += step) { const lx = x + 8 + (i / total) * (w - 16), len = lens(i); rect(lx, y + 12, Math.max(1.2, (w - 16) / total * 0.7), Math.min(h - 24, 10 + len * 9)); }
+    noFill(); S(K.accent, 1, 2.4); rect(x + 8 + view0 * (w - 16), y + 6, Math.max(6, (view1 - view0) * (w - 16)), h - 12, 3);
+    txt('minimap', x + w - 8, y + h + 20, 15, K.muted, { mono: true, align: RIGHT });
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// 0 · Prologue
+// ════════════════════════════════════════════════════════════
+const PB_OPEN_NODES = [
+  { label: 'root note', x: 960, y: 215, c: 'root', rot: -0.09, at: 0.8 },
+  { label: 'reply', x: 1110, y: 390, c: 'r1', rot: 0.05, at: 1.3 },
+  { label: 'branch', x: 1560, y: 300, c: 'branch', rot: -0.07, at: 2.0 },
+  { label: 'hmm', x: 1300, y: 600, c: 'r2', rot: -0.035, at: 1.8 },
+  { label: 'leaf', x: 1470, y: 880, c: 'leaf', rot: 0.07, at: 2.4 },
+  { label: 'quote lane', x: 1720, y: 760, c: 'quote', rot: 0.05, at: 2.6 },
+];
+scene({
+  id: 'open', chapter: 'Parallel Board', kicker: 'PROLOGUE', dur: 5.5,
+  cues: [[0.4, 'pluck', 81], [1.9, 'chime', 74], [5.0, 'pluck', 86]],
+  cam: (t) => { const p = eio(seg(t, 0.2, 2.6)); return { x: lerpN(1010, 960, p), y: lerpN(250, 540, p), z: lerpN(2.6, 1, p) + 0.035 * seg(t, 2.6, 5.5) }; },
+  draw(t) {
+    noStroke(); F(K.ink); circle(1010, 250, 12 * bk(seg(t, 0, 0.5)));
+    dotCurve([1010, 250, 1150, 420, 1300, 640, 1500, 900], eio(seg(t, 0.5, 2.6)), K.ink, 4.2, 16, 0.72);
+    dotCurve([1180, 500, 1400, 470, 1600, 300, 1840, 250], eio(seg(t, 1.0, 2.9)), K.teal, 4.2, 16, 0.72);
+    dotCurve([1360, 700, 1560, 660, 1740, 730, 1860, 880], eio(seg(t, 1.3, 3.1)), K.purple, 4.2, 16, 0.72);
+    dotCurve([1140, 420, 1090, 600, 1060, 760, 980, 940], eio(seg(t, 1.2, 3.0)), K.hot, 4.2, 16, 0.72);
+    PB_OPEN_NODES.forEach((n, i) => doodleNode(n, i, t));
+    // mini lanes sketch
+    const ln = bk(seg(t, 2.4, 2.9));
+    if (ln > 0) {
+      push(); translate(1720, 150); rotate(0.045); scale(ln);
+      blobRect(-120, -80, 240, 170, K.note, { r: 14, seed: 41 });
+      txt('lanes', -94, -38, 30, K.ink);
+      for (let c = 0; c < 4; c++) for (let r = 0; r < [3, 2, 3, 1][c]; r++) { noStroke(); F(K[PCOLS[c + 1]]); S(K.ink, 0.6, 1.4); rect(-94 + c * 50, -18 + r * 30, 40, 22, 5); }
+      pop();
+    }
+    const tr = bk(seg(t, 2.6, 3.1));
+    if (tr > 0) {
+      push(); translate(1250, 890); rotate(-0.05); scale(tr);
+      blobRect(-110, -75, 220, 150, K.map, { r: 14, seed: 43 });
+      txt('tree', -86, -34, 30, K.ink);
+      S(K.ink, 0.7, 2); line(0, -10, -50, 30); line(0, -10, 0, 30); line(0, -10, 50, 30); line(50, 30, 30, 55); line(50, 30, 70, 55);
+      noStroke(); [[0, -10], [-50, 30], [0, 30], [50, 30], [30, 55], [70, 55]].forEach(([x, y], k) => { F(K[LINE_COLS[k]]); circle(x, y, 14); });
+      pop();
+    }
+    const cp = eout(seg(t, 1.8, 2.5));
+    if (cp > 0) {
+      push(); translate(510, 560); rotate(-0.012); scale(0.92 + 0.08 * cp); translate(-510, -560);
+      withA(cp, () => {
+        blobRect(110, 270, 800, 590, K.card, { r: 22, seed: 5, sw: 3 });
+        txt('Parallel', 168, 452, 150, K.ink);
+        txt('Board', 168, 596, 150, K.ink);
+      });
+      txt(typed('Every quote post gets its own lane, every reply fans out into a tree, and fetch mode keeps pulling more in.', seg(t, 2.6, 4.2)), 172, 640, 30, K.muted, { w: 690, valign: TOP });
+      const bp = seg(t, 4.2, 4.5);
+      if (bp > 0) { const w1 = sketchButton(172, 770, 'open lanes', true, seg(t, 4.9, 5.2), bp); sketchButton(172 + w1 + 16, 770, 'fetch mode', false, 0, bp); }
+      pop();
+      tapeAt(200, 280, 150, 42, -0.12, seg(t, 2.3, 2.5));
+      tapeAt(830, 858, 150, 42, 0.1, seg(t, 2.5, 2.7));
+    }
+    const ab = eout(seg(t, 3.2, 3.6));
+    if (ab > 0) withA(ab, () => {
+      blobRect(110, 120, 600, 70, K.card, { r: 35, seed: 61 });
+      noFill(); S(K.ink, 1, 2.4); rect(146, 146, 20, 16, 3); arc(156, 146, 14, 18, Math.PI, 0);
+      txt(typed('threadviewer.app/parallelboard', seg(t, 3.4, 4.3)), 190, 167, 30, K.ink, { mono: true });
+    });
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 1 · The board — main lane, stacked replies, marker, rail, minimap
+// ════════════════════════════════════════════════════════════
+const MAIN = [
+  { h: 'you.bsky.social', txt: 'ok so here is a long thought', c: 'root', lane: 'Main', root: 'Root', stats: '212 replies · 1,640 quotes', btns: ['Full thread', 'Pick quote'] },
+  { h: 'kite.blue', txt: 'wait, which part?', c: 'r2', lane: 'Main', stats: '38 replies · 12 quotes', btns: ['Fan 5'] },
+  { h: 'you.bsky.social', txt: 'the part about quote posts', c: 'r1', lane: 'Main', stats: '17 replies · 3 quotes', btns: ['Fan 2'] },
+  { h: 'moss.garden', txt: 'this should be a board', c: 'leaf', lane: 'Main', stats: '9 replies · 41 quotes', btns: ['Fan 4', 'Pick quote'] },
+];
+const MAIN_SIBS = [0, 4, 1, 3];
+const BOARD_Q = [
+  { lane: 1, row: 0, src: 0, len: 3 }, { lane: 2, row: 3, src: 3, len: 2 }, { lane: 3, row: 0, src: 0, len: 4 },
+];
+const qPost = (k, r) => ({ h: HANDLES[(k * 3 + r) % HANDLES.length], txt: QTEXTS[(k + r * 2) % QTEXTS.length], c: PCOLS[(k + r + 1) % 6], lane: 'Q' + (k + 1) });
+const BOARD_CAM = { sx: 150, sy: 120, z: 0.85 };
+
+function drawMainLane(t, o = {}) {
+  MAIN.forEach((p, r) => {
+    const ap = eout(seg(t, (o.t0 ?? 0.2) + r * 0.22, (o.t0 ?? 0.2) + 0.4 + r * 0.22));
+    if (ap <= 0) return;
+    if (MAIN_SIBS[r]) shadowShells(0, r * PB_ROW, MAIN_SIBS[r], o.spread ?? 1, ap * (o.a ?? 1));
+    pbCard(0, r * PB_ROW + (1 - ap) * 30, p, { a: ap * (o.a ?? 1), seed: 40 + r, hl: o.active === r ? 1 : 0 });
+  });
+}
+
+scene({
+  id: 'board', chapter: 'The board', kicker: '01 · THE BOARD', dur: 8,
+  cues: [[0.3, 'pluck', 78], [2.4, 'pluck', 81], [4.2, 'pluck', 83], [5.4, 'chime', 74]],
+  draw(t) {
+    heading(t, '01 · THE BOARD', 'One conversation, laid out in lanes', 'The main lane follows one chain of replies. The other replies stack behind it, and quote posts get lanes of their own.', { w: 1200, size: 76, subSize: 28 });
+    const va = eout(seg(t, -0.2, 0.3));
+    if (va <= 0) return;
+    viewportFrame(VP0, va);
+    const cam = BOARD_CAM, spread = eout(seg(t, 1.8, 2.4));
+    const active = t >= 4.2 ? 2 : -1;
+    boardView(VP0, cam, () => {
+      // quote lanes + their connectors
+      BOARD_Q.forEach((q, i) => {
+        const ap = eout(seg(t, 2.4 + i * 0.3, 2.9 + i * 0.3));
+        if (ap <= 0) return;
+        const tx = q.lane * PB_LANE, ty = q.row * PB_ROW + 70, sxp = PB_W, syp = q.src * PB_ROW + 70, d = tx - sxp;
+        const cp = seg(t, 2.4 + i * 0.3, 3.0 + i * 0.3);
+        dotCurve([sxp, syp, sxp + d * 0.4, syp - d * 0.25, tx - d * 0.3, ty - d * 0.25, tx, ty], cp, K[LINE_COLS[i]], 3.2, 12, 0.8);
+        for (let r = 0; r < q.len; r++) pbCard(tx, (q.row + r) * PB_ROW, qPost(i, r), { a: ap * (r ? 0.95 : 1), seed: 200 + i * 7 + r, h: r ? 130 : PB_H });
+        laneMarker(tx, q.row * PB_ROW, 'Q' + (i + 1), 'Quotes of @you.bsky.social', 'Tree', ap);
+      });
+      drawMainLane(t, { spread, active });
+      laneMarker(0, 0, 'Main', 'ok so here is a long thought', 'Tree', eout(seg(t, 1.3, 1.7)));
+    });
+    // branch rail + minimap
+    const steps = [{ label: '@you' }, { label: '@kite.blue', sib: 5 }, { label: '@you', sib: 2 }, { label: '@moss.garden', sib: 4 }]
+      .map((s, i) => Object.assign(s, { state: active < 0 ? (i === 3 ? 'current' : 'past') : i === active ? 'current' : i > active ? 'ahead' : 'past' }));
+    branchRail(VP0.x + 24, VP0.y + 14, steps, eout(seg(t, 3.0, 3.4)));
+    withA(seg(t, 3.2, 3.6), () => txt('← the branch rail: where you are in the conversation', VP0.x + 830, VP0.y + 38, 20, K.accent));
+    minimapBox(VP0.x + VP0.w - 290, VP0.y + VP0.h - 160, 260, 120, 3, (i) => [4, 3, 2, 4][i] || 2, 0, 1, eout(seg(t, 3.4, 3.8)));
+    withA(seg(t, 5.0, 5.4), () => txt('replies at the same depth stack behind the active card', toScreen(VP0, cam, 0, 0)[0] - 20, VP0.y + VP0.h - 20, 20, K.accent));
+    const [cx, cy] = toScreen(VP0, cam, PB_W / 2, 2 * PB_ROW + 70);
+    drawCursor(t, [[0, 1500, 1000], [4.2, cx, cy, 1], [7.4, 1500, 1010]], seg(t, 0.4, 0.8));
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 2 · Quotes — Pick quote → Load all → Create all quote lanes → 1,640 lanes
+// ════════════════════════════════════════════════════════════
+const Q_N = 1640;
+const QL = [];
+for (let k = 0; k < Q_N; k++) {
+  const r = R(k, 31);
+  let srcLane = -1, row = 0;
+  if (k < 3 || r < 0.7) row = 0;
+  else if (r < 0.9) row = 1 + Math.floor(R(k, 32) * 3);
+  else { srcLane = Math.floor(R(k, 33) * k); row = QL[srcLane].row; }
+  QL.push({ srcLane, row, len: 1 + Math.floor(Math.pow(R(k, 34), 2) * 6) + (R(k, 35) < 0.04 ? 9 : 0), c: PCOLS[k % 6], spawn: 6.2 + 12 * Math.pow(k / Q_N, 1 / 2.4) });
+}
+const qCount = (t) => (t < 6.2 ? 0 : Math.min(Q_N, Q_N * Math.pow((t - 6.2) / 12, 2.4)));
+
+scene({
+  id: 'quotes', chapter: 'Quote lanes', kicker: '02 · QUOTES', dur: 21,
+  cues: [[1.2, 'pluck', 78], [2.4, 'pluck', 81], [5.2, 'boom'], [5.3, 'chime', 74], [9.5, 'pluck', 86], [13.0, 'pluck', 88], [18.4, 'chime', 81]],
+  draw(t) {
+    const vpP = eio(seg(t, 8.6, 9.6));
+    const V = { x: lerpN(VP0.x, 0, vpP), y: lerpN(VP0.y, 0, vpP), w: lerpN(VP0.w, W, vpP), h: lerpN(VP0.h, H, vpP) };
+    withA(1 - seg(t, 8.3, 8.9), () => heading(t, '02 · QUOTES', 'Every quote post becomes a lane', 'Pick quote, Load all quote posts, Create all quote lanes. They stream in beside the post they quote.', { w: 1200, size: 76, subSize: 28 }));
+    const kf = qCount(t), kn = Math.ceil(kf);
+    const sx = lerpN(BOARD_CAM.sx, 70, vpP);
+    const z = Math.min(BOARD_CAM.z, (0.86 * V.w - sx) / ((kf + 1.6) * PB_LANE));
+    const sy = lerpN(BOARD_CAM.sy, V.h * 0.72, eio(seg(t, 7.0, 11.0)));
+    const cam = { sx, sy, z };
+    viewportFrame(V, eout(seg(t, -0.2, 0.3)));
+
+    const fullA = seg(z, 0.26, 0.34), liteA = seg(z, 0.035, 0.05) * (1 - fullA), lineA = 1 - seg(z, 0.035, 0.05);
+    const viewL = -sx / z - PB_LANE, viewR = (V.w - sx) / z + PB_LANE;
+    const k0 = Math.max(0, Math.floor(viewL / PB_LANE) - 1), k1 = Math.min(kn, Math.ceil(viewR / PB_LANE) + 1);
+    
+    boardView(V, cam, () => {
+      // connectors: one fan of curves from the quoted posts to every quote lane
+      const lw = Math.max(1.2, 2.2 / z) * (z < 0.3 ? 1 : 1);
+      for (let k = 0; k < kn; k++) {
+        const q = QL[k], ap = seg(t, q.spawn, q.spawn + 0.35);
+        const tx = (k + 1) * PB_LANE, ty = q.row * PB_ROW + 70;
+        const sxp = q.srcLane < 0 ? PB_W : (q.srcLane + 1) * PB_LANE + PB_W, syp = q.row * PB_ROW + 70, d = tx - sxp;
+        rawCurve(sxp, syp, sxp + d * 0.35, syp - d * 0.22, tx - d * 0.25, ty - d * 0.22, tx, ty, K[LINE_COLS[k % 6]], ap * (z > 0.2 ? 0.55 : 0.2), lw);
+      }
+      // lanes
+      if (lineA > 0) {
+        // far away: every lane is one stroke, batched per colour
+        const ctx = drawingContext;
+        for (let c = 0; c < 6; c++) {
+          const col = K[PCOLS[c]];
+          ctx.beginPath();
+          for (let k = c; k < kn; k += 6) { const q = QL[k], x = (k + 1) * PB_LANE + PB_W / 2; ctx.moveTo(x, q.row * PB_ROW); ctx.lineTo(x, (q.row + q.len) * PB_ROW - 30); }
+          ctx.strokeStyle = 'rgba(' + (col[0] | 0) + ',' + (col[1] | 0) + ',' + (col[2] | 0) + ',' + lineA * GA + ')';
+          ctx.lineWidth = Math.max(PB_W, 1.6 / z); ctx.stroke();
+        }
+      }
+      for (let k = k0; k < k1; k++) {
+        const q = QL[k], ap = eout(seg(t, q.spawn, q.spawn + 0.4)), x = (k + 1) * PB_LANE;
+        if (ap <= 0) continue;
+        for (let r = 0; r < q.len; r++) {
+          const y = (q.row + r) * PB_ROW + (1 - ap) * 40;
+          if (liteA > 0) pbLite(x, y, PCOLS[(k + r + 1) % 6], liteA * ap, PB_W, PB_H, 2 / z);
+          if (fullA > 0) pbCard(x, y, qPost(k, r), { a: fullA * ap, seed: 300 + (k % 40) * 5 + r, h: r ? 130 : PB_H });
+        }
+        if (fullA > 0) laneMarker(x, q.row * PB_ROW, 'Q' + (k + 1), 'Quotes of @you.bsky.social', 'Tree', fullA * ap);
+      }
+      // main lane
+      if (lineA > 0) { noStroke(); F(K.root, lineA); rect(0, 0, PB_W, 4 * PB_ROW - 30); }
+      MAIN.forEach((p, r) => {
+        if (MAIN_SIBS[r]) shadowShells(0, r * PB_ROW, MAIN_SIBS[r], 1, fullA);
+        if (liteA > 0) pbLite(0, r * PB_ROW, p.c, liteA, PB_W, PB_H, 2 / z);
+        if (fullA > 0) pbCard(0, r * PB_ROW, p, { a: fullA, seed: 40 + r, hl: r === 0 && t < 6.4 ? seg(t, 1.0, 1.3) : 0 });
+      });
+      if (fullA > 0) laneMarker(0, 0, 'Main', 'ok so here is a long thought', 'Tree', fullA);
+
+      // quote picker hanging off the root card
+      const po = eout(seg(t, 1.25, 1.7)) * (1 - eio(seg(t, 5.6, 6.2)));
+      if (po > 0) {
+        const px = 330, py = 0, pw = 480, ph = 540 * po;
+        push();
+        withA(po, () => {
+          blobRect(px, py, pw, ph, K.paper, { r: 14, seed: 1401, sw: 2.4 });
+          drawingContext.beginPath(); drawingContext.rect(px, py, pw, ph); drawingContext.clip();
+          txt('Quote posts', px + 20, py + 36, 24, K.ink);
+          const loaded = t < 2.4 ? 12 : Math.round(12 + (Q_N - 12) * eio(seg(t, 2.5, 4.6)));
+          txt(loaded < Q_N ? fmtInt(loaded) + ' of ' + fmtInt(Q_N) + ' loaded' : fmtInt(Q_N) + ' posts', px + pw - 20, py + 36, 16, K.muted, { mono: true, align: RIGHT });
+          push();
+          drawingContext.beginPath(); drawingContext.rect(px, py + 52, pw, 352); drawingContext.clip();
+          const scroll = t < 2.5 ? 0 : (t - 2.5) * 260 * (1 - seg(t, 4.4, 4.7) * 0.8);
+          const first = Math.floor(scroll / 58);
+          for (let j = 0; j < 8; j++) {
+            const i = first + j, y = py + 56 + j * 58 - (scroll % 58);
+            noStroke(); F(K[LINE_COLS[i % 6]]); circle(px + 36, y + 26, 30);
+            txt('@' + HANDLES[i % HANDLES.length], px + 60, y + 18, 14, K.muted, { mono: true });
+            txt(QTEXTS[i % QTEXTS.length], px + 60, y + 42, 19, K.ink);
+            S(K.soft, 0.5, 1); line(px + 16, y + 56, px + pw - 16, y + 56);
+          }
+          pop();
+          const b1 = t < 2.4 ? 'Load all quote posts' : t < 4.6 ? 'Loading all...' : null;
+          if (b1) chipAt(px + 20, py + 420, b1, K.note, { size: 18, seed: 1402, shadow: false });
+          const b2 = t < 5.2 ? 'Create all quote lanes' : 'Creating lanes...';
+          chipAt(px + 20, py + 474, b2, t >= 5.2 ? K.accent : K.root, { size: 18, seed: 1403, shadow: false });
+        });
+        pop();
+      }
+    });
+
+    // lane queue panel (screen space)
+    const qa = eout(seg(t, 5.6, 6.1)) * (1 - seg(t, 18.2, 18.8));
+    const created = Math.floor(kf), found = Math.min(Q_N, Math.round(Q_N * Math.pow(seg(t, 5.6, 14.5), 1.2)));
+    if (qa > 0) withA(qa, () => {
+      const px = V.x + V.w - 500, py = V.y + 22;
+      blobRect(px, py, 470, 196, K.card, { r: 14, seed: 1501, sw: 2.4 });
+      txt('Quotes of @you.bsky.social', px + 20, py + 38, 24, K.ink);
+      chipAt(px + 390, py + 14, 'Stop', K.note, { size: 16, shadow: false, seed: 1502 });
+      noStroke(); F(K.soft, 0.4); rect(px + 20, py + 56, 430, 12, 6); F(K.accent); rect(px + 20, py + 56, 430 * created / Q_N, 12, 6);
+      txt('discovery · ' + fmtInt(found) + ' found · page ' + Math.max(1, Math.ceil(found / 100)), px + 20, py + 96, 17, K.muted, { mono: true });
+      txt(fmtInt(created) + ' / ' + fmtInt(Q_N) + ' lanes · ' + Math.min(150, found - created) + ' threads outstanding', px + 20, py + 124, 17, K.ink, { mono: true });
+      if (created > 0) {
+        txt('Q' + created + '  @' + HANDLES[created % HANDLES.length] + '  ready', px + 20, py + 154, 16, K.teal, { mono: true });
+        txt('Q' + Math.min(Q_N, created + 1) + '  @' + HANDLES[(created + 1) % HANDLES.length] + '  loading', px + 20, py + 178, 16, K.muted, { mono: true });
+      }
+    });
+    // minimap
+    const lensFn = (i) => (i === 0 ? 4 : (QL[i - 1] || { len: 1 }).len);
+    const total = (kn + 1) * PB_LANE;
+    minimapBox(V.x + V.w - 290, V.y + V.h - 160, 260, 120, kn, lensFn, clamp01(viewL / total), clamp01(viewR / total), eout(seg(t, 6.2, 6.7)));
+    // counters + captions
+    withA(seg(t, 9.4, 10.0), () => {
+      txt(fmtInt(created) + ' quote lanes', 60, V.h - 96, 72, K.ink);
+      txt('each one a whole conversation, placed beside the post it quotes', 64, V.h - 50, 22, K.muted, { mono: true });
+    });
+    withA(seg(z, 0.12, 0.16) * (1 - seg(z, 0.3, 0.36)), () => txt('below 35% zoom, cards turn into lightweight previews', V.x + 40, V.y + 40, 20, K.accent, { mono: true }));
+    withA(eout(seg(t, 18.4, 19.2)), () => {
+      txt('1,640 quote posts. 1,640 lanes. One board.', W / 2, 110, 60, K.ink, { align: CENTER });
+      vf(60); const tw = textWidth('1,640 quote posts. 1,640 lanes. One board.');
+      uline(W / 2 - tw / 2, 132, tw, seg(t, 18.8, 19.8), K.accent, 5, 6);
+    });
+
+    vf(14); const fw = textWidth('Full thread') + 14 * 1.3, pw = textWidth('Pick quote') + 14 * 1.3;
+    const pqS = toScreen(VP0, BOARD_CAM, 28 + fw + 6 + pw / 2, PB_H - 26);
+    vf(18); const ld = toScreen(VP0, BOARD_CAM, 350 + (textWidth('Load all quote posts') + 23.4) / 2, 436);
+    const cr = toScreen(VP0, BOARD_CAM, 350 + (textWidth('Create all quote lanes') + 23.4) / 2, 490);
+    drawCursor(t, [[0, 1500, 1000], [1.2, pqS[0], pqS[1], 1], [2.4, ld[0], ld[1], 1], [5.2, cr[0], cr[1], 1], [6.6, 1650, 1040]], seg(t, 0.3, 0.7) * (1 - seg(t, 6.0, 6.6)));
+  },
+});
+
+// rail layout without drawing (same widths as branchRail) so the cursor can aim at a ▾ chip
+function railChipPos(x, y, steps, idx) {
+  let cx = x + 52;
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (i) cx += 24;
+    vf(17); cx += textWidth(s.label) + 17 * 1.3 + 4;
+    if (s.sib) { mf(17); const w = textWidth('▾' + s.sib) + 17 * 1.3; if (i === idx) return [cx + w / 2, y + 15]; cx += w + 4; }
+  }
+  return [x, y];
+}
+const railState = (steps, cur) => steps.map((s, i) => Object.assign({}, s, { state: i === cur ? 'current' : i > cur ? 'ahead' : 'past' }));
+
+// ════════════════════════════════════════════════════════════
+// 3 · Reply fan — one level of replies spread across the board
+// ════════════════════════════════════════════════════════════
+const FAN_L1 = [
+  { h: 'fern.dev', txt: 'lanes, but for replies', c: 'r1' }, { h: 'kite.blue', txt: 'wait, which part?', c: 'r2' },
+  { h: 'quill.ink', txt: 'how deep does it go?', c: 'leaf' }, { h: 'orbital.dev', txt: 'ok this is fun', c: 'branch' },
+  { h: 'river.social', txt: 'saving this thread', c: 'quote' },
+];
+const FAN_L2 = [
+  { h: 'you.bsky.social', txt: 'all the way down', c: 'root' }, { h: 'pixel.garden', txt: 'branches all the way', c: 'r2' },
+  { h: 'static.fm', txt: 'carousel energy', c: 'leaf' }, { h: 'owl.cafe', txt: 'a tree in a card', c: 'r1' },
+];
+const fanKids = (lvl, i) => (lvl === 1 && i === 2 ? FAN_L2.slice(0, 3)
+  : [0, 1, 2].map((j) => ({ h: HANDLES[(lvl * 5 + i * 3 + j) % 12], txt: QTEXTS[(lvl * 3 + i + j * 2) % 8], c: PCOLS[(i + j + lvl) % 6] })));
+const CHAIN_AFTER = [MAIN[0], Object.assign({ lane: 'Main', stats: '26 replies · 4 quotes', btns: ['Fan 5'] }, FAN_L1[2]),
+  Object.assign({ lane: 'Main', stats: '11 replies · 2 quotes', btns: ['Fan 4'] }, FAN_L2[2]), { h: 'harbor.dev', txt: 'the rail is great', c: 'r2', lane: 'Main', stats: '3 replies', btns: [] }];
+
+function fanStrip(items, f, a, yoff, label) {
+  if (a <= 0.01) return;
+  withA(a, () => {
+    blobRect(120, 470 + yoff, 1680, 270, K.paper, { r: 18, seed: 1601, sw: 2.4 });
+    txt(label, 146, 506 + yoff, 19, K.muted, { mono: true });
+    txt('×', 1770, 508 + yoff, 30, K.muted, { align: CENTER });
+    push();
+    drawingContext.beginPath(); drawingContext.rect(124, 474 + yoff, 1672, 262); drawingContext.clip();
+    items.forEach((p, i) => {
+      const d = i - f, foc = Math.max(0, 1 - Math.abs(d)), x = 960 + d * 340;
+      push(); translate(x, 612 + yoff); scale(0.9 + 0.12 * foc);
+      pbCard(-150, -85, p, { h: 170, a: 0.55 + 0.45 * foc, hl: foc > 0.5 ? foc : 0, seed: 1610 + i });
+      pop();
+    });
+    pop();
+  });
+}
+function fanUnder(items, a, yoff) {
+  if (a <= 0.01) return;
+  withA(a, () => {
+    txt('its replies', 146, 780 + yoff, 16, K.muted, { mono: true });
+    items.forEach((p, j) => pbCard(960 + (j - (items.length - 1) / 2) * 280 - 125, 792 + yoff, p, { w: 250, h: 108, seed: 1650 + j }));
+  });
+}
+
+scene({
+  id: 'fan', chapter: 'Reply fan', kicker: '03 · FAN', dur: 13,
+  cues: [[1.0, 'pluck', 76], [1.3, 'chime', 74], [2.6, 'pluck', 78], [3.4, 'pluck', 81], [4.1, 'pluck', 78], [5.0, 'pluck', 71], [6.4, 'pluck', 83], [7.1, 'pluck', 86], [8.0, 'chime', 76], [9.6, 'pluck', 81], [10.8, 'pluck', 83], [11.8, 'pluck', 74]],
+  draw(t) {
+    heading(t, '03 · FAN', 'Fan out the replies', 'Double-click a card and one level of replies spreads across the board. Arrow keys browse and go deeper; Enter follows that branch.', { w: 1200, size: 76, subSize: 28 });
+    const va = eout(seg(t, -0.2, 0.3));
+    if (va <= 0) return;
+    viewportFrame(VP0, va);
+    const open1 = eout(seg(t, 1.3, 1.9)) * (1 - eio(seg(t, 8.0, 8.5)));
+    const open2 = eout(seg(t, 9.9, 10.4)) * (1 - eio(seg(t, 11.8, 12.3)));
+    const fanA = Math.max(open1, open2);
+    const f1 = keyed(t, [[0, 1], [2.6, 2], [3.4, 3], [4.1, 2]], 1, 0.35)[0];
+    const f2 = t < 9 ? keyed(t, [[0, 0], [6.4, 1], [7.1, 2]], 1, 0.35)[0] : keyed(t, [[9, 2], [10.8, 3]], 1, 0.35)[0];
+    const lv = t < 9 ? eio(seg(t, 5.0, 5.6)) : 1;
+    const swap = eio(seg(t, 8.1, 8.8));
+
+    // the lane underneath (dimmed while the fan is open); rows 1-3 swap after Enter
+    boardView(VP0, BOARD_CAM, () => {
+      withA(1 - 0.7 * fanA, () => {
+        [0, 1, 2, 3].forEach((r) => {
+          const ap = eout(seg(t, 0.1 + r * 0.15, 0.5 + r * 0.15));
+          if (ap <= 0) return;
+          const sib = r ? [0, 4, 1, 3][r] : 0;
+          if (r === 0 || swap < 1) { if (sib) shadowShells(0, r * PB_ROW, sib, 1, ap * (r ? 1 - swap : 1)); pbCard(-(r ? swap : 0) * 360, r * PB_ROW, MAIN[r], { a: ap * (r ? 1 - swap : 1), seed: 40 + r }); }
+          if (r > 0 && swap > 0) { shadowShells(0, r * PB_ROW, [0, 4, 3, 0][r], 1, swap); pbCard((1 - swap) * 360, r * PB_ROW, CHAIN_AFTER[r], { a: swap, seed: 60 + r, hl: r === 2 ? swap * (1 - seg(t, 9.4, 9.9)) : 0 }); }
+        });
+        laneMarker(0, 0, 'Main', 'ok so here is a long thought', 'Tree', ap0(t));
+      });
+    });
+    function ap0(tt) { return eout(seg(tt, 0.4, 0.8)); }
+
+    // the fan itself
+    const itemsL1 = FAN_L1, itemsL2 = FAN_L2;
+    if (t < 9) {
+      fanStrip(itemsL1, f1, fanA * (1 - lv), -40 * lv, 'Replies to @you.bsky.social · 5');
+      const r1 = Math.round(f1), cf = 1 - 2 * Math.abs(f1 - r1);
+      fanUnder(fanKids(1, r1), fanA * (1 - lv) * cf, 0);
+      fanStrip(itemsL2, f2, fanA * lv, (1 - lv) * 270, 'Replies to @quill.ink · 4');
+      const r2 = Math.round(f2), cf2 = 1 - 2 * Math.abs(f2 - r2);
+      fanUnder(fanKids(2, r2), fanA * lv * cf2 * seg(lv, 0.6, 1), 0);
+    } else {
+      fanStrip(itemsL2, f2, fanA, 0, 'Replies to @quill.ink · 4');
+      const r2 = Math.round(f2), cf2 = 1 - 2 * Math.abs(f2 - r2);
+      fanUnder(fanKids(2, r2), fanA * cf2, 0);
+    }
+    withA(fanA, () => txt('← →  browse     ↓ ↑  change level     Enter  make it the active chain     Esc  close', 146, 1012, 18, K.muted, { mono: true }));
+
+    // branch rail follows the preview while the fan is open
+    let steps, cur;
+    const base = [{ label: '@you' }, { label: '@kite.blue', sib: 5 }, { label: '@you', sib: 2 }, { label: '@moss.garden', sib: 4 }];
+    const after = [{ label: '@you' }, { label: '@quill.ink', sib: 5 }, { label: '@static.fm', sib: 4 }, { label: '@harbor.dev' }];
+    if (t < 8.0 && open1 > 0.5) {
+      steps = [{ label: '@you' }, { label: '@' + FAN_L1[Math.round(f1)].h, sib: 5 }];
+      if (lv > 0.5) steps.push({ label: '@' + FAN_L2[Math.round(f2)].h, sib: 4 });
+      cur = steps.length - 1;
+    } else if (t >= 9.9 && open2 > 0.5) { steps = [{ label: '@you' }, { label: '@quill.ink', sib: 5 }, { label: '@' + FAN_L2[Math.round(f2)].h, sib: 4 }]; cur = 2; }
+    else { steps = t < 8.3 ? base : after; cur = 3; }
+    branchRail(VP0.x + 24, VP0.y + 14, railState(steps, cur), eout(seg(t, 0.4, 0.8)));
+
+    [[2.6, '→'], [3.4, '→'], [4.1, '←'], [5.0, '↓'], [6.4, '→'], [7.1, '→'], [8.0, 'Enter'], [10.8, '→'], [11.8, 'Esc']].forEach(([at, l]) => keycap(1700, 960, l, t, at));
+    const [cx, cy] = toScreen(VP0, BOARD_CAM, 150, PB_ROW + 60);
+    const chip = railChipPos(VP0.x + 24, VP0.y + 14, after, 2);
+    drawCursor(t, [[0, 1500, 1000], [1.0, cx, cy, 1], [1.15, cx, cy, 1], [2.0, 1560, 1020], [9.6, chip[0], chip[1], 1], [10.4, 1560, 1020]], seg(t, 0.3, 0.7) * (1 - seg(t, 1.9, 2.2) + seg(t, 8.9, 9.2)) * (1 - seg(t, 10.4, 10.8)));
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 4 · Tree — the lane marker's Tree button unfolds every branch
+// ════════════════════════════════════════════════════════════
+const TREE = [
+  [-1, 'you.bsky.social', 'ok so here is a long thought', 'root'], [0, 'kite.blue', 'wait, which part?', 'r2'],
+  [0, 'fern.dev', 'garden lanes when?', 'r1'], [0, 'quill.ink', 'how deep does it go?', 'leaf'],
+  [1, 'you.bsky.social', 'the part about quote posts', 'r1'], [1, 'moss.garden', 'my garden thread did this', 'leaf'],
+  [2, 'orbital.dev', 'ok this is fun', 'branch'], [3, 'static.fm', 'carousel energy', 'leaf'],
+  [3, 'owl.cafe', 'a tree in a card', 'r1'], [3, 'pixel.garden', 'branches all the way', 'r2'],
+  [4, 'moss.garden', 'this should be a board', 'leaf'], [6, 'river.social', 'saving this thread', 'quote'],
+  [6, 'harbor.dev', 'the rail is great', 'r2'], [8, 'lighthouse.blue', 'garden of forking paths', 'branch'],
+  [11, 'kite.blue', 'still going', 'r2'], [13, 'you.bsky.social', 'yes', 'r1'],
+  [0, 'tomato.club', 'late to this garden party', 'branch', 1], [16, 'fern.dev', 'welcome!', 'r1', 1],
+  [16, 'kite.blue', 'hi hi', 'r2', 1], [5, 'you.bsky.social', 'show me', 'r1', 1], [1, 'static.fm', 'which part indeed', 'leaf', 1],
+].map(([p, h, txt, c, extra], i) => ({ i, p, h, txt, c, extra: !!extra, lane: 'Main' }));
+TREE.forEach((n) => { n.depth = n.p < 0 ? 0 : TREE[n.p].depth + 1; });
+const T_CHAIN = [0, 1, 4, 10];
+const TREE_MATCHES = [2, 5, 13, 16];
+const TW = 230, TH = 112, TSLOT = 250, TROW = 170;
+
+function treeLayout(withExtras) {
+  const kids = (i) => TREE.filter((n) => n.p === i && (withExtras || !n.extra)).map((n) => n.i);
+  const pos = {}; let slot = 0;
+  (function walk(i) {
+    const k = kids(i);
+    k.forEach(walk);
+    const x = k.length ? (pos[k[0]].x + pos[k[k.length - 1]].x) / 2 : slot++ * TSLOT;
+    pos[i] = { x, y: TREE[i].depth * TROW, w: i === 0 ? 260 : TW, h: i === 0 ? 140 : TH, a: 1, sh: 0 };
+  })(0);
+  return { pos, width: slot * TSLOT };
+}
+function collapsedLayout(withExtras) {
+  const pos = {};
+  T_CHAIN.forEach((i, r) => { pos[i] = { x: 0, y: r * PB_ROW, w: PB_W, h: PB_H, a: 1, sh: 0 }; });
+  T_CHAIN.forEach((ci, r) => {
+    if (r === 0) return;
+    TREE.filter((n) => n.p === TREE[ci].p && n.i !== ci && (withExtras || !n.extra)).forEach((n, k) => {
+      pos[n.i] = { x: 14 * (k + 1), y: r * PB_ROW + 10 * (k + 1), w: PB_W, h: PB_H, a: 0.6, sh: 1 };
+    });
+  });
+  TREE.forEach((n) => { if (!pos[n.i]) { let a = n.p; while (!pos[a]) a = TREE[a].p; pos[n.i] = Object.assign({}, pos[a], { a: 0, sh: 1 }); } });
+  return pos;
+}
+const TL_A = collapsedLayout(false), TL_B = treeLayout(false), TL_C = treeLayout(true), TL_D = collapsedLayout(true);
+const lerpBox = (a, b, p) => ({ x: lerpN(a.x, b.x, p), y: lerpN(a.y, b.y, p), w: lerpN(a.w, b.w, p), h: lerpN(a.h, b.h, p), a: lerpN(a.a, b.a, p), sh: lerpN(a.sh, b.sh, p) });
+
+scene({
+  id: 'tree', chapter: 'Tree view', kicker: '04 · TREE', dur: 12,
+  cues: [[1.2, 'pluck', 78], [1.4, 'chime', 74], [3.4, 'pluck', 81], [4.3, 'chime', 76], [6.1, 'pluck', 83], [7.0, 'pluck', 86], [7.8, 'pluck', 83], [8.6, 'pluck', 86], [9.4, 'pluck', 74]],
+  draw(t) {
+    heading(t, '04 · TREE', 'Or see every reply as a tree', 'The lane marker\'s Tree button unfolds the stacked replies into a tree. Full thread loads the side branches too. Fold puts it back.', { w: 1200, size: 76, subSize: 28 });
+    const va = eout(seg(t, -0.2, 0.3));
+    if (va <= 0) return;
+    viewportFrame(VP0, va);
+    const grow = eio(seg(t, 4.2, 5.0));
+    const treeAmt = eio(seg(t, 1.3, 2.2)) * (1 - eio(seg(t, 9.4, 10.3)));
+    const z = lerpN(lerpN(lerpN(0.85, 0.62, eio(seg(t, 1.3, 2.3))), 0.5, grow), 0.85, eio(seg(t, 9.4, 10.4)));
+    const cam = { sx: 150, sy: 110, z };
+    const P = TREE.map((n) => {
+      const d = n.depth;
+      const e1 = eio(clamp01((t - 1.3 - d * 0.1) / 0.9)), e3 = eio(clamp01((t - 9.4 - (4 - d) * 0.08) / 0.9));
+      let p;
+      if (!n.extra) { p = lerpBox(TL_A[n.i], TL_B.pos[n.i], e1); p = lerpBox(p, TL_C.pos[n.i], grow); }
+      else {
+        const par = n.p, from = Object.assign({}, TL_B.pos[TL_B.pos[par] ? par : 0], { a: 0 });
+        p = lerpBox(from, TL_C.pos[n.i], eout(seg(t, 4.5, 5.1)));
+      }
+      return lerpBox(p, TL_D[n.i], e3);
+    });
+    const treeRight = lerpN(TL_B.width, TL_C.width, grow) + 120;
+    const matchIdx = t < 7.8 ? 0 : t < 8.6 ? 1 : 2;
+    const searchA = eout(seg(t, 5.8, 6.2)) * (1 - seg(t, 9.0, 9.4));
+    const btnLabel = t >= 3.5 && t < 4.2 ? 'Loading thread...' : 'Full thread';
+
+    boardView(VP0, cam, () => {
+      // neighbouring quote lanes slide aside and mute while the tree is open
+      [1, 2, 3].forEach((q, i) => {
+        const x = lerpN(q * PB_LANE, treeRight + i * PB_LANE, treeAmt), a = (1 - 0.7 * treeAmt) * eout(seg(t, 0.2 + i * 0.1, 0.6 + i * 0.1));
+        for (let r = 0; r < [3, 2, 4][i]; r++) pbCard(x, r * PB_ROW, qPost(i, r), { a, seed: 200 + i * 7 + r, h: r ? 130 : PB_H });
+        laneMarker(x, 0, 'Q' + q, 'Quotes of @you.bsky.social', 'Tree', a);
+      });
+      // tree connectors
+      if (treeAmt > 0) TREE.forEach((n, i) => {
+        if (n.p < 0) return;
+        const a = P[n.p], b = P[i], al = treeAmt * Math.min(a.a, b.a);
+        if (al <= 0.02) return;
+        const x1 = a.x + a.w / 2, y1 = a.y + a.h, x2 = b.x + b.w / 2, y2 = b.y, my = (y1 + y2) / 2;
+        rawCurve(x1, y1, x1, my, x2, my, x2, y2, TREE_MATCHES.includes(i) && searchA > 0 ? K.accent : K.ink, al * 0.7, 2.4);
+      });
+      // cards: shells behind first, then full cards
+      [1, 0].forEach((pass) => TREE.forEach((n, i) => {
+        const p = P[i];
+        if (p.a <= 0.02 || (p.sh > 0.5) !== (pass === 1)) return;
+        if (pass === 1) { withA(p.a, () => { F(K.card); S(K.ink, 0.5, 1.8); rect(p.x, p.y, p.w, p.h, 12); }); return; }
+        const isMatch = searchA > 0 && TREE_MATCHES.includes(i), isCur = isMatch && TREE_MATCHES[matchIdx] === i;
+        const post = Object.assign({}, n, i === 0 ? { root: 'Root', stats: '212 replies · 1,640 quotes', btns: [btnLabel, 'Pick quote'] } : {});
+        push(); translate(p.x + p.w / 2, p.y + p.h / 2); scale(isCur ? 1 + 0.06 * searchA : 1);
+        pbCard(-p.w / 2, -p.h / 2, post, { w: p.w, h: p.h, a: p.a, seed: 500 + i, hl: isMatch ? (isCur ? 1 : 0.45) * searchA : 0 });
+        pop();
+      }));
+      laneMarker(0, 0, 'Main', 'ok so here is a long thought', t >= 1.3 && t < 9.5 ? 'Fold' : 'Tree', eout(seg(t, 0.3, 0.7)));
+    });
+
+    // lane search panel
+    if (searchA > 0) withA(searchA, () => {
+      const px = 1390, py = 810;
+      blobRect(px, py, 410, 210, K.card, { r: 14, seed: 1701, sw: 2.4 });
+      txt('Lane search', px + 20, py + 38, 24, K.ink);
+      const rows = chipRowLayout(px + 190, py + 14, ['Author', 'Text'], 17, 6);
+      drawChipRow(rows, (l) => l === 'Text', 17);
+      blobRect(px + 20, py + 60, 370, 46, K.paper, { r: 10, seed: 1702, sw: 2, shadow: false });
+      txt(typed('garden', seg(t, 6.3, 6.9)), px + 36, py + 92, 24, K.ink, { mono: true });
+      if (t > 7.0) txt('Found 4 text matches (' + (matchIdx + 1) + '/4) — lane Main.', px + 20, py + 140, 15, K.ink, { mono: true, w: 370, valign: TOP });
+    });
+    [[7.8, 'Enter'], [8.6, 'Enter']].forEach(([at, l]) => keycap(1290, 990, l, t, at));
+
+    // cursor targets computed from the same layout math
+    vf(16);
+    const treeBtn = (zz, label) => toScreen(VP0, { sx: 150, sy: 110, z: zz }, PB_W - (textWidth(label) + 20.8) / 2 - 8, -38);
+    const tb = treeBtn(0.85, 'Tree'), fb = treeBtn(0.5, 'Fold');
+    vf(14); const rootB = TL_B.pos[0];
+    const ft = toScreen(VP0, { sx: 150, sy: 110, z: 0.62 }, rootB.x + 28 + (textWidth('Full thread') + 18.2) / 2, rootB.y + rootB.h - 26);
+    drawCursor(t, [[0, 1500, 1000], [1.2, tb[0], tb[1], 1], [3.4, ft[0], ft[1], 1], [6.1, 1600, 893, 1], [7.0, 1560, 1020], [9.4, fb[0], fb[1], 1], [11.0, 1560, 1020]], seg(t, 0.3, 0.7));
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 5 · Fetch mode — the command center, generation after generation
+// ════════════════════════════════════════════════════════════
+const pl = (t, pts) => { if (t <= pts[0][0]) return pts[0][1]; for (let i = 1; i < pts.length; i++) if (t <= pts[i][0]) return lerpN(pts[i - 1][1], pts[i][1], (t - pts[i - 1][0]) / (pts[i][0] - pts[i - 1][0])); return pts[pts.length - 1][1]; };
+const FM_OPENED = [[3.8, 0], [8.5, 2310], [11.0, 3780], [12.2, 3780], [13.2, 4120], [15.3, 5000]];
+const FM_GENS = [[0, 2310, 'accent'], [2310, 4120, 'teal'], [4120, 5000, 'purple']];
+const FM_LANES = Array.from({ length: 1641 + 5000 }, (_, i) => {
+  const g = i < 1641 ? 0 : 1 + FM_GENS.findIndex(([a, b]) => i - 1641 < b);
+  let src = 0;
+  if (g === 1) src = Math.floor(R(i, 81) * 1641);
+  else if (g > 1) { const [a, b] = FM_GENS[g - 2]; src = 1641 + a + Math.floor(R(i, 81) * (b - a)); }
+  return { g, src, len: 1 + Math.floor(Math.pow(R(i, 82), 2) * 7) };
+});
+const FM_EVENTS = Array.from({ length: 64 }, (_, i) => ({ at: 4.0 + i * 0.18 + (i >= 38 ? 1.2 : 0), kind: i % 9 === 4 ? 'linked' : i % 23 === 11 ? 'failed' : 'opened', h: HANDLES[(i * 5) % 12] }));
+
+function checkbox(x, y, on, label, desc) {
+  F(on > 0.5 ? K.accent : K.paper); S(K.ink, 1, 2); rect(x, y - 18, 22, 22, 5);
+  if (on > 0.5) { noFill(); S(K.card, 1, 3); beginShape(); vertex(x + 5, y - 7); vertex(x + 10, y - 2); vertex(x + 18, y - 13); endShape(); }
+  txt(label, x + 34, y, 22, K.ink);
+  vf(22); txt(desc, x + 46 + textWidth(label), y - 2, 14, K.muted, { mono: true });
+}
+function selectBox(x, y, label, value) {
+  txt(label, x, y + 22, 20, K.ink);
+  blobRect(x + 230, y, 470, 34, K.paper, { r: 8, seed: label.length + 1800, sw: 2, shadow: false });
+  txt(value, x + 246, y + 24, 19, K.ink);
+  txt('▾', x + 686, y + 24, 18, K.muted, { align: RIGHT });
+}
+
+scene({
+  id: 'fetch', chapter: 'Fetch mode', kicker: '05 · FETCH MODE', dur: 16, nightUp: [3.8, 4.8],
+  cues: [[0.4, 'pluck', 78], [1.5, 'pluck', 81], [1.9, 'pluck', 83], [2.4, 'pluck', 81], [2.9, 'pluck', 83], [3.6, 'boom'], [3.7, 'chime', 74], [8.5, 'chime', 76], [11.0, 'pluck', 69], [13.2, 'chime', 79], [15.3, 'chime', 81]],
+  draw(t) {
+    heading(t, '05 · FETCH MODE', 'Let it fetch everything', 'Fetch mode scans the board for quote posts, quoted posts and full threads, generation after generation, inside the rate budget.', { w: 1200, size: 76, subSize: 28 });
+    const ua = eout(seg(t, -0.2, 0.3));
+    if (ua <= 0) return;
+    const running = t >= 3.6, limited = t >= 11.0 && t < 12.2, done = t >= 15.3;
+    const opened = Math.round(pl(t, FM_OPENED));
+    const gen = t < 8.5 ? 1 : t < 13.2 ? 2 : 3;
+    const pillW = chipAt(120, 296, 'Fetch mode', t >= 0.4 ? K.accent : K.note, { size: 20, seed: 1790, a: ua });
+    const pa = eout(seg(t, 0.5, 1.0));
+
+    // command center
+    withA(pa, () => {
+      blobRect(100, 348, 760, 700, K.card, { r: 16, seed: 1801, sw: 2.6 });
+      txt('Fetch mode', 130, 392, 34, K.ink);
+      const head = !running ? 'Ready · 1,652 posts on the board to scan' : done ? 'Stopped after 5,000 new lanes' : limited ? 'Waiting out a rate limit' : 'Scanning · generation ' + gen + ' of 3';
+      txt(head, 130, 422, 17, done ? K.teal : K.muted, { mono: true });
+      if (running && !done) { chipAt(660, 364, 'Pause', K.note, { size: 17, shadow: false, seed: 1802 }); chipAt(745, 364, 'Stop', K.note, { size: 17, shadow: false, seed: 1803 }); }
+      txt('×', 836, 392, 30, K.muted, { align: CENTER });
+      withA(running ? 0.5 : 1, () => {
+        txt('What to fetch', 130, 466, 22, K.muted);
+        checkbox(132, 506, 1, 'Quote posts', 'posts that quote a board post, opened as lanes');
+        checkbox(132, 546, t >= 1.5 ? 1 : 0, 'Quoted posts', 'posts that a board post quotes');
+        checkbox(132, 586, t >= 1.9 ? 1 : 0, 'Full threads', 'whole conversations for partial lanes');
+        selectBox(130, 612, 'Follow new lanes', t >= 2.4 ? '+ 2 generations' : 'Board posts only');
+        selectBox(130, 652, 'Scan in new lanes', 'The quote post');
+        selectBox(130, 692, 'Stop after', t >= 2.9 ? '5,000 new lanes' : '1,000 new lanes');
+      });
+      withA(1 - seg(t, 3.7, 4.1), () => {
+        txt('Plan for the board as it is now', 130, 770, 22, K.ink);
+        const lines = ['1,652 posts to scan', '~6,480 quote posts in 212 pages'];
+        if (t >= 1.5) lines.push('38 quoted posts');
+        if (t >= 1.9) lines.push('94 full threads');
+        lines.forEach((l, i) => txt('•  ' + l, 136, 800 + i * 24, 16, K.ink, { mono: true }));
+        const req = 1652 + (t >= 1.5 ? 38 : 0) + (t >= 1.9 ? 340 : 0);
+        txt('Up to ~' + fmtInt(req) + ' requests' + (t >= 2.4 ? ' before following new lanes' : '') + '. The rate budget (2,500 requests per 5 min) makes that at least ~' + Math.ceil(req / 500) + ' min. Quote posts without replies need no request.', 130, 902, 14, K.muted, { mono: true, w: 700, valign: TOP });
+        sketchButton(130, 976, 'Start fetching', true, seg(t, 3.5, 3.8));
+      });
+      withA(seg(t, 3.9, 4.3), () => {
+        const scanned = Math.round(pl(t, [[3.8, 0], [8.5, 1652], [11, 2900], [12.2, 2900], [13.2, 3960], [15.3, 4700]]));
+        const queued = t < 8.5 ? 1652 : t < 13.2 ? 3962 : 5432;
+        const found = Math.round(pl(t, [[3.8, 0], [8.5, 6480], [11, 9200], [12.2, 9200], [13.2, 10400], [15.3, 11900]]));
+        const expected = t < 8.5 ? 6480 : t < 13.2 ? 10960 : 12800;
+        const ftLoaded = Math.round(pl(t, [[3.8, 0], [9, 94], [13, 160], [15.3, 212]])), ftQueued = t < 9 ? 94 : t < 13 ? 180 : 230;
+        txt('This run', 130, 770, 22, K.ink);
+        noStroke(); F(K.soft, 0.4); rect(130, 784, 700, 12, 6); F(K.accent); rect(130, 784, 700 * Math.min(1, scanned / queued), 12, 6);
+        const stats = [['Posts scanned', fmtInt(scanned) + ' / ' + fmtInt(queued)], ['Quote posts found', fmtInt(found) + ' / ~' + fmtInt(expected)],
+          ['Lanes opened', fmtInt(opened)], ['Linked', fmtInt(Math.round(opened * 0.16))], ['Failed', fmtInt(Math.floor(opened / 700))],
+          ['Generation', String(gen)], ['Full threads', fmtInt(ftLoaded) + ' / ' + fmtInt(ftQueued)]];
+        stats.forEach(([dt, dd], i) => {
+          const x = 130 + (i % 2) * 360, y = 832 + Math.floor(i / 2) * 36;
+          txt(dt, x, y, 18, K.muted); txt(dd, x + 350, y, 19, dt === 'Failed' && dd !== '0' ? K.hot : K.ink, { mono: true, align: RIGHT });
+        });
+        const runningReq = limited || done ? 0 : 9 + Math.round(3 * Math.sin(t * 5));
+        const budget = Math.round(pl(t, [[3.8, 0], [11, 2500], [12.2, 2410], [15.3, 2496]]));
+        txt(runningReq + ' requests running · ' + fmtInt(Math.max(0, Math.round(pl(t, [[3.8, 2114], [8.5, 3390], [13.2, 1720], [15.3, 0]])))) + ' waiting · ' + fmtInt(budget) + ' / 2,500 of the 5-min budget', 130, 990, 15, K.ink, { mono: true });
+        if (limited) txt('Rate limited. Resuming in ' + Math.max(1, Math.ceil((12.2 - t) * 4.2)) + 's.', 130, 1020, 17, K.hot, { mono: true });
+      });
+    });
+
+    // the board, zoomed all the way out: lanes hang from a line, arcs show who quoted whom
+    const bx0 = 930, bx1 = 1790, base = 600;
+    withA(eout(seg(t, 0.2, 0.7)), () => {
+      blobRect(900, 290, 920, 760, K.card, { r: 16, seed: 1901, sw: 2.6 });
+      txt('Board', 930, 336, 26, K.ink);
+      txt(fmtInt(1641 + opened) + ' lanes', 1790, 344, 46, K.ink, { align: RIGHT });
+      let lx = 930;
+      txt('generation', lx, 378, 14, K.muted, { mono: true }); lx += 100;
+      ['ink', 'accent', 'teal', 'purple'].forEach((c, g) => { noStroke(); F(K[c]); circle(lx + 6, 373, 12); txt(String(g), lx + 16, 378, 15, K.ink, { mono: true }); lx += 44; });
+      const N = 1641 + opened, px = (i) => bx0 + (i + 0.5) * ((bx1 - bx0) / Math.max(1641, N));
+      const ctx = drawingContext;
+      ['ink', 'accent', 'teal', 'purple'].forEach((c, g) => {
+        const col = K[c], arcs = g === 0 ? 4 : 3;
+        // arcs
+        ctx.beginPath();
+        for (let i = g === 0 ? 1 : 1641 + FM_GENS[g - 1][0]; i < (g === 0 ? 1641 : Math.min(N, 1641 + FM_GENS[g - 1][1])); i += arcs) {
+          const x1 = px(FM_LANES[i].src), x2 = px(i), hgt = Math.min(200, Math.abs(x2 - x1) * 0.45 + 8);
+          ctx.moveTo(x1, base); ctx.bezierCurveTo(x1, base - hgt, x2, base - hgt, x2, base);
+        }
+        ctx.strokeStyle = 'rgba(' + (col[0] | 0) + ',' + (col[1] | 0) + ',' + (col[2] | 0) + ',' + (g === 0 ? 0.12 : 0.22) * GA + ')';
+        ctx.lineWidth = 1; ctx.stroke();
+        // lanes
+        ctx.beginPath();
+        for (let i = g === 0 ? 0 : 1641 + FM_GENS[g - 1][0]; i < (g === 0 ? 1641 : Math.min(N, 1641 + FM_GENS[g - 1][1])); i++) {
+          const x = px(i); ctx.moveTo(x, base + 4); ctx.lineTo(x, base + 14 + FM_LANES[i].len * 16);
+        }
+        ctx.strokeStyle = 'rgba(' + (col[0] | 0) + ',' + (col[1] | 0) + ',' + (col[2] | 0) + ',' + (g === 0 ? 0.55 : 0.85) * GA + ')';
+        ctx.lineWidth = Math.max(0.6, ((bx1 - bx0) / Math.max(1641, N)) * 0.8); ctx.stroke();
+      });
+      S(K.ink, 0.5, 1.5); line(bx0, base, bx1, base);
+      // recent events
+      txt('Recent', 930, 880, 20, K.ink);
+      const shown = FM_EVENTS.filter((e) => e.at <= t && !(e.at > 11.0 && e.at < 12.2)).slice(-4).reverse();
+      shown.forEach((e, k) => {
+        const g = e.at < 8.5 ? 1 : e.at < 13.2 ? 2 : 3;
+        const [label, detail, col] = e.kind === 'linked' ? ['Linked @' + e.h, 'Already on the board', K.blue] : e.kind === 'failed' ? ['Failed @' + e.h, 'Could not load', K.hot] : ['Opened @' + e.h, 'Generation ' + g, K.teal];
+        withA(k === 0 ? seg(t, e.at, e.at + 0.15) : 1, () => { noStroke(); F(col); circle(938, 904 + k * 34, 10); txt(label, 954, 910 + k * 34, 16, K.ink, { mono: true }); txt(detail, 1790, 910 + k * 34, 15, K.muted, { mono: true, align: RIGHT }); });
+      });
+    });
+
+    vf(22); const qd = [132 + 11, 546 - 7], ft = [132 + 11, 586 - 7];
+    drawCursor(t, [[0, 1500, 1000], [0.4, 120 + pillW / 2, 313, 1], [1.5, qd[0], qd[1], 1], [1.9, ft[0], ft[1], 1], [2.4, 600, 629, 1], [2.9, 600, 709, 1], [3.6, 250, 1006, 1], [4.6, 700, 1040]], seg(t, 0.1, 0.4) * (1 - seg(t, 4.2, 4.6)));
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// Finale — pull back over the notebook, then the end card
+// ════════════════════════════════════════════════════════════
+function worldBounds() {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  scenes.forEach((s) => { if (s.world) return; x0 = Math.min(x0, s.ox); y0 = Math.min(y0, s.oy); x1 = Math.max(x1, s.ox + W); y1 = Math.max(y1, s.oy + H); });
+  return { x0, y0, x1, y1 };
+}
+scene({
+  id: 'finale', chapter: 'End card', kicker: 'FIN', dur: 7.5, world: true, nightDown: [2.6, 3.8],
+  cues: [[3.0, 'boom'], [3.1, 'chime', 81]],
+  cam(t) {
+    const prev = scenes[scenes.length - 2];
+    const a = { x: prev.ox + W / 2, y: prev.oy + H / 2, z: 1.035 };
+    const b = worldBounds(), bx = (b.x0 + b.x1) / 2, by = (b.y0 + b.y1) / 2;
+    const zf = Math.min(W / (b.x1 - b.x0 + 900), H / (b.y1 - b.y0 + 700));
+    const p = eio(seg(t, 0.2, 2.8));
+    return { x: lerpN(a.x, bx, p), y: lerpN(a.y, by, p), z: Math.exp(lerpN(Math.log(a.z), Math.log(zf), p)) * (1 + 0.04 * seg(t, 2.8, 7.5)) };
+  },
+  draw() {},
+  overlay(t) {
+    noStroke(); F(K.paper, 0.86 * eio(seg(t, 2.3, 3.3))); rect(0, 0, W, H);
+    const ec = eout(seg(t, 3.0, 3.8));
+    if (ec <= 0) return;
+    const cx = 960;
+    dotCurve([200, 140, 420, 260, 300, 520, 420, 700], eio(seg(t, 3.4, 5.0)), K.teal, 4.2, 16, 0.7);
+    dotCurve([1720, 940, 1520, 820, 1680, 560, 1540, 380], eio(seg(t, 3.6, 5.2)), K.purple, 4.2, 16, 0.7);
+    dotCurve([1700, 150, 1560, 220, 1480, 160, 1380, 240], eio(seg(t, 3.8, 5.2)), K.hot, 4.2, 16, 0.7);
+    push(); translate(cx, 540); scale(0.9 + 0.1 * ec); rotate(-0.01);
+    withA(ec, () => {
+      blobRect(-640, -300, 1280, 600, K.card, { r: 26, seed: 901, sw: 3.2 });
+      txt('Parallel Board', 0, -70, 140, K.ink, { align: CENTER });
+      vf(140); uline(-textWidth('Parallel Board') / 2, -38, textWidth('Parallel Board'), seg(t, 3.8, 4.6), K.accent, 9, 6);
+      txt('threadviewer.app/parallelboard', 0, 40, 42, K.accent, { align: CENTER, mono: true });
+      txt('Thousands of quote lanes. Every reply a branch.', 0, 130, 42, K.muted, { align: CENTER });
+      txt('github.com/Carbonadoks/threadviewer', 0, 220, 26, K.soft, { align: CENTER, mono: true });
+    });
+    pop();
+    tapeAt(cx - 540, 252, 170, 46, -0.14, seg(t, 4.0, 4.2));
+    tapeAt(cx + 540, 828, 170, 46, 0.12, seg(t, 4.2, 4.4));
+    [['quote lane', 330, 910, 'quote', -0.08], ['reply fan', 1600, 960, 'r1', 0.06], ['tree', 1600, 110, 'leaf', -0.05]]
+      .forEach(([l, x, y, c, rot], k) => doodleNode({ label: l, x, y, c, rot, at: 4.2 + k * 0.2 }, 90 + k, t));
+  },
+});
+
+// ── generative score: warm pads, a soft arpeggio, a boom for every flight
+const CHORDS = {
+  open:     [50, 57, 64, 66, 73],
+  resolve:  [47, 54, 62, 69, 73],
+  download: [43, 50, 59, 66, 73],
+  parse:    [45, 52, 59, 62, 66],
+  threads:  [42, 49, 57, 64, 69],
+  timeline: [50, 57, 62, 66, 69, 76],
+  filters:  [43, 50, 57, 62, 66, 69],
+  more:     [47, 54, 62, 66, 73],
+  board:    [47, 54, 62, 69, 73],
+  quotes:   [43, 50, 59, 66, 73],
+  fan:      [45, 52, 59, 62, 66],
+  tree:     [42, 49, 57, 64, 69],
+  fetch:    [47, 54, 62, 66, 73],
+  finale:   [38, 45, 50, 57, 62, 66, 69, 74],
+};
+const Snd = {
+  ctx: null, on: true, voices: [], chord: null, nextArp: 0, step: 0,
+  ensure() {
+    if (this.ctx) return this.ctx;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    try {
+      const c = (this.ctx = new AC());
+      this.master = c.createGain(); this.master.gain.value = this.on ? 0.85 : 0;
+      const comp = c.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 3;
+      this.master.connect(comp); comp.connect(c.destination);
+      this.dest = c.createMediaStreamDestination(); comp.connect(this.dest);
+      const verb = c.createConvolver(); verb.buffer = this.impulse(3.6);
+      const wet = c.createGain(); wet.gain.value = 0.6; verb.connect(wet); wet.connect(this.master);
+      this.lp = c.createBiquadFilter(); this.lp.type = 'lowpass'; this.lp.frequency.value = 1300; this.lp.Q.value = 0.5;
+      const lfo = c.createOscillator(), lfoG = c.createGain(); lfo.frequency.value = 0.07; lfoG.gain.value = 450;
+      lfo.connect(lfoG); lfoG.connect(this.lp.frequency); lfo.start();
+      this.bus = c.createGain(); this.bus.connect(this.lp); this.lp.connect(this.master); this.lp.connect(verb);
+      this.fx = c.createGain(); this.fx.gain.value = 1; this.fx.connect(this.master); this.fx.connect(verb);
+      return c;
+    } catch (e) { this.ctx = null; return null; }
+  },
+  impulse(sec) {
+    const c = this.ctx, len = Math.floor(c.sampleRate * sec), b = c.createBuffer(2, len, c.sampleRate);
+    for (let ch = 0; ch < 2; ch++) { const d = b.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6); }
+    return b;
+  },
+  mtof: (m) => 440 * Math.pow(2, (m - 69) / 12),
+  setChord(id) {
+    const c = this.ctx; if (!c || id === this.chord || !CHORDS[id]) return;
+    this.chord = id;
+    const now = c.currentTime;
+    for (const v of this.voices) {
+      v.g.gain.cancelScheduledValues(now); v.g.gain.setValueAtTime(v.g.gain.value, now);
+      v.g.gain.linearRampToValueAtTime(0, now + 2.4); v.o.forEach((o) => o.stop(now + 2.6));
+    }
+    this.voices = CHORDS[id].map((m, k) => {
+      const g = c.createGain(); g.gain.value = 0;
+      g.gain.linearRampToValueAtTime(0.022 / Math.sqrt(1 + k * 0.4), now + 2.6);
+      const o = [-7, 7].map((dt) => { const o = c.createOscillator(); o.type = 'sawtooth'; o.frequency.value = this.mtof(m); o.detune.value = dt; o.connect(g); o.start(now); return o; });
+      g.connect(this.bus);
+      return { g, o };
+    });
+  },
+  pluck(m, when, vel = 0.04, type = 'triangle', dec = 1.5) {
+    const c = this.ctx; if (!c) return;
+    const o = c.createOscillator(); o.type = type; o.frequency.value = this.mtof(m);
+    const g = c.createGain(); g.gain.setValueAtTime(0.0001, when);
+    g.gain.exponentialRampToValueAtTime(vel, when + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, when + dec);
+    o.connect(g); g.connect(this.fx); o.start(when); o.stop(when + dec + 0.05);
+  },
+  boom() {
+    const c = this.ctx; if (!c) return; const t = c.currentTime;
+    const o = c.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(92, t); o.frequency.exponentialRampToValueAtTime(36, t + 1.3);
+    const g = c.createGain(); g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.2, t + 0.04); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.7);
+    o.connect(g); g.connect(this.master); o.start(t); o.stop(t + 1.8);
+    const len = Math.floor(c.sampleRate * 1.4), b = c.createBuffer(1, len, c.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    const n = c.createBufferSource(); n.buffer = b;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 1.3;
+    bp.frequency.setValueAtTime(280, t); bp.frequency.exponentialRampToValueAtTime(3000, t + 0.75); bp.frequency.exponentialRampToValueAtTime(500, t + 1.4);
+    const ng = c.createGain(); ng.gain.setValueAtTime(0.0001, t);
+    ng.gain.exponentialRampToValueAtTime(0.07, t + 0.55); ng.gain.exponentialRampToValueAtTime(0.0001, t + 1.4);
+    n.connect(bp); bp.connect(ng); ng.connect(this.fx); n.start(t); n.stop(t + 1.45);
+  },
+  chime(base = 74) {
+    const c = this.ctx; if (!c) return; const t = c.currentTime;
+    [0, 4, 7, 12, 16, 19].forEach((iv, k) => this.pluck(base + iv, t + k * 0.07, 0.045, 'sine', 3.2));
+  },
+  tick(id) {
+    const c = this.ctx; if (!c || c.state !== 'running') return;
+    this.setChord(id);
+    const stepDur = 0.3125, ch = CHORDS[this.chord] || CHORDS.open;
+    if (this.nextArp < c.currentTime) this.nextArp = c.currentTime + 0.05;
+    const pat = [0, 2, 4, 1, 3, 2, 4, 3];
+    while (this.nextArp < c.currentTime + 0.14) {
+      const s = this.step++, bar = s % 16;
+      if (bar !== 7 && bar !== 15 && bar !== 13) {
+        const m = ch[pat[s % 8] % ch.length] + 12 + (this.chord === 'finale' && s % 4 === 0 ? 12 : 0);
+        this.pluck(m, this.nextArp, s % 4 === 0 ? 0.05 : 0.028, s % 2 ? 'sine' : 'triangle', 1.3);
+      }
+      this.nextArp += stepDur;
+    }
+  },
+  setOn(v) {
+    this.on = v;
+    if (this.ctx) { const t = this.ctx.currentTime; this.master.gain.cancelScheduledValues(t); this.master.gain.setTargetAtTime(v ? 0.85 : 0, t, 0.08); }
+  },
+  resume() { const c = this.ensure(); if (c && c.state === 'suspended') c.resume(); },
+  pause() { if (this.ctx && this.ctx.state === 'running') this.ctx.suspend(); },
+};
+
+// cue sheet: scenes may list [localTime, 'boom'|'chime'|'pluck'] pairs
+function fireCues() {
+  if (!playing || !Snd.ctx) return;
+  for (const s of scenes) {
+    if (s.flight > 0 && PREV_T < s.start && T >= s.start) Snd.boom();
+    for (const [at, kind, arg] of s.cues || []) {
+      const abs = s.start + s.flight + at;
+      if (PREV_T < abs && T >= abs) {
+        if (kind === 'boom') Snd.boom();
+        else if (kind === 'chime') Snd.chime(arg);
+        else Snd.pluck(arg ?? 81, Snd.ctx.currentTime, 0.05, 'sine', 1.8);
+      }
+    }
+  }
+}
+
+// ── pause-and-poke: what each on-screen label means, and which chapter shows it (see hotspots.js)
+const HOT_INFO = [
+  { match: 'root note', text: 'The post the conversation grows from. It heads the main lane.', go: 'board' },
+  { match: 'reply', text: 'Replies stack behind the card they answer, ready to fan out.', go: 'fan' },
+  { match: 'branch', text: 'Side branches of the conversation. Unfold them as a tree.', go: 'tree' },
+  { match: 'leaf', text: 'Where a line of replies ends.', go: 'tree' },
+  { match: 'quote lane', text: 'Every quote post gets a lane of its own, beside the post it quotes.', go: 'quotes' },
+  { match: 'open lanes', text: 'Open a conversation on the board: the main lane follows one chain of replies.', go: 'board' },
+  { match: /^(fetch mode|Fetch mode|Start fetching)$/, text: 'Scans the board for quote posts, quoted posts and full threads, generation after generation, inside the rate budget.', go: 'fetch' },
+  { match: 'Main', text: 'The main lane follows one chain of replies. Other replies stack behind each card.', go: 'board' },
+  { match: /^Q\d+$/, text: 'A quote lane: the posts quoting this one, laid out side by side.', go: 'quotes' },
+  { match: 'Root', text: 'The root post of the whole conversation.', go: 'board' },
+  { match: 'Pick quote', text: 'Open the quote posts of this card, then turn them into lanes.', go: 'quotes' },
+  { match: /^(Load all quote posts|Loading all\.\.\.)$/, text: 'Fetch every quote of this post, not just the first page.', go: 'quotes' },
+  { match: /^(Create all quote lanes|Creating lanes\.\.\.)$/, text: 'Turn every loaded quote post into its own lane. They stream in one by one.', go: 'quotes' },
+  { match: /^Fan \d+$/, text: 'Spread this card\'s replies across the board, one level at a time. Double-clicking the card does the same.', go: 'fan' },
+  { match: /^▾\d+$/, text: 'Other replies at this step of the chain. Pick one and the main lane follows that branch.', go: 'fan' },
+  { match: /^(Tree|Fold)$/, text: 'Unfold the stacked replies of a lane into a tree, or fold them back.', go: 'tree' },
+  { match: /^(Full thread|Loading thread\.\.\.)$/, text: 'Load the side branches too, so the tree shows the whole conversation.', go: 'tree' },
+  { match: /^(Author|Text)$/, text: 'Search the tree by author handle or by post text. Matches light up across the tree.', go: 'tree' },
+  { match: /^(Pause|Stop)$/, text: 'Pause or stop the background fetching at any time. What was already loaded stays.' },
+];
+
+// ── p5 lifecycle
+let cnv, recording = false, recorder = null, recChunks = [];
+const POSTER_T = 4.8;
+
+function hostSize() {
+  const host = document.getElementById('canvas-host');
+  const w = Math.max(200, host.clientWidth);
+  return [w, Math.round((w * 9) / 16)];
+}
+
+function setup() {
+  layoutScenes();
+  const [w, h] = hostSize();
+  pixelDensity(Math.min(2, window.devicePixelRatio || 1));
+  cnv = createCanvas(w, h);
+  cnv.parent('canvas-host');
+  noiseSeed(7); randomSeed(7);
+  T = POSTER_T;
+  buildUI();
+  if (document.fonts) {
+    document.fonts.load('40px Virgil');
+    document.fonts.load('40px "Share Tech Mono"');
+  }
+}
+
+function windowResized() {
+  if (recording) return;
+  const [w, h] = hostSize();
+  resizeCanvas(w, h);
+}
+
+function draw() {
+  const now = millis();
+  PREV_T = T;
+  if (playing) {
+    T += Math.min(0.1, (now - lastMs) / 1000);
+    if (T >= TOTAL) { T = TOTAL; setPlaying(false); onEnded(); }
+  }
+  lastMs = now;
+  BOIL = Math.floor(T * 8);
+  NIGHT = nightAt(T);
+  mixPalette(NIGHT);
+  fireCues();
+  if (playing) Snd.tick(scenes[sceneIndexAt(T)].id);
+
+  Hot.frame();
+  Hot.begin(started && !playing && !recording);
+  background(K.paper[0], K.paper[1], K.paper[2]);
+  push();
+  scale(width / W);
+  const cam = camAt(T);
+  push();
+  translate(W / 2, H / 2); scale(cam.z); translate(-cam.x, -cam.y);
+  drawGrid(cam);
+  drawThreadPath(cam);
+  scenes.forEach((s, i) => {
+    if (s.world || !visible(s, cam)) return;
+    push(); translate(s.ox, s.oy);
+    Hot.setScene(s);
+    const lod = seg(cam.z, 0.5, 0.36);
+    if (lod < 1) withA(1 - lod, () => s.draw(Math.min(localT(s), s.dur)));
+    if (lod > 0) withA(lod, () => drawLOD(s, i));
+    pop();
+  });
+  pop();
+  const fin = scenes[scenes.length - 1];
+  if (fin.world && T >= fin.start) fin.overlay(T - fin.start);
+  vignette();
+  pop();
+  Hot.end();
+  syncUI();
+}
+
+// ── controls
+const $ = (id) => document.getElementById(id);
+const fmtTime = (s) => { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+let chapterButtons = [], lastChapter = -1;
+
+function setPlaying(v) {
+  playing = v;
+  lastMs = millis();
+  $('play').textContent = v ? 'Pause' : 'Play';
+  $('bigplay').hidden = v || started;
+  if (v) { started = true; Snd.resume(); } else Snd.pause();
+}
+function togglePlay() {
+  if (!started && !playing) T = 0;
+  if (!playing && T >= TOTAL - 0.05) T = 0;
+  setPlaying(!playing);
+}
+function seekTo(t) { T = Math.max(0, Math.min(TOTAL, t)); PREV_T = T; started = true; $('bigplay').hidden = true; }
+function onEnded() {
+  if (recording && recorder) recorder.stop();
+}
+
+function buildUI() {
+  $('play').addEventListener('click', togglePlay);
+  $('bigplay').addEventListener('click', togglePlay);
+  const scrub = $('scrub');
+  scrub.addEventListener('input', () => { dragging = true; seekTo((scrub.value / 1000) * TOTAL); });
+  scrub.addEventListener('change', () => { dragging = false; });
+  $('sound').addEventListener('click', () => {
+    const on = !Snd.on; Snd.setOn(on);
+    $('sound').setAttribute('aria-pressed', String(on)); $('sound').textContent = on ? 'Sound on' : 'Sound off';
+  });
+  $('full').addEventListener('click', toggleFull);
+  document.addEventListener('fullscreenchange', () => { setTimeout(windowResized, 60); });
+  document.addEventListener('keydown', (e) => {
+    const tag = e.target && e.target.tagName;
+    if (tag === 'BUTTON' && (e.code === 'Space' || e.key === 'Enter')) return;
+    if (tag === 'INPUT' && e.code !== 'Space') return;
+    if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); seekTo(T + 5); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); seekTo(T - 5); }
+    else if (e.key === 'f' || e.key === 'F') toggleFull();
+  });
+
+  const ticks = $('ticks'), nav = $('chapters');
+  scenes.forEach((s, i) => {
+    const tick = document.createElement('i'); tick.style.left = ((s.start / TOTAL) * 100).toFixed(2) + '%'; ticks.appendChild(tick);
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'chap';
+    b.innerHTML = '<b>' + fmtTime(s.start) + '</b>' + s.chapter;
+    b.addEventListener('click', () => { seekTo(s.start + (s.flight ? 0.2 : 0)); if (!playing) setPlaying(true); });
+    nav.appendChild(b); chapterButtons.push(b);
+  });
+
+  // Recording only works when this file is opened directly, not inside a framed viewer.
+  let framed = true; try { framed = window.self !== window.top; } catch (e) { framed = true; }
+  if (!framed && window.MediaRecorder && HTMLCanvasElement.prototype.captureStream) {
+    $('rec').hidden = false;
+    $('rec').addEventListener('click', startRecording);
+  }
+}
+
+function toggleFull() {
+  const st = $('stage');
+  try {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (st.requestFullscreen) st.requestFullscreen().catch(() => {});
+  } catch (e) { /* fullscreen is optional */ }
+}
+
+function syncUI() {
+  $('clock').textContent = fmtTime(T) + ' / ' + fmtTime(TOTAL);
+  if (!dragging) $('scrub').value = String(Math.round((T / TOTAL) * 1000));
+  const ci = sceneIndexAt(T);
+  if (ci !== lastChapter) {
+    chapterButtons.forEach((b, i) => b.setAttribute('aria-current', i === ci ? 'true' : 'false'));
+    lastChapter = ci;
+  }
+}
+
+function startRecording() {
+  if (recording) return;
+  const note = $('rec-note');
+  Snd.ensure();
+  const types = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  const mime = types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
+  recording = true;
+  $('canvas-host').classList.add('fixed');
+  pixelDensity(1); resizeCanvas(1920, 1080);
+  const stream = cnv.elt.captureStream(60);
+  if (Snd.dest) Snd.dest.stream.getAudioTracks().forEach((tr) => stream.addTrack(tr));
+  recChunks = [];
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 14e6 } : undefined);
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+  recorder.onstop = () => {
+    recording = false;
+    $('canvas-host').classList.remove('fixed');
+    pixelDensity(Math.min(2, window.devicePixelRatio || 1)); windowResized();
+    const blob = new Blob(recChunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'threadviewer-showreel.webm';
+    document.body.appendChild(a); a.click(); a.remove();
+    note.textContent = 'Saved threadviewer-showreel.webm (' + (blob.size / 1e6).toFixed(1) + ' MB). Convert with: ffmpeg -i threadviewer-showreel.webm -c:v libx264 -crf 18 -c:a aac threadviewer-showreel.mp4';
+    $('rec').textContent = 'Record .webm';
+  };
+  note.hidden = false;
+  note.textContent = 'Recording 1920×1080 in real time. Keep this tab in front until the film ends.';
+  $('rec').textContent = 'Recording…';
+  seekTo(0);
+  recorder.start(250);
+  setPlaying(true);
+}
+
+</script>
+</body>
+</html>

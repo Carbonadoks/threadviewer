@@ -5,7 +5,14 @@ import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 const config = {
 	preprocess: vitePreprocess(),
 	kit: {
-		adapter: adapter()
+		adapter: adapter({
+			// Pages strips `.html` (308 to the bare path); keep those bare paths off the worker too.
+			// No `/films/*` splat: wrangler rejects it as overlapping the files `<all>` lists.
+			routes: {
+				include: ['/*'],
+				exclude: ['<all>', '/films/treeviewer', '/films/parallelboard', '/films/repoviewer']
+			}
+		})
 	}
 };
 

@@ -23,6 +23,9 @@ const CONSTELLATION_HOST = 'https://constellation.microcosm.blue';
 const CONSTELLATION_REPLY_PARENT_SOURCE = 'app.bsky.feed.post:reply.parent.uri';
 const CONSTELLATION_PAGE_LIMIT = 100;
 const MAX_CONSTELLATION_PAGES = 10;
+/** Truncated nodes hydrated at once by `getFullThread` (these requests bypass the board queue). */
+const HYDRATION_CONCURRENCY = 10;
+const HIDDEN_GAP_CONCURRENCY = 4;
 const FULL_THREAD_FLAT_DEPTH = 1000;
 const THREAD_ITEM_BLOCKED_TYPE = 'app.bsky.unspecced.defs#threadItemBlocked';
 let activeRecordEmbedFetches = 0;
@@ -398,13 +401,33 @@ export async function searchPostsFromAuthor(
 	};
 }
 
-export async function fetchPostThread(uri: string, apiAgent: ThreadApiAgent = agent): Promise<any> {
-	const res = await apiAgent.getPostThread({
-		uri,
-		depth: 1000,
-		parentHeight: 0
-	});
+export async function fetchPostThread(
+	uri: string,
+	apiAgent: ThreadApiAgent = agent,
+	signal?: AbortSignal
+): Promise<any> {
+	const res = await apiAgent.getPostThread(
+		{
+			uri,
+			depth: 1000,
+			parentHeight: 0
+		},
+		{ signal }
+	);
 	return res.data.thread;
+}
+
+/** Runs `run` over `items` with at most `limit` in flight; a slot refills as soon as one finishes. */
+async function forEachConcurrent<T>(
+	items: readonly T[],
+	limit: number,
+	run: (item: T) => Promise<void>
+): Promise<void> {
+	let next = 0;
+	const worker = async () => {
+		while (next < items.length) await run(items[next++]);
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
 function didFromAtUri(uri: string): string | null {
@@ -1280,7 +1303,8 @@ export async function fetchSelfReplyChain(
 
 async function discoverVisibleRootUriViaFlatThread(
 	uri: string,
-	apiAgent: ThreadApiAgent = agent
+	apiAgent: ThreadApiAgent = agent,
+	signal?: AbortSignal
 ): Promise<string | null> {
 	const getPostThreadV2 = (apiAgent as any).app?.bsky?.unspecced?.getPostThreadV2;
 	if (typeof getPostThreadV2 !== 'function') {
@@ -1288,13 +1312,16 @@ async function discoverVisibleRootUriViaFlatThread(
 	}
 
 	try {
-		const res = await getPostThreadV2({
-			anchor: uri,
-			above: true,
-			below: 0,
-			branchingFactor: 0,
-			sort: 'oldest'
-		});
+		const res = await getPostThreadV2(
+			{
+				anchor: uri,
+				above: true,
+				below: 0,
+				branchingFactor: 0,
+				sort: 'oldest'
+			},
+			{ signal }
+		);
 		return buildVisibleThreadFromFlatItems(res.data.thread ?? [])?.uri ?? null;
 	} catch {
 		return null;
@@ -1315,7 +1342,8 @@ function backlinkRecordToUri(record: any): string | null {
 }
 
 async function fetchBacklinkedPostUris(
-	subjectUri: string
+	subjectUri: string,
+	signal?: AbortSignal
 ): Promise<{ uris: string[]; total: number }> {
 	const uris: string[] = [];
 	const seenUris = new Set<string>();
@@ -1335,7 +1363,8 @@ async function fetchBacklinkedPostUris(
 		const res = await fetch(`${CONSTELLATION_HOST}/xrpc/blue.microcosm.links.getBacklinks?${params.toString()}`, {
 			headers: {
 				Accept: 'application/json'
-			}
+			},
+			signal
 		});
 		if (!res.ok) {
 			throw new Error(`Constellation backlinks lookup failed (${res.status})`);
@@ -1408,7 +1437,8 @@ export function hasMissingDirectReplies(post: Pick<ThreadPost, 'replyCount' | 'c
 
 async function recoverMissingDirectReplies(
 	node: ThreadPost,
-	apiAgent: ThreadApiAgent = agent
+	apiAgent: ThreadApiAgent = agent,
+	signal?: AbortSignal
 ): Promise<boolean> {
 	if (!hasMissingDirectReplies(node)) {
 		return false;
@@ -1416,7 +1446,7 @@ async function recoverMissingDirectReplies(
 
 	let backlinkedUris: string[] = [];
 	try {
-		backlinkedUris = (await fetchBacklinkedPostUris(node.uri)).uris;
+		backlinkedUris = (await fetchBacklinkedPostUris(node.uri, signal)).uris;
 	} catch {
 		return false;
 	}
@@ -1424,7 +1454,7 @@ async function recoverMissingDirectReplies(
 		return false;
 	}
 
-	const fetchedPosts = await fetchPostsByUris(backlinkedUris, { agent: apiAgent });
+	const fetchedPosts = await fetchPostsByUris(backlinkedUris, { agent: apiAgent, signal });
 	const directReplies = [...fetchedPosts.values()]
 		.filter((post) => post.parentUri === node.uri)
 		.sort(compareThreadPostsChronologically);
@@ -1438,7 +1468,8 @@ async function recoverMissingDirectReplies(
 async function recoverHiddenGapChildren(
 	rootPost: ThreadPost,
 	hiddenGaps: HiddenThreadGap[],
-	apiAgent: ThreadApiAgent = agent
+	apiAgent: ThreadApiAgent = agent,
+	signal?: AbortSignal
 ): Promise<ThreadPost> {
 	if (hiddenGaps.length === 0) {
 		return rootPost;
@@ -1450,31 +1481,33 @@ async function recoverHiddenGapChildren(
 		uniqueGaps.set(gap.uri, gap);
 	}
 
-	for (const gap of uniqueGaps.values()) {
+	// Gaps are independent lookups; merges keep existing post objects, so running them
+	// concurrently cannot detach a node another gap is filling.
+	await forEachConcurrent([...uniqueGaps.values()], HIDDEN_GAP_CONCURRENCY, async (gap) => {
 		let backlinkResult: { uris: string[]; total: number } | null = null;
 		try {
-			backlinkResult = await fetchBacklinkedPostUris(gap.uri);
+			backlinkResult = await fetchBacklinkedPostUris(gap.uri, signal);
 		} catch {
-			continue;
+			return;
 		}
 		const backlinkedUris = backlinkResult.uris;
+		const fetchedPosts = backlinkedUris.length
+			? await fetchPostsByUris(backlinkedUris, { agent: apiAgent, signal })
+			: new Map<string, ThreadPost>();
 		const nodesByUri = indexThreadByUri(rootPost);
 		const gapNode = nodesByUri.get(gap.uri) ?? null;
-		if (!gapNode) continue;
+		if (!gapNode) return;
 		gapNode.replyCount = Math.max(gapNode.replyCount, backlinkResult.total, gapNode.children.length);
-		if (backlinkedUris.length === 0) continue;
-
-		const fetchedPosts = await fetchPostsByUris(backlinkedUris, { agent: apiAgent });
 		const replies = [...fetchedPosts.values()]
 			.filter((post) => post.parentUri === gap.uri)
 			.map((post) => nodesByUri.get(post.uri) ?? post)
 			.sort(compareThreadPostsChronologically);
-		if (replies.length === 0) continue;
+		if (replies.length === 0) return;
 		mergeDirectReplies(gapNode, replies);
 		if (!gapNode.createdAt && replies[0]?.createdAt) {
 			gapNode.createdAt = replies[0].createdAt;
 		}
-	}
+	});
 
 	return rootPost;
 }
@@ -1483,6 +1516,7 @@ async function fetchThreadViaFlatThreadApi(
 	anchorUri: string,
 	options: {
 		above: boolean;
+		signal?: AbortSignal;
 	},
 	apiAgent: ThreadApiAgent = agent
 ): Promise<{ rootPost: ThreadPost; hasOtherReplies: boolean } | null> {
@@ -1492,19 +1526,27 @@ async function fetchThreadViaFlatThreadApi(
 	}
 
 	try {
-		const res = await getPostThreadV2({
-			anchor: anchorUri,
-			above: options.above,
-			below: FULL_THREAD_FLAT_DEPTH,
-			branchingFactor: 100,
-			sort: 'oldest'
-		});
+		const res = await getPostThreadV2(
+			{
+				anchor: anchorUri,
+				above: options.above,
+				below: FULL_THREAD_FLAT_DEPTH,
+				branchingFactor: 100,
+				sort: 'oldest'
+			},
+			{ signal: options.signal }
+		);
 		const parsed = parseHydratableThreadFromFlatItems(res.data.thread ?? []);
 		if (!parsed.rootPost) {
 			return null;
 		}
 
-		const recoveredRoot = await recoverHiddenGapChildren(parsed.rootPost, parsed.hiddenGaps, apiAgent);
+		const recoveredRoot = await recoverHiddenGapChildren(
+			parsed.rootPost,
+			parsed.hiddenGaps,
+			apiAgent,
+			options.signal
+		);
 
 		return {
 			rootPost: recoveredRoot,
@@ -1517,9 +1559,10 @@ async function fetchThreadViaFlatThreadApi(
 
 async function fetchFullThreadViaFlatThreadApi(
 	rootUri: string,
-	apiAgent: ThreadApiAgent = agent
+	apiAgent: ThreadApiAgent = agent,
+	signal?: AbortSignal
 ): Promise<{ rootPost: ThreadPost; hasOtherReplies: boolean } | null> {
-	return fetchThreadViaFlatThreadApi(rootUri, { above: true }, apiAgent);
+	return fetchThreadViaFlatThreadApi(rootUri, { above: true, signal }, apiAgent);
 }
 
 interface HydrationResult {
@@ -1529,24 +1572,25 @@ interface HydrationResult {
 
 async function hydrateNodeChildren(
 	node: ThreadPost,
-	apiAgent: ThreadApiAgent = agent
+	apiAgent: ThreadApiAgent = agent,
+	signal?: AbortSignal
 ): Promise<HydrationResult> {
 	let changed = false;
 	let sawOtherReplies = false;
 
-	const flatThread = await fetchThreadViaFlatThreadApi(node.uri, { above: false }, apiAgent);
+	const flatThread = await fetchThreadViaFlatThreadApi(node.uri, { above: false, signal }, apiAgent);
 	if (flatThread && flatThread.rootPost.uri === node.uri) {
 		node.replyCount = Math.max(node.replyCount, flatThread.rootPost.replyCount);
 		changed = mergeDirectReplies(node, flatThread.rootPost.children) > 0;
 		sawOtherReplies = flatThread.hasOtherReplies;
 	} else {
-		const raw = await fetchPostThread(node.uri, apiAgent);
+		const raw = await fetchPostThread(node.uri, apiAgent, signal);
 		const parsed = parseThread(raw);
 		node.replyCount = Math.max(node.replyCount, parsed.replyCount);
 		changed = mergeDirectReplies(node, parsed.children) > 0;
 	}
 
-	const recoveredMissingReplies = await recoverMissingDirectReplies(node, apiAgent);
+	const recoveredMissingReplies = await recoverMissingDirectReplies(node, apiAgent, signal);
 	return {
 		changed: changed || recoveredMissingReplies,
 		sawOtherReplies
@@ -1575,49 +1619,96 @@ function findHydrationCandidates(post: ThreadPost): ThreadPost[] {
 	return result;
 }
 
-// Recursively fetch and attach missing replies
+/**
+ * Fetches missing replies for every truncated node, keeping up to `concurrency` node
+ * hydrations in flight. A slot refills as soon as one finishes, and replies that arrive
+ * truncated are queued right away instead of waiting for a whole round. A node that
+ * gains nothing (or fails) is not retried; one that gains replies but is still short is
+ * retried, at most `maxAttempts` times.
+ */
 async function hydrateThread(
 	root: ThreadPost,
-	maxRounds = 30,
+	maxAttempts = 30,
 	apiAgent: ThreadApiAgent = agent,
-	signal?: AbortSignal
+	signal?: AbortSignal,
+	concurrency = HYDRATION_CONCURRENCY
 ): Promise<boolean> {
 	let encounteredExtraReplies = false;
+	const attempts = new Map<string, number>();
 	const exhaustedUris = new Set<string>();
+	const queuedUris = new Set<string>();
+	const queue: ThreadPost[] = [];
+	let queueHead = 0;
 
-	for (let round = 0; round < maxRounds; round++) {
-		const candidates = findHydrationCandidates(root).filter((node) => !exhaustedUris.has(node.uri));
-		if (candidates.length === 0) break;
-
-		// Fetch all truncated nodes in parallel (batch of 10 at a time to avoid rate limits)
-		const batchSize = 10;
-		for (let i = 0; i < candidates.length; i += batchSize) {
-			throwIfAborted(signal);
-			const batch = candidates.slice(i, i + batchSize);
-			const results = await Promise.allSettled(
-				batch.map(async (node) => ({
-					node,
-					result: await hydrateNodeChildren(node, apiAgent)
-				}))
-			);
-			for (const [resultIndex, result] of results.entries()) {
-				if (result.status === 'fulfilled') {
-					if (result.value.result.changed || result.value.result.sawOtherReplies) {
-						encounteredExtraReplies = true;
-					}
-					if (!result.value.result.changed) {
-						exhaustedUris.add(result.value.node.uri);
-					}
-				} else {
-					const failedNode = batch[resultIndex];
-					if (failedNode) {
-						exhaustedUris.add(failedNode.uri);
-					}
-				}
+	const enqueueCandidates = (from: ThreadPost) => {
+		const stack = [from];
+		while (stack.length) {
+			const post = stack.pop()!;
+			if (
+				hasMissingDirectReplies(post) &&
+				!queuedUris.has(post.uri) &&
+				!exhaustedUris.has(post.uri) &&
+				(attempts.get(post.uri) ?? 0) < maxAttempts
+			) {
+				queuedUris.add(post.uri);
+				queue.push(post);
 			}
-			// Ignore individual failures — they'll show as truncated.
+			for (let index = post.children.length - 1; index >= 0; index--) stack.push(post.children[index]);
 		}
-	}
+	};
+
+	throwIfAborted(signal);
+	enqueueCandidates(root);
+
+	await new Promise<void>((resolve, reject) => {
+		let active = 0;
+		let settled = false;
+		const pump = () => {
+			if (settled) return;
+			if (signal?.aborted) {
+				settled = true;
+				try {
+					throwIfAborted(signal);
+				} catch (error) {
+					reject(error);
+				}
+				return;
+			}
+			while (active < concurrency && queueHead < queue.length) {
+				const node = queue[queueHead++];
+				// An ancestor's hydration may have filled this node while it waited.
+				if (!hasMissingDirectReplies(node)) {
+					queuedUris.delete(node.uri);
+					continue;
+				}
+				active += 1;
+				attempts.set(node.uri, (attempts.get(node.uri) ?? 0) + 1);
+				hydrateNodeChildren(node, apiAgent, signal)
+					.then(
+						(result) => {
+							if (result.changed || result.sawOtherReplies) encounteredExtraReplies = true;
+							queuedUris.delete(node.uri);
+							if (result.changed) enqueueCandidates(node);
+							else exhaustedUris.add(node.uri);
+						},
+						() => {
+							// Individual failures are ignored; the node shows as truncated.
+							queuedUris.delete(node.uri);
+							exhaustedUris.add(node.uri);
+						}
+					)
+					.finally(() => {
+						active -= 1;
+						pump();
+					});
+			}
+			if (active === 0 && queueHead >= queue.length) {
+				settled = true;
+				resolve();
+			}
+		};
+		pump();
+	});
 
 	return encounteredExtraReplies;
 }
@@ -1712,6 +1803,54 @@ export async function fetchPostsByUris(
 
 	await Promise.all(Array.from({ length: workerCount }, () => worker()));
 	return result;
+}
+
+/** Max URIs per app.bsky.feed.getPosts call. */
+export const GET_POSTS_BATCH_SIZE = 25;
+
+/**
+ * One getPosts call (≤25 URIs) with no retry of its own, for callers that queue through
+ * a RequestScheduler. HTTP errors keep their `status`; network failures become a
+ * TypeError so the scheduler treats them as retryable.
+ */
+export async function getPostsBatch(uris: string[], signal?: AbortSignal): Promise<ThreadPost[]> {
+	return (await getPostViewsBatch(uris, signal)).map(parsePostView);
+}
+
+/** Like getPostsBatch, but only the engagement counts of each returned post. */
+export async function getPostEngagementBatch(
+	uris: string[],
+	signal?: AbortSignal
+): Promise<PostEngagementCounts[]> {
+	return (await getPostViewsBatch(uris, signal)).map((post: any) => ({
+		uri: post.uri,
+		likeCount: toFiniteCount(post.likeCount),
+		repostCount: toFiniteCount(post.repostCount),
+		replyCount: toFiniteCount(post.replyCount),
+		quoteCount: toFiniteCount(post.quoteCount),
+		indexedAt: typeof post.indexedAt === 'string' ? post.indexedAt : ''
+	}));
+}
+
+async function getPostViewsBatch(uris: string[], signal?: AbortSignal): Promise<any[]> {
+	throwIfAborted(signal);
+	try {
+		const res = await agent.getPosts({ uris }, { signal });
+		return res.data.posts ?? [];
+	} catch (err) {
+		throw asSchedulableError(err, signal, 'getPosts network error');
+	}
+}
+
+/**
+ * Normalizes an XRPC failure for a RequestScheduler: HTTP errors keep their `status`,
+ * network failures become a TypeError so the scheduler retries them.
+ */
+export function asSchedulableError(err: any, signal: AbortSignal | undefined, fallback: string): unknown {
+	if (signal?.aborted || err?.name === 'AbortError') return err;
+	const status = Number(err?.status);
+	if (Number.isFinite(status) && status >= 400) return err;
+	return new TypeError(err?.message || fallback);
 }
 
 const GET_POSTS_MAX_RETRIES = 3;
@@ -1872,32 +2011,27 @@ export async function getFullThread(
 	let rootUri = uri;
 	throwIfAborted(signal);
 
-	try {
-		// First fetch with parentHeight to find the true root of the conversation
-		const res = await apiAgent.getPostThread({
-			uri,
-			depth: 0,
-			parentHeight: 1000
-		});
-
-		// Walk up the parent chain to find the root post URI
-		let node = res.data.thread as any;
-		while (node.parent && node.parent.$type === 'app.bsky.feed.defs#threadViewPost') {
-			node = node.parent;
-		}
-		rootUri = node.post.uri;
-	} catch {
-		// Fallback to original URI if root discovery fails
-	}
-
+	// Find the visible root of the conversation. The flat thread API is authoritative;
+	// walking getPostThread's parents is only needed when it is unavailable or fails.
+	const flatRootUri = await discoverVisibleRootUriViaFlatThread(uri, apiAgent, signal);
 	throwIfAborted(signal);
-	const flatRootUri = await discoverVisibleRootUriViaFlatThread(uri, apiAgent);
 	if (flatRootUri) {
 		rootUri = flatRootUri;
+	} else {
+		try {
+			const res = await apiAgent.getPostThread({ uri, depth: 0, parentHeight: 1000 }, { signal });
+			let node = res.data.thread as any;
+			while (node.parent && node.parent.$type === 'app.bsky.feed.defs#threadViewPost') {
+				node = node.parent;
+			}
+			rootUri = node.post.uri;
+		} catch {
+			// Fall back to the original URI if root discovery fails.
+		}
 	}
 
 	throwIfAborted(signal);
-	const flatThread = await fetchFullThreadViaFlatThreadApi(rootUri, apiAgent);
+	const flatThread = await fetchFullThreadViaFlatThreadApi(rootUri, apiAgent, signal);
 	throwIfAborted(signal);
 	if (flatThread) {
 		const encounteredExtraReplies = await hydrateThread(flatThread.rootPost, 30, apiAgent, signal);
@@ -1912,7 +2046,7 @@ export async function getFullThread(
 	}
 
 	// Now fetch the full thread from the root with full depth
-	const rootRaw = await fetchPostThread(rootUri, apiAgent);
+	const rootRaw = await fetchPostThread(rootUri, apiAgent, signal);
 	const rootPost = parseThread(rootRaw);
 
 	// Recursively hydrate truncated branches

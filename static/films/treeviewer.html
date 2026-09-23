@@ -1,0 +1,1917 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Treeviewer Showreel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap">
+<style>
+@font-face {
+  font-family: 'Virgil';
+  src: url('/Virgil.woff2') format('woff2');
+  font-display: swap;
+}
+:root {
+  color-scheme: dark;
+  --room: #13110e;
+  --room-2: #1c1914;
+  --paper: #fff9ea;
+  --ink: #211d18;
+  --text: #efe6d6;
+  --muted: #a89c88;
+  --line: rgba(239, 230, 214, 0.14);
+  --accent: #e07a5f;
+  --accent-ink: #1b1510;
+  --tape: rgba(255, 219, 117, 0.55);
+  --hand: 'Virgil', 'Patrick Hand', 'Comic Sans MS', cursive;
+  --mono: 'Share Tech Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+}
+html, body { background: var(--room); margin: 0; }
+[hidden] { display: none !important; }
+body {
+  color: var(--text);
+  font-family: var(--mono);
+  padding-inline: 16px;
+  padding-block: 28px 40px;
+  background:
+    radial-gradient(1200px 520px at 50% -10%, rgba(224, 122, 95, 0.10), transparent 70%),
+    var(--room);
+  min-height: 100%;
+}
+.room { max-width: 1280px; margin: 0 auto; display: grid; gap: 18px; }
+.top { display: grid; gap: 6px; }
+.eyebrow {
+  margin: 0; font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+}
+.top h1 {
+  margin: 0; font-family: var(--hand); font-weight: 400;
+  font-size: clamp(34px, 5.4vw, 60px); line-height: 1; color: var(--text); text-wrap: balance;
+}
+.top h1 span { color: var(--accent); }
+.lede { margin: 4px 0 0; max-width: 68ch; color: var(--muted); font-size: 15px; line-height: 1.5; }
+
+.stage {
+  position: relative; background: var(--paper); border-radius: 6px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 249, 234, 0.08);
+}
+.stage::before, .stage::after {
+  content: ""; position: absolute; width: 118px; height: 30px; background: var(--tape);
+  border: 1px solid rgba(113, 84, 56, 0.16); z-index: 2; pointer-events: none;
+}
+.stage::before { left: 7%; top: -12px; transform: rotate(-6deg); }
+.stage::after { right: 9%; bottom: -12px; transform: rotate(5deg); }
+#canvas-host { position: relative; width: 100%; aspect-ratio: 16 / 9; max-width: 100%; overflow: hidden; border-radius: 6px; }
+#canvas-host canvas { display: block; }
+#canvas-host.fixed canvas { width: 100% !important; height: auto !important; }
+.stage:fullscreen { background: #000; border-radius: 0; display: grid; place-items: center; }
+.stage:fullscreen::before, .stage:fullscreen::after { display: none; }
+.stage:fullscreen #canvas-host { width: min(100vw, calc(100vh * 16 / 9)); border-radius: 0; }
+
+.bigplay {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(-1.5deg);
+  font-family: var(--hand); font-size: clamp(18px, 2.6vw, 30px); color: #fffdf4;
+  background: #211d18; border: 2px solid #211d18; padding: 0.55em 1.2em 0.6em;
+  border-radius: 255px 18px 230px 20px / 16px 230px 18px 245px;
+  box-shadow: 8px 10px 0 rgba(33, 29, 24, 0.18); cursor: pointer; z-index: 3;
+  display: inline-flex; align-items: center; gap: 0.5em;
+}
+.bigplay svg { width: 0.9em; height: 0.9em; }
+.bigplay:hover { background: #e07a5f; border-color: #211d18; }
+
+.controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+  padding: 10px 12px; background: var(--room-2); border: 1px solid var(--line); border-radius: 10px;
+}
+.btn {
+  font-family: var(--mono); font-size: 14px; color: var(--text); background: transparent;
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; cursor: pointer; min-height: 36px;
+}
+.btn:hover { border-color: var(--accent); color: #fff; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); min-width: 84px; }
+.btn.primary:hover { filter: brightness(1.08); color: var(--accent-ink); }
+.btn[aria-pressed="false"] { color: var(--muted); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.clock { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 14px; min-width: 96px; }
+.scrub { position: relative; flex: 1 1 260px; min-width: 0; height: 36px; display: flex; align-items: center; }
+.scrub input { width: 100%; accent-color: var(--accent); position: relative; z-index: 1; background: transparent; }
+.ticks { position: absolute; left: 8px; right: 8px; top: 50%; height: 14px; transform: translateY(-50%); pointer-events: none; }
+.ticks i { position: absolute; top: 0; width: 1px; height: 14px; background: rgba(239, 230, 214, 0.35); }
+.rec-note { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 13px; }
+
+.chapters { display: flex; flex-wrap: wrap; gap: 8px; }
+.chap {
+  font-family: var(--mono); font-size: 13px; color: var(--muted); background: transparent;
+  border: 1px dashed var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer;
+  display: inline-flex; gap: 8px; align-items: baseline;
+}
+.chap b { font-weight: 400; color: rgba(239, 230, 214, 0.45); font-variant-numeric: tabular-nums; }
+.chap:hover { color: var(--text); border-color: var(--accent); }
+.chap[aria-current="true"] { color: var(--accent-ink); background: var(--accent); border-style: solid; border-color: var(--accent); }
+.chap[aria-current="true"] b { color: rgba(27, 21, 16, 0.6); }
+.foot { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; max-width: 90ch; }
+.foot a { color: var(--text); text-decoration-color: var(--accent); text-underline-offset: 3px; }
+.keys { color: rgba(239, 230, 214, 0.45); }
+
+@media (max-width: 560px) {
+  body { padding-block: 18px 28px; }
+  .controls { gap: 8px; }
+  .scrub { flex-basis: 100%; order: 5; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bigplay { transform: translate(-50%, -50%); }
+}
+</style>
+
+</head>
+<body>
+<main class="room">
+  <header class="top">
+    <p class="eyebrow">threadviewer.app/treeviewer · a p5.js showreel</p>
+    <h1>A thousand replies, <span>one tree</span></h1>
+    <p class="lede">About ninety seconds with Threadviewer's Treeviewer: paste any post from a huge Bluesky conversation, see every reply as one tree, then read it a single path at a time and steer between the branches.</p>
+  </header>
+
+  <div class="stage" id="stage">
+    <div id="canvas-host"></div>
+    <button class="bigplay" id="bigplay" type="button">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3 L17 10 L5 17 Z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      Play the film
+    </button>
+  </div>
+
+  <div class="controls" role="group" aria-label="Playback">
+    <button class="btn primary" id="play" type="button">Play</button>
+    <span class="clock" id="clock">0:00 / 0:00</span>
+    <div class="scrub">
+      <div class="ticks" id="ticks"></div>
+      <input type="range" id="scrub" min="0" max="1000" value="0" step="1" aria-label="Seek through the film">
+    </div>
+    <button class="btn" id="sound" type="button" aria-pressed="true">Sound on</button>
+    <button class="btn" id="full" type="button">Fullscreen</button>
+    <button class="btn" id="rec" type="button" hidden>Record .webm</button>
+    <p class="rec-note" id="rec-note" hidden></p>
+  </div>
+
+  <nav class="chapters" id="chapters" aria-label="Chapters"></nav>
+
+  <p class="foot">Every control shown is a real part of the Treeviewer in <a href="https://github.com/Carbonadoks/threadviewer" target="_blank" rel="noreferrer">Carbonadoks/threadviewer</a>. The handles, posts and numbers come from a generated sample conversation. <span class="keys">Space plays and pauses · ← → skip five seconds · F goes fullscreen.</span></p>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
+<script src="hotspots.js"></script>
+<script>
+// ─────────────────────────────────────────────────────────────
+// Follow the thread — a p5.js showreel for threadviewer.app
+// Virtual frame is 1920×1080. Every scene lives on one endless
+// sheet of grid paper and the camera flies between them.
+// ─────────────────────────────────────────────────────────────
+const W = 1920, H = 1080;
+const FLIGHT = 1.3;          // seconds spent flying between scenes
+const COLS = 4, GAPX = 2500, GAPY = 1650;
+
+let T = 0, PREV_T = 0, TOTAL = 0, BOIL = 0, GA = 1;
+let playing = false, started = false, lastMs = 0, dragging = false;
+let NIGHT = 0;
+const scenes = [];
+const K = {};
+
+// ── palette: [day, night] — lifted from src/app.css landing tokens
+const PAL = {
+  paper:  ['#fff9ea', '#161b26'],
+  grid:   ['#e9dfc6', '#222a39'],
+  grid2:  ['#e2d5b6', '#283146'],
+  ink:    ['#211d18', '#f2eadc'],
+  muted:  ['#6d6356', '#a9a293'],
+  soft:   ['#b3a892', '#5b6272'],
+  card:   ['#fffdf4', '#202837'],
+  accent: ['#e07a5f', '#4f7cff'],
+  hot:    ['#d95f43', '#ff8a6e'],
+  teal:   ['#1d7f6e', '#5cc2ae'],
+  purple: ['#8a4f83', '#c58bd0'],
+  blue:   ['#245e91', '#7fb0ff'],
+  olive:  ['#7b6a21', '#d2bd5a'],
+  root:   ['#fff1ac', '#4b4261'],
+  r1:     ['#d8f3eb', '#224a45'],
+  r2:     ['#dceafd', '#223d61'],
+  leaf:   ['#e8efb7', '#3f4b2c'],
+  branch: ['#ffd9c7', '#4a3442'],
+  quote:  ['#efd8f2', '#403454'],
+  note:   ['#fff6c9', '#26324a'],
+  map:    ['#dff1ff', '#1f3048'],
+  tape:   ['#ffdb75', '#4f7cff'],
+  shadow: ['#211d18', '#000000'],
+  dark:   ['#12201b', '#0b1411'],
+  green:  ['#5cf2a0', '#5cf2a0'],
+};
+const hexToArr = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16), 255];
+const PALA = {};
+for (const k in PAL) PALA[k] = [hexToArr(PAL[k][0]), hexToArr(PAL[k][1])];
+function mixPalette(n) {
+  for (const k in PALA) {
+    const a = PALA[k][0], b = PALA[k][1];
+    K[k] = [a[0] + (b[0] - a[0]) * n, a[1] + (b[1] - a[1]) * n, a[2] + (b[2] - a[2]) * n, 255];
+  }
+}
+mixPalette(0);
+
+// ── math
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const seg = (t, a, b) => clamp01((t - a) / (b - a));
+const eio = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+const eout = (p) => 1 - Math.pow(1 - p, 3);
+const bk = (p) => { if (p <= 0) return 0; if (p >= 1) return 1; const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2); };
+const R = (i, k = 0) => { const s = Math.sin(i * 127.1 + k * 311.7 + 0.5) * 43758.5453; return s - Math.floor(s); };
+const lerpN = (a, b, p) => a + (b - a) * p;
+const mixC = (a, b, p) => [lerpN(a[0], b[0], p), lerpN(a[1], b[1], p), lerpN(a[2], b[2], p), lerpN(a[3] ?? 255, b[3] ?? 255, p)];
+const fmtInt = (n) => Math.round(n).toLocaleString('en-US');
+
+// ── paint helpers (colors are [r,g,b,a] arrays, GA is a group alpha)
+function F(c, a = 1) { fill(c[0], c[1], c[2], (c[3] ?? 255) * a * GA); }
+function S(c, a = 1, w) { stroke(c[0], c[1], c[2], (c[3] ?? 255) * a * GA); if (w !== undefined) strokeWeight(w); }
+function withA(a, fn) { if (a <= 0.003) return; const prev = GA; GA *= a; fn(); GA = prev; }
+function vf(size) { textFont('Virgil'); textSize(size); textStyle(NORMAL); }
+function mf(size) { textFont('Share Tech Mono'); textSize(size); textStyle(NORMAL); }
+function txt(str, x, y, size, col, opts = {}) {
+  if (!str) return;
+  (opts.mono ? mf : vf)(size);
+  noStroke(); F(col, opts.a ?? 1);
+  textAlign(opts.align ?? LEFT, opts.valign ?? BASELINE);
+  if (opts.w) text(str, x, y, opts.w, opts.h ?? 2000); else text(str, x, y);
+}
+const typed = (str, p) => str.slice(0, Math.floor(str.length * clamp01(p) + 0.0001));
+
+// hand-drawn wobble: re-rolls 8 times a second, like boiling ink
+function jit(seed, amp = 1.5) { return (noise(seed * 7.13, BOIL * 1.37) - 0.5) * 2 * amp; }
+
+function roughLine(x1, y1, x2, y2, col, w = 2.5, seed = 0, a = 1) {
+  noFill();
+  for (let k = 0; k < 2; k++) {
+    const s = seed + k * 31;
+    S(col, a * (k ? 0.55 : 1), k ? w * 0.55 : w);
+    beginShape();
+    vertex(x1 + jit(s + 3, 1.4), y1 + jit(s + 4, 1.4));
+    quadraticVertex((x1 + x2) / 2 + jit(s + 1, 2.2), (y1 + y2) / 2 + jit(s + 2, 2.2), x2 + jit(s + 5, 1.4), y2 + jit(s + 6, 1.4));
+    endShape();
+  }
+}
+
+function blobPath(x, y, w, h, r, seed, a) {
+  const j = (k) => jit(seed + k * 1.7, a);
+  r = Math.min(r, w / 2, h / 2);
+  const r1 = r * (0.8 + 0.4 * R(seed, 1)), r2 = r * (0.8 + 0.4 * R(seed, 2));
+  const r3 = r * (0.8 + 0.4 * R(seed, 3)), r4 = r * (0.8 + 0.4 * R(seed, 4));
+  beginShape();
+  vertex(x + r1 + j(1), y + j(2));
+  vertex(x + w - r2 + j(3), y + j(4));
+  quadraticVertex(x + w + j(5), y + j(6), x + w + j(7), y + r2 + j(8));
+  vertex(x + w + j(9), y + h - r3 + j(10));
+  quadraticVertex(x + w + j(11), y + h + j(12), x + w - r3 + j(13), y + h + j(14));
+  vertex(x + r4 + j(15), y + h + j(16));
+  quadraticVertex(x + j(17), y + h + j(18), x + j(19), y + h - r4 + j(20));
+  vertex(x + j(21), y + r1 + j(22));
+  quadraticVertex(x + j(23), y + j(24), x + r1 + j(1), y + j(2));
+  endShape(CLOSE);
+}
+
+// sketchy card: offset flat shadow, fill, ink outline (the app's wobbly-border look)
+function blobRect(x, y, w, h, col, opts = {}) {
+  const seed = opts.seed ?? 0, r = opts.r ?? 16, a = opts.a ?? 1;
+  if (opts.shadow !== false) { noStroke(); F(K.shadow, 0.10 * a); blobPath(x + 8, y + 10, w, h, r, seed + 50, 0.8); }
+  if (col) F(col, a); else noFill();
+  if (opts.stroke === false) noStroke(); else S(opts.strokeCol ?? K.ink, a, opts.sw ?? 2.4);
+  blobPath(x, y, w, h, r, seed, opts.wob ?? 1.6);
+  if (opts.hl) { noFill(); S(K.accent, a * opts.hl, 5); blobPath(x - 7, y - 7, w + 14, h + 14, r + 6, seed + 9, 2); }
+}
+
+function bezPt(b, t) { return [bezierPoint(b[0], b[2], b[4], b[6], t), bezierPoint(b[1], b[3], b[5], b[7], t)]; }
+function bezLen(b) { let L = 0, p = bezPt(b, 0); for (let i = 1; i <= 24; i++) { const q = bezPt(b, i / 24); L += Math.hypot(q[0] - p[0], q[1] - p[1]); p = q; } return L; }
+
+// the doodle line from the landing page: fat round dots on a curve
+function dotCurve(b, prog, col, r = 3.6, gap = 15, a = 1) {
+  if (prog <= 0) return;
+  const L = bezLen(b), n = Math.floor((L * clamp01(prog)) / gap);
+  noStroke(); F(col, a);
+  for (let i = 0; i <= n; i++) {
+    const p = bezPt(b, (i * gap) / L);
+    circle(p[0] + jit(i * 3.1, 0.6), p[1] + jit(i * 5.3, 0.6), r * 2);
+  }
+}
+
+// partial rough curve with an arrowhead
+function arrowTo(x1, y1, x2, y2, prog, col, opts = {}) {
+  if (prog <= 0) return;
+  const bend = opts.bend ?? 0.18, seed = opts.seed ?? 0, w = opts.w ?? 3;
+  const dx = x2 - x1, dy = y2 - y1;
+  const b = [x1, y1, x1 + dx / 3 - dy * bend, y1 + dy / 3 + dx * bend, x1 + (2 * dx) / 3 - dy * bend, y1 + (2 * dy) / 3 + dx * bend, x2, y2];
+  const p = clamp01(prog), steps = 26;
+  noFill(); S(col, opts.a ?? 1, w);
+  beginShape();
+  for (let i = 0; i <= steps * p; i++) { const q = bezPt(b, i / steps); vertex(q[0] + jit(seed + i, 0.9), q[1] + jit(seed + i + 40, 0.9)); }
+  endShape();
+  if (p > 0.92) {
+    const e = bezPt(b, 1), d = bezPt(b, 0.9), ang = Math.atan2(e[1] - d[1], e[0] - d[0]), s = 18 * seg(p, 0.92, 1);
+    beginShape(); vertex(e[0] - Math.cos(ang - 0.45) * s, e[1] - Math.sin(ang - 0.45) * s); vertex(e[0], e[1]); vertex(e[0] - Math.cos(ang + 0.45) * s, e[1] - Math.sin(ang + 0.45) * s); endShape();
+  }
+}
+
+function tapeAt(x, y, w, h, rot, a = 1) {
+  if (a <= 0) return;
+  push(); translate(x, y); rotate(rot);
+  noStroke(); F(K.tape, 0.55 * a); rectMode(CENTER); rect(0, 0, w, h);
+  S(K.ink, 0.12 * a, 1); noFill(); rect(0, 0, w, h);
+  rectMode(CORNER); pop();
+}
+
+// swoosh underline
+function uline(x, y, w, prog, col, seed = 0, sw = 4) {
+  if (prog <= 0) return;
+  noFill(); S(col, 1, sw);
+  beginShape();
+  const n = 20;
+  for (let i = 0; i <= n * clamp01(prog); i++) { const u = i / n; vertex(x + u * w, y + Math.sin(u * Math.PI) * 6 - u * 4 + jit(seed + i, 0.8)); }
+  endShape();
+}
+
+function scribbleCircle(cx, cy, rw, rh, prog, col, seed = 0, sw = 3.5) {
+  if (prog <= 0) return;
+  noFill(); S(col, 1, sw);
+  beginShape();
+  const turns = 1.15, n = 48;
+  for (let i = 0; i <= n * clamp01(prog); i++) {
+    const u = (i / n) * turns * Math.PI * 2 - 2.2;
+    const wob = 1 + 0.05 * Math.sin(u * 3 + seed) + (i / n) * 0.06;
+    vertex(cx + Math.cos(u) * rw * wob + jit(seed + i, 0.8), cy + Math.sin(u) * rh * wob + jit(seed + i + 9, 0.8));
+  }
+  endShape();
+}
+
+// fake handwriting: a few scribbled lines
+function scribbleLines(x, y, w, lines, gap, col, prog = 1, seed = 0, a = 1) {
+  noFill();
+  for (let l = 0; l < lines; l++) {
+    const lw = w * (l === lines - 1 ? 0.55 + 0.3 * R(seed, l) : 0.82 + 0.18 * R(seed, l));
+    const p = clamp01(prog * lines - l);
+    if (p <= 0) break;
+    S(col, a, 3);
+    beginShape();
+    const n = Math.max(2, Math.floor(lw / 14));
+    for (let i = 0; i <= n * p; i++) vertex(x + (i / n) * lw, y + l * gap + Math.sin(i * 1.7 + seed + l) * 2.2 + jit(seed + l * 20 + i, 0.6));
+    endShape();
+  }
+}
+
+function chipAt(x, y, label, col, opts = {}) {
+  const size = opts.size ?? 26;
+  (opts.mono ? mf : vf)(size);
+  const w = textWidth(label) + size * 1.3, h = size * 1.75;
+  const a = opts.a ?? 1;
+  withA(a, () => {
+    blobRect(x, y, w, h, col, { r: h / 2, seed: opts.seed ?? 3, sw: 2, dashed: opts.dashed, shadow: opts.shadow });
+    txt(label, x + w / 2, y + h / 2 + size * 0.33, size, opts.textCol ?? K.ink, { align: CENTER, mono: opts.mono });
+    Hot.add(label, x, y, w, h, col === K.root || col === K.accent ? 'on' : undefined);
+  });
+  return w;
+}
+
+function cloudAt(cx, cy, rw, rh, col, seed = 0, a = 1) {
+  withA(a, () => {
+    F(col); S(K.ink, 1, 2.6);
+    beginShape();
+    const n = 80;
+    for (let i = 0; i < n; i++) {
+      const u = (i / n) * Math.PI * 2;
+      const bump = 0.86 + 0.2 * Math.abs(Math.sin(u * 3.5 + seed));
+      let y = cy + Math.sin(u) * rh * bump;
+      y = Math.min(y, cy + rh * 0.62);
+      vertex(cx + Math.cos(u) * rw * bump + jit(seed + i, 0.7), y + jit(seed + i + 90, 0.7));
+    }
+    endShape(CLOSE);
+  });
+}
+
+// scene heading: mono kicker, big hand title with swoosh, typed subtitle
+function heading(t, kicker, title, sub, opts = {}) {
+  const x = opts.x ?? 120, y = opts.y ?? 150, w = opts.w ?? 760;
+  const a1 = seg(t, -0.5, 0.2), a2 = eout(seg(t, -0.3, 0.6)), a3 = seg(t, 0.4, 1.8);
+  withA(a1, () => txt(kicker, x, y - 70, 24, K.accent, { mono: true }));
+  if (a2 > 0) {
+    push(); translate(x, y + (1 - a2) * 30);
+    withA(a2, () => txt(title, 0, 0, opts.size ?? 82, K.ink));
+    vf(opts.size ?? 82);
+    if (a2 > 0.5) Hot.heading(title, sub, 0, -(opts.size ?? 82) * 0.8, textWidth(title), opts.size ?? 82);
+    uline(0, 26, Math.min(textWidth(title), w), seg(t, 0.2, 1.1), K.accent, 7);
+    pop();
+  }
+  if (sub) txt(typed(sub, a3), x, y + 56, opts.subSize ?? 30, K.muted, { w, valign: TOP });
+}
+
+// ── scene registry & timeline
+function scene(def) { scenes.push(def); }
+
+function layoutScenes() {
+  let t = 0, idx = 0;
+  for (const s of scenes) {
+    s.flight = (idx === 0 || s.world) ? 0 : FLIGHT;
+    s.start = t;
+    t += s.flight + s.dur;
+    if (!s.world) {
+      const row = Math.floor(idx / COLS), col = idx % COLS;
+      s.col = row % 2 === 0 ? col : COLS - 1 - col;
+      s.row = row;
+      s.ox = s.col * GAPX; s.oy = row * GAPY;
+    }
+    idx++;
+  }
+  TOTAL = t;
+}
+
+function localT(s) { return T - s.start - s.flight; }
+function sceneIndexAt(tt) { let i = 0; for (let k = 0; k < scenes.length; k++) if (tt >= scenes[k].start) i = k; return i; }
+
+function sceneCam(s, t) {
+  if (s.world) return s.cam(t);
+  const c = s.cam ? s.cam(t) : { x: W / 2, y: H / 2, z: 1 + 0.035 * clamp01(t / s.dur) };
+  return { x: s.ox + c.x, y: s.oy + c.y, z: c.z };
+}
+
+function camAt(tt) {
+  const i = sceneIndexAt(tt), s = scenes[i], lt = tt - s.start - s.flight;
+  const b = sceneCam(s, Math.max(0, lt));
+  if (lt < 0 && i > 0) {
+    const pa = scenes[i - 1], a = sceneCam(pa, pa.dur);
+    const p = eio(clamp01((tt - s.start) / s.flight));
+    return { x: lerpN(a.x, b.x, p), y: lerpN(a.y, b.y, p), z: lerpN(a.z, b.z, p) * (1 - 0.45 * Math.sin(Math.PI * p)) };
+  }
+  return b;
+}
+
+// exit/entry points of each scene for the connecting thread
+function threadCurve(a, b) {
+  let p1, p2, c1, c2;
+  if (a.row === b.row) {
+    const dir = b.ox > a.ox ? 1 : -1;
+    p1 = [a.ox + (dir > 0 ? W + 40 : -40), a.oy + H * 0.62];
+    p2 = [b.ox + (dir > 0 ? -40 : W + 40), b.oy + H * 0.38];
+    c1 = [p1[0] + dir * 260, p1[1] + 180]; c2 = [p2[0] - dir * 260, p2[1] - 180];
+  } else {
+    p1 = [a.ox + W * 0.5, a.oy + H + 40];
+    p2 = [b.ox + W * 0.5, b.oy - 40];
+    c1 = [p1[0] + 320, p1[1] + 220]; c2 = [p2[0] - 320, p2[1] - 220];
+  }
+  return [p1[0], p1[1], c1[0], c1[1], c2[0], c2[1], p2[0], p2[1]];
+}
+const THREAD_COLS = ['accent', 'teal', 'purple', 'blue', 'hot', 'olive'];
+
+function drawThreadPath(cam) {
+  const zf = Math.max(1, 0.5 / cam.z);
+  const list = scenes.filter((s) => !s.world);
+  for (let i = 0; i < list.length - 1; i++) {
+    const a = list[i], b = list[i + 1];
+    const p = clamp01((T - b.start) / (b.flight * 0.8));
+    if (p <= 0) continue;
+    dotCurve(threadCurve(a, b), eio(p), K[THREAD_COLS[i % THREAD_COLS.length]], 5.5 * zf, 22 * zf, 0.8);
+  }
+}
+
+function drawGrid(cam) {
+  const hw = W / 2 / cam.z, hh = H / 2 / cam.z;
+  const x0 = cam.x - hw, x1 = cam.x + hw, y0 = cam.y - hh, y1 = cam.y + hh;
+  const step = cam.z < 0.3 ? 180 : 36;
+  strokeWeight(1 / cam.z);
+  S(K.grid, cam.z < 0.3 ? 0.6 : 1);
+  for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) line(x, y0, x, y1);
+  for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) line(x0, y, x1, y);
+}
+
+function visible(s, cam) {
+  const hw = W / 2 / cam.z, hh = H / 2 / cam.z;
+  return s.ox < cam.x + hw && s.ox + W > cam.x - hw && s.oy < cam.y + hh && s.oy + H > cam.y - hh;
+}
+
+// far-away scenes become index cards with their chapter name
+function drawLOD(s, i) {
+  const seen = T >= s.start;
+  withA(seen ? 1 : 0.25, () => {
+    blobRect(40, 40, W - 80, H - 80, K.card, { r: 40, seed: i * 11, sw: 6, wob: 3 });
+    txt(s.kicker, W / 2, H / 2 - 150, 80, K.accent, { align: CENTER, mono: true });
+    txt(s.chapter, W / 2, H / 2 + 90, 190, K.ink, { align: CENTER });
+    tapeAt(W * 0.2, 44, 360, 90, -0.08); tapeAt(W * 0.8, H - 44, 360, 90, 0.06);
+  });
+}
+
+function vignette() {
+  const g = drawingContext.createRadialGradient(W / 2, H / 2, H * 0.32, W / 2, H / 2, H * 1.0);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, NIGHT > 0.5 ? 'rgba(0,0,0,0.45)' : 'rgba(70,45,15,0.16)');
+  drawingContext.fillStyle = g;
+  drawingContext.fillRect(0, 0, W, H);
+}
+
+// dark mode switches on with Blast mode and dawn comes back for the end card
+function nightAt(tt) {
+  const a = scenes.find((s) => s.id === 'more'), f = scenes.find((s) => s.id === 'finale');
+  if (!a || !f) return 0;
+  const up = seg(tt, a.start + a.flight + 3.9, a.start + a.flight + 4.8);
+  const down = seg(tt, f.start + 2.6, f.start + 3.8);
+  return eio(up) * (1 - eio(down));
+}
+
+const gauss = (i, k) => (R(i, k) + R(i, k + 1) + R(i, k + 2) - 1.5) / 1.5;
+
+// keyed values: keys are [time, ...values, glide?]; each key glides in over `glide` seconds ending at its time
+function keyed(t, keys, n, glide = 0.6) {
+  const v = keys[0].slice(1, 1 + n);
+  for (let i = 1; i < keys.length; i++) {
+    const k = keys[i], g = k[1 + n] ?? glide;
+    const p = eio(seg(t, k[0] - g, k[0]));
+    if (p <= 0) break;
+    for (let j = 0; j < n; j++) v[j] = lerpN(v[j], k[1 + j], p);
+  }
+  return v;
+}
+
+// a drawn mouse pointer: keys are [time, x, y, click?, glide?]
+function arrowShape(ox, oy) {
+  beginShape(); vertex(ox, oy); vertex(ox, oy + 44); vertex(ox + 11, oy + 34); vertex(ox + 20, oy + 52);
+  vertex(ox + 28, oy + 48); vertex(ox + 19, oy + 31); vertex(ox + 33, oy + 31); endShape(CLOSE);
+}
+function drawCursor(t, keys, a = 1) {
+  if (a <= 0.003) return;
+  Hot.cursor(t, keys);
+  let x = keys[0][1], y = keys[0][2];
+  for (let i = 1; i < keys.length; i++) {
+    const [t1, x1, y1, , g] = keys[i];
+    const p = eio(seg(t, t1 - (g ?? Math.min(0.55, t1 - keys[i - 1][0])), t1));
+    if (p <= 0) break;
+    x = lerpN(x, x1, p); y = lerpN(y, y1, p);
+  }
+  let press = 1;
+  for (const k of keys) {
+    if (!k[3]) continue;
+    const d = t - k[0];
+    if (d >= 0 && d < 0.5) { noFill(); S(K.accent, a * (1 - d / 0.5), 3); circle(k[1], k[2], 18 + d * 110); }
+    if (d >= -0.05 && d < 0.14) press = 0.86;
+    if (k[3] === 'hold' && d >= 0) { const nx = keys[keys.indexOf(k) + 1]; if (nx && t < nx[0]) press = 0.86; }
+  }
+  withA(a, () => {
+    push(); translate(x, y); scale(press);
+    noStroke(); F(K.shadow, 0.2); arrowShape(5, 6);
+    F(K.card); S(K.ink, 1, 2.6); arrowShape(0, 0);
+    pop();
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// The sample conversation: one question, a couple of thousand replies.
+// Every scene draws from this same tree, so the paths, counts and
+// branch sizes you see on screen are real numbers from it.
+// ════════════════════════════════════════════════════════════
+const NAMES = ['Maya', 'Kite', 'Orbital', 'Moss', 'Juniper', 'Quill', 'Fern', 'Pip', 'Otto', 'Wren', 'Lumen', 'Basil'];
+const HANDLES = ['maya.garden', 'kite.blue', 'orbital.dev', 'moss.dev', 'juniper.fm', 'quill.ink', 'fern.social', 'pip.bsky.social', 'otto.zone', 'wren.cafe', 'lumen.art', 'basil.works'];
+const SYL = ['ra', 'lo', 'mi', 'ke', 'su', 'ta', 'no', 'vi', 'ze', 'po', 'ha', 'ri', 'du', 'fe', 'ya', 'bo'];
+const nameOf = (a) => a < NAMES.length ? NAMES[a] : (SYL[a % 16] + SYL[(a >> 4) % 16] + SYL[(a * 7) % 16]).replace(/^./, (c) => c.toUpperCase());
+const handleOf = (a) => a < HANDLES.length ? HANDLES[a] : nameOf(a).toLowerCase() + '.bsky.social';
+const AUTHOR_COLS = ['accent', 'teal', 'purple', 'blue', 'olive', 'hot'];
+const authorCol = (a) => K[AUTHOR_COLS[a % AUTHOR_COLS.length]];
+
+const TN = [];
+const rnd = (() => { let s = 0; return () => R(++s, 23); })();
+function addNode(p, a) {
+  TN.push({ p, d: p < 0 ? 0 : TN[p].d + 1, a, kids: [] });
+  const i = TN.length - 1;
+  if (p >= 0) TN[p].kids.push(i);
+  return i;
+}
+const pickA = (not) => { let a; do a = 12 + Math.floor(rnd() * 900); while (a === not); return a; };
+function scatter(p, depth) {
+  if (TN.length > 2300) return;
+  const pk = 0.64 * Math.pow(0.74, depth);
+  let n = 0;
+  while (n < 4 && rnd() < pk) n++;
+  for (let k = 0; k < n; k++) scatter(addNode(p, rnd() < 0.18 ? TN[p].a : pickA(TN[p].a)), depth + 1);
+}
+function chain(p, len, authors, side = 0.12) {
+  const out = [];
+  let cur = p;
+  for (let k = 0; k < len; k++) {
+    cur = addNode(cur, authors[k % authors.length]);
+    out.push(cur);
+    if (rnd() < side) scatter(addNode(cur, pickA()), 2);
+  }
+  return out;
+}
+const ROOT = addNode(-1, 0);
+const SPINE = [ROOT, ...chain(ROOT, 29, [0], 0)];            // Maya's own 30-post self-reply chain
+const DA = chain(SPINE[1], 2, [1, 2], 0);                     // Kite replies, Orbital asks "doesn't it, though?"
+const BRANCH = DA[1];
+DA.push(...chain(BRANCH, 50, [1, 0, 2, 1, 2, 0, 1, 2, 0], 0.16)); // the longest back-and-forth
+const DB = chain(BRANCH, 18, [3, 3, 3, 2, 3, 3, 1, 3, 3], 0);  // Moss explains parallax
+const DJ = chain(BRANCH, 6, [4, 4, 0, 4, 4, 4], 0);            // Juniper's streetlight
+chain(BRANCH, 3, [5, 5, 1], 0);
+for (let k = 0; k < 4; k++) scatter(addNode(BRANCH, pickA()), 1);
+chain(SPINE[8], 24, [6, 7], 0.15);
+chain(SPINE[15], 16, [8, 9, 8], 0.15);
+chain(SPINE[3], 12, [10, 11], 0.2);
+SPINE.forEach((s, i) => { if (i < 2) return; const n = Math.floor(rnd() * Math.max(2, 9 - i * 0.25)); for (let k = 0; k < n; k++) scatter(addNode(s, pickA()), 1); });
+for (let k = 0; k < 10; k++) scatter(addNode(SPINE[1], pickA()), 1);
+for (let k = 0; k < 700 && TN.length < 2300; k++) scatter(addNode(ROOT, pickA()), 1);
+
+const NT = TN.length;
+const LONG = new Array(NT).fill(1), SIZE = new Array(NT).fill(1);
+for (let i = NT - 1; i > 0; i--) { const p = TN[i].p; LONG[p] = Math.max(LONG[p], LONG[i] + 1); SIZE[p] += SIZE[i]; }
+TN.forEach((n) => n.kids.sort((a, b) => LONG[b] - LONG[a] || a - b));
+const POS = new Float32Array(NT);
+let NL = 0, MAXD = 0;
+(function lay(i) {
+  const k = TN[i].kids;
+  MAXD = Math.max(MAXD, TN[i].d);
+  if (!k.length) { POS[i] = NL++; return; }
+  k.forEach(lay);
+  POS[i] = (POS[k[0]] + POS[k[k.length - 1]]) / 2;
+})(ROOT);
+const NPOS = new Float32Array(NT);
+for (let i = 0; i < NT; i++) NPOS[i] = POS[i] / (NL - 1);
+// breadth-first rank, so a tree can grow in level by level
+const RANK = new Int32Array(NT);
+Array.from({ length: NT }, (_, i) => i).sort((a, b) => TN[a].d - TN[b].d || POS[a] - POS[b]).forEach((i, r) => { RANK[i] = r; });
+const longestFrom = (i) => { const p = [i]; while (TN[p[p.length - 1]].kids.length) p.push(TN[p[p.length - 1]].kids[0]); return p; };
+const pathTo = (i) => { const p = []; for (let c = i; c >= 0; c = TN[c].p) p.unshift(c); return p; };
+const PATH_A = longestFrom(ROOT);
+const PATH_B = [...pathTo(BRANCH), ...longestFrom(DB[0])];
+const PATH_J = [...pathTo(BRANCH), ...longestFrom(DJ[0])];
+const LEAVES = NL;
+const PEOPLE = new Set(TN.map((n) => n.a)).size;
+const BRANCH_ALTS = TN[BRANCH].kids.filter((k) => k !== DA[2]);
+
+// self-reply chains: a run of posts by one author, as the Chains view lists them
+const ROW_OF = new Int32Array(NT), ROWS = [];
+(function rows(i, parentRow) {
+  const p = TN[i].p;
+  const cont = p >= 0 && TN[p].a === TN[i].a && TN[p].kids.find((k) => TN[k].a === TN[p].a) === i;
+  if (cont) { ROW_OF[i] = ROW_OF[p]; ROWS[ROW_OF[p]].count++; }
+  else { ROWS.push({ start: i, a: TN[i].a, count: 1, depth: parentRow < 0 ? 0 : ROWS[parentRow].depth + 1 }); ROW_OF[i] = ROWS.length - 1; }
+  const mine = ROW_OF[i];
+  // continue the chain first so each row reads top to bottom
+  const kids = TN[i].kids.slice().sort((a, b) => (TN[b].a === TN[i].a) - (TN[a].a === TN[i].a));
+  kids.forEach((k) => rows(k, mine));
+})(ROOT, -1);
+
+// ── laying the tree out. Every layout is a pure function of the node, so
+//    switching layouts is just a lerp between two of them.
+const PX = new Float32Array(NT), PY = new Float32Array(NT);
+function layoutPos(mode, i, B) {
+  const n = TN[i];
+  if (mode === 'v') return [B.x + ((NPOS[i] - (B.lo ?? 0)) / ((B.hi ?? 1) - (B.lo ?? 0))) * B.w, B.y + (n.d / MAXD) * B.h];
+  if (mode === 'h') return [B.x + (n.d / MAXD) * B.w, B.y + ((NPOS[i] - (B.lo ?? 0)) / ((B.hi ?? 1) - (B.lo ?? 0))) * B.h];
+  if (mode === 'r') {
+    const ang = ((B.start + ((POS[i] + 0.5) / NL) * B.arc) * Math.PI) / 180;
+    const r = B.r1 * Math.pow(n.d / MAXD, 0.62);
+    return [B.cx + Math.cos(ang) * r, B.cy + Math.sin(ang) * r];
+  }
+  const row = ROW_OF[i];
+  return [B.x + ROWS[row].depth * B.indent + 16, B.y + row * B.rowH];
+}
+function fillLayout(from, to, p, B) {
+  for (let i = 0; i < NT; i++) {
+    const a = layoutPos(from, i, B);
+    if (p <= 0) { PX[i] = a[0]; PY[i] = a[1]; continue; }
+    const b = layoutPos(to, i, B);
+    PX[i] = lerpN(a[0], b[0], p); PY[i] = lerpN(a[1], b[1], p);
+  }
+}
+const cssC = (c, a) => 'rgba(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ',' + Math.max(0, Math.min(1, a * GA)).toFixed(3) + ')';
+
+// draws straight from PX/PY with the raw canvas: two thousand nodes in a
+// handful of batched paths, cheap enough for 60fps recording
+function drawTree(o = {}) {
+  const ctx = drawingContext, a = o.a ?? 1, shown = o.shown ?? NT, r = o.r ?? 3.2;
+  if (a <= 0.003) return;
+  ctx.save();
+  if (o.clip) { ctx.beginPath(); ctx.rect(o.clip[0], o.clip[1], o.clip[2], o.clip[3]); ctx.clip(); }
+  ctx.lineWidth = o.lw ?? 1.2;
+  ctx.strokeStyle = cssC(K.soft, a * 0.85);
+  ctx.beginPath();
+  for (let i = 1; i < NT; i++) {
+    if (RANK[i] >= shown) continue;
+    const p = TN[i].p;
+    ctx.moveTo(PX[p], PY[p]); ctx.lineTo(PX[i], PY[i]);
+  }
+  ctx.stroke();
+  const nodeA = a * (o.nodeA ?? 1);
+  for (let c = 0; c < AUTHOR_COLS.length; c++) {
+    ctx.fillStyle = cssC(K[AUTHOR_COLS[c]], nodeA);
+    ctx.beginPath();
+    for (let i = 0; i < NT; i++) {
+      if (RANK[i] >= shown || TN[i].a % AUTHOR_COLS.length !== c) continue;
+      const rr = i === ROOT ? r * 2.6 : r;
+      ctx.moveTo(PX[i] + rr, PY[i]); ctx.arc(PX[i], PY[i], rr, 0, 6.2832);
+    }
+    ctx.fill();
+  }
+  if (o.leafGlow > 0) {
+    ctx.strokeStyle = cssC(K.olive, a * o.leafGlow); ctx.lineWidth = 1.6; ctx.beginPath();
+    for (let i = 0; i < NT; i++) {
+      if (TN[i].kids.length || RANK[i] >= shown) continue;
+      const rr = r + 2.5 + 1.5 * Math.sin(T * 5 + i);
+      ctx.moveTo(PX[i] + rr, PY[i]); ctx.arc(PX[i], PY[i], rr, 0, 6.2832);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+  (o.paths || []).forEach((P) => drawPathLine(P, o.clip));
+}
+// a selected path: fat ink line, outlined nodes. prog runs 0..1 from `from` to the leaf
+function drawPathLine(P, clip) {
+  const { path, prog = 1, a = 1, from = 0, col = K.ink, w = 4.5 } = P;
+  if (prog <= 0 || a <= 0.003) return;
+  const ctx = drawingContext, last = from + (path.length - 1 - from) * clamp01(prog);
+  ctx.save();
+  if (clip) { ctx.beginPath(); ctx.rect(clip[0], clip[1], clip[2], clip[3]); ctx.clip(); }
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.strokeStyle = cssC(K.accent, a * 0.35); ctx.lineWidth = w * 3;
+  const trace = () => {
+    ctx.beginPath(); ctx.moveTo(PX[path[0]], PY[path[0]]);
+    for (let k = 1; k <= last; k++) ctx.lineTo(PX[path[k]], PY[path[k]]);
+    const f = last - Math.floor(last), k0 = Math.floor(last);
+    if (f > 0 && k0 + 1 < path.length) ctx.lineTo(lerpN(PX[path[k0]], PX[path[k0 + 1]], f), lerpN(PY[path[k0]], PY[path[k0 + 1]], f));
+    ctx.stroke();
+  };
+  trace();
+  ctx.strokeStyle = cssC(col, a); ctx.lineWidth = w; trace();
+  ctx.fillStyle = cssC(K.card, a); ctx.lineWidth = 2;
+  for (let k = 0; k <= last; k++) { ctx.beginPath(); ctx.arc(PX[path[k]], PY[path[k]], w * 0.95, 0, 6.2832); ctx.fill(); ctx.stroke(); }
+  ctx.restore();
+}
+
+// ── small UI pieces shared by the scenes
+function wrapText(str, w, size, mono) {
+  (mono ? mf : vf)(size);
+  const words = str.split(' '), lines = [];
+  let cur = '';
+  for (const wd of words) {
+    const nx = cur ? cur + ' ' + wd : wd;
+    if (cur && textWidth(nx) > w) { lines.push(cur); cur = wd; } else cur = nx;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+function chipRowLayout(x, y, labels, size = 22, gap = 10, alignRight = false) {
+  vf(size);
+  const ws = labels.map((l) => textWidth(l) + size * 1.3), h = size * 1.75;
+  let cx = alignRight ? x - ws.reduce((a, b) => a + b, 0) - gap * (labels.length - 1) : x;
+  return labels.map((label, i) => { const r = { label, x: cx, y, w: ws[i], h, cx: cx + ws[i] / 2, cy: y + h / 2 }; cx += ws[i] + gap; return r; });
+}
+function drawChipRow(rects, isActive, size = 22, a = 1) {
+  rects.forEach((r, i) => chipAt(r.x, r.y, r.label, isActive(r.label, i) ? K.root : K.card, { size, seed: 900 + i * 7 + r.label.length, shadow: false, a }));
+}
+function avatarAt(x, y, d, a, alpha = 1) {
+  withA(alpha, () => {
+    noStroke(); F(authorCol(a)); circle(x, y, d);
+    S(K.ink, 1, 2); noFill(); circle(x, y, d);
+    txt(nameOf(a)[0], x, y + d * 0.2, d * 0.55, K.card, { align: CENTER });
+  });
+}
+function keycap(x, y, label, press, a = 1) {
+  withA(a, () => {
+    push(); translate(x, y + press * 5);
+    noStroke(); F(K.shadow, 0.18); rect(-34, -26 + 10 - press * 5, 68, 60, 10);
+    blobRect(-34, -34, 68, 60, K.note, { r: 10, seed: label.charCodeAt(0), sw: 2.6, shadow: false });
+    txt(label, 0, 10, 36, K.ink, { align: CENTER, mono: true });
+    pop();
+  });
+}
+function sliderRow(x, y, w, label, value, frac, a = 1) {
+  withA(a, () => {
+    txt(label, x, y, 20, K.muted); txt(value, x + w, y, 20, K.ink, { mono: true, align: RIGHT });
+    noStroke(); F(K.soft, 0.5); rect(x, y + 14, w, 6, 3);
+    F(K.accent); rect(x, y + 14, w * frac, 6, 3);
+    S(K.ink, 1, 2); F(K.card); circle(x + w * frac, y + 17, 18);
+  });
+}
+function doodleNode(n, s, t) {
+  const p = bk(seg(t, n.at, n.at + 0.55));
+  if (p <= 0) return;
+  vf(28);
+  const w = textWidth(n.label) + 46, h = 56;
+  push(); translate(n.x, n.y); rotate(n.rot); scale(p);
+  blobRect(-w / 2, -h / 2, w, h, K[n.c], { r: 26, seed: s * 7 });
+  txt(n.label, 0, 10, 28, K.ink, { align: CENTER });
+  Hot.add(n.label, -w / 2, -h / 2, w, h);
+  pop();
+}
+function sketchButton(x, y, label, primary, press = 0, a = 1) {
+  vf(28);
+  const w = textWidth(label) + 52, h = 60;
+  push(); translate(x + w / 2, y + h / 2); scale(1 - 0.06 * Math.sin(Math.PI * press));
+  withA(a, () => {
+    blobRect(-w / 2, -h / 2, w, h, primary ? K.ink : K.note, { r: 22, seed: label.length * 3 });
+    txt(label, 0, 10, 28, primary ? K.card : K.ink, { align: CENTER });
+    Hot.add(label, -w / 2, -h / 2, w, h, press > 0 && press < 1 ? 'press' : undefined);
+  });
+  pop();
+  return w;
+}
+function clipRect(x, y, w, h, fn) {
+  const ctx = drawingContext;
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  fn();
+  ctx.restore();
+}
+function note(x, y, str, p, opts = {}) {
+  if (p <= 0) return;
+  txt(typed(str, p), x, y, opts.size ?? 30, opts.col ?? K.accent, { align: opts.align ?? LEFT, w: opts.w, valign: opts.w ? TOP : BASELINE });
+}
+
+// ════════════════════════════════════════════════════════════
+// 0 · Cold open — one dot branches into a whole conversation
+// ════════════════════════════════════════════════════════════
+const OPEN_NODES = [
+  { label: 'the post', x: 1290, y: 190, c: 'root', rot: -0.07, at: 0.7 },
+  { label: 'reply', x: 1090, y: 420, c: 'r1', rot: 0.05, at: 1.2 },
+  { label: 'side-argument', x: 1600, y: 380, c: 'branch', rot: -0.06, at: 1.7 },
+  { label: 'branch', x: 1370, y: 620, c: 'r2', rot: -0.03, at: 1.9 },
+  { label: 'leaf', x: 1190, y: 900, c: 'leaf', rot: 0.07, at: 2.3 },
+  { label: 'quote lane', x: 1730, y: 780, c: 'quote', rot: 0.05, at: 2.6 },
+];
+scene({
+  id: 'open', chapter: 'Treeviewer', kicker: 'PROLOGUE', dur: 5.5,
+  cues: [[0.4, 'pluck', 81], [1.9, 'chime', 74], [5.0, 'pluck', 86]],
+  cam: (t) => {
+    const p = eio(seg(t, 0.2, 2.6));
+    return { x: lerpN(1290, 960, p), y: lerpN(230, 540, p), z: lerpN(2.6, 1, p) + 0.035 * seg(t, 2.6, 5.5) };
+  },
+  draw(t) {
+    const d0 = bk(seg(t, 0.0, 0.5));
+    noStroke(); F(K.ink); circle(1290, 230, 12 * d0);
+    dotCurve([1290, 230, 1230, 300, 1120, 360, 1090, 420], eio(seg(t, 0.4, 1.4)), K.ink, 4.2, 16, 0.72);
+    dotCurve([1290, 230, 1420, 280, 1560, 320, 1600, 380], eio(seg(t, 0.8, 1.9)), K.teal, 4.2, 16, 0.72);
+    dotCurve([1090, 420, 1200, 480, 1340, 540, 1370, 620], eio(seg(t, 1.2, 2.2)), K.purple, 4.2, 16, 0.72);
+    dotCurve([1370, 620, 1330, 720, 1220, 820, 1190, 900], eio(seg(t, 1.6, 2.6)), K.hot, 4.2, 16, 0.72);
+    dotCurve([1370, 620, 1500, 660, 1680, 700, 1730, 780], eio(seg(t, 1.8, 2.8)), K.blue, 4.2, 16, 0.72);
+    dotCurve([1600, 380, 1700, 460, 1820, 520, 1860, 620], eio(seg(t, 2.0, 3.0)), K.olive, 4.2, 16, 0.72);
+    OPEN_NODES.forEach((n, i) => doodleNode(n, i, t));
+
+    // sticky notes: a radial doodle and a chat doodle
+    const cn = bk(seg(t, 2.4, 2.9));
+    if (cn > 0) {
+      push(); translate(1700, 170); rotate(0.05); scale(cn);
+      blobRect(-120, -85, 240, 175, K.note, { r: 14, seed: 41 });
+      txt('radial', -94, -42, 30, K.ink);
+      for (let k = 0; k < 16; k++) {
+        const ang = (k / 16) * Math.PI * 2, r = 30 + 18 * R(k, 3);
+        S(K.soft, 1, 1.6); line(10, 26, 10 + Math.cos(ang) * r, 26 + Math.sin(ang) * r * 0.8);
+        noStroke(); F(authorCol(k)); circle(10 + Math.cos(ang) * r, 26 + Math.sin(ang) * r * 0.8, 9);
+      }
+      noStroke(); F(K.ink); circle(10, 26, 12);
+      pop();
+    }
+    const mn = bk(seg(t, 2.6, 3.1));
+    if (mn > 0) {
+      push(); translate(1600, 960); rotate(-0.05); scale(mn);
+      blobRect(-115, -70, 230, 140, K.map, { r: 14, seed: 43 });
+      txt('chat', -90, -30, 30, K.ink);
+      noStroke(); F(K.card); S(K.ink, 1, 1.6); rect(-90, -8, 120, 22, 11); rect(-40, 24, 130, 22, 11);
+      pop();
+    }
+
+    // title card
+    const cp = eout(seg(t, 1.8, 2.5));
+    if (cp > 0) {
+      push(); translate(510, 560); rotate(-0.012); scale(0.92 + 0.08 * cp); translate(-510, -560);
+      withA(cp, () => {
+        blobRect(110, 270, 800, 590, K.card, { r: 22, seed: 5, sw: 3 });
+        txt('Tree', 168, 452, 150, K.ink);
+        txt('viewer', 168, 596, 150, K.ink);
+      });
+      txt(typed('Open any Bluesky thread as one tree. Thousands of replies, every branch, read one path at a time.', seg(t, 2.6, 4.2)), 172, 640, 30, K.muted, { w: 690, valign: TOP });
+      const bp = seg(t, 4.2, 4.5);
+      if (bp > 0) {
+        const w1 = sketchButton(172, 770, 'paste a thread', true, seg(t, 4.9, 5.2), bp);
+        sketchButton(172 + w1 + 16, 770, 'read a path', false, 0, bp);
+      }
+      pop();
+      tapeAt(200, 280, 150, 42, -0.12, seg(t, 2.3, 2.5));
+      tapeAt(830, 858, 150, 42, 0.1, seg(t, 2.5, 2.7));
+    }
+
+    const ab = eout(seg(t, 3.2, 3.6));
+    if (ab > 0) withA(ab, () => {
+      blobRect(110, 120, 600, 70, K.card, { r: 35, seed: 61 });
+      noFill(); S(K.ink, 1, 2.4); rect(146, 146, 20, 16, 3); arc(156, 146, 14, 18, Math.PI, 0);
+      txt(typed('threadviewer.app/treeviewer', seg(t, 3.4, 4.3)), 190, 167, 32, K.ink, { mono: true });
+    });
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 1 · Load — paste any post, climb to the root, pull every reply
+// ════════════════════════════════════════════════════════════
+const MINI = [];
+(() => {
+  const add = (p, d, late) => { MINI.push({ p, d, late, kids: [], a: MINI.length * 5 + 3 }); const i = MINI.length - 1; if (p >= 0) MINI[p].kids.push(i); return i; };
+  const r = add(-1, 0, false);
+  for (let a = 0; a < 6; a++) {
+    const c = add(r, 1, false), n2 = 1 + Math.floor(R(a, 31) * 3);
+    for (let b = 0; b < n2; b++) {
+      const c2 = add(c, 2, false), n3 = Math.floor(R(a * 7 + b, 32) * 3);
+      for (let k = 0; k < n3; k++) {
+        const c3 = add(c2, 3, false);
+        if (R(a * 13 + b * 5 + k, 33) < 0.4) { MINI[c3].trunc = true; const n4 = 2 + Math.floor(R(a + b * 3 + k, 34) * 2); for (let q = 0; q < n4; q++) add(c3, 4, true); }
+      }
+    }
+  }
+  let leaves = 0;
+  (function lay(i) { const k = MINI[i].kids; if (!k.length) { MINI[i].pos = leaves++; return; } k.forEach(lay); MINI[i].pos = (MINI[k[0]].pos + MINI[k[k.length - 1]].pos) / 2; })(0);
+  MINI.forEach((n) => { n.x = 1090 + (n.pos / (leaves - 1)) * 690; n.y = 360 + n.d * 128; });
+  MINI.forEach((n, i) => { n.rank = i; });
+  MINI.slice().sort((a, b) => a.d - b.d || a.pos - b.pos).forEach((n, r) => { n.rank = r; });
+})();
+const MINI_PASTED = MINI.findIndex((n) => n.d === 3 && !n.trunc && n.pos > 8);
+const MINI_UP = (() => { const p = []; for (let c = MINI_PASTED; c >= 0; c = MINI[c].p) p.push(c); return p; })();
+const MINI_EARLY = MINI.filter((n) => !n.late).length;
+
+scene({
+  id: 'load', chapter: 'Load', kicker: '01 · LOAD', dur: 7,
+  cues: [[2.2, 'pluck', 78], [2.9, 'pluck', 81], [3.9, 'pluck', 83], [5.1, 'pluck', 86], [6.2, 'chime', 74]],
+  draw(t) {
+    heading(t, '01 · LOAD', 'Paste one post, get the tree', 'Start anywhere in a conversation. The Treeviewer climbs to the root, then pulls in every reply.', { w: 860 });
+
+    withA(eout(seg(t, 0.2, 0.7)), () => {
+      blobRect(120, 420, 860, 96, K.card, { r: 48, seed: 21, sw: 2.8 });
+      const url = typed('bsky.app/…/maya.garden/post/3lqk', seg(t, 0.6, 1.8));
+      txt(url, 160, 480, 30, K.ink, { mono: true });
+      mf(30);
+      if (t < 2.2 && (t * 2) % 1 < 0.55) { S(K.accent, 1, 3); line(164 + textWidth(url), 446, 164 + textWidth(url), 490); }
+      sketchButton(740, 438, 'Load Thread', true, seg(t, 2.0, 2.3));
+    });
+
+    // what happened, one line at a time
+    const shownMini = t < 3.8 ? 0 : Math.round(MINI_EARLY * eio(seg(t, 3.8, 4.9)));
+    const lines = [
+      [2.3, 'Loading thread...'],
+      [3.4, '→ climbed to the root: @maya.garden'],
+      [4.6, '→ fetched the whole conversation'],
+      [5.8, '→ filled in the branches it cut short'],
+    ];
+    lines.forEach(([at, s], k) => withA(seg(t, at, at + 0.3), () => txt(typed(s, seg(t, at, at + 0.6)), 140, 590 + k * 50, 26, k ? K.ink : K.muted, { mono: true })));
+    const cnt = Math.round(NT * (0.62 * eio(seg(t, 3.8, 4.9)) + 0.38 * eio(seg(t, 5.2, 6.2))));
+    withA(seg(t, 3.9, 4.2), () => txt(fmtInt(cnt) + ' posts  ·  ' + fmtInt(PEOPLE * (cnt / NT)) + ' people', 140, 820, 40, K.ink));
+    const ch = eout(seg(t, 6.1, 6.6));
+    if (ch > 0) chipAt(140, 860, 'saved in your browser · reopens instantly', K.leaf, { size: 24, seed: 211, a: ch });
+
+    // the diagram
+    const pasted = bk(seg(t, 2.4, 2.8));
+    const climb = seg(t, 2.9, 3.7);
+    const up = MINI_UP.length - 1;
+    for (let i = 1; i < MINI.length; i++) {
+      const n = MINI[i], p = MINI[n.p];
+      const onUp = MINI_UP.includes(i);
+      let a = 0;
+      if (n.late) a = eout(seg(t, 5.3 + (n.pos % 5) * 0.08, 5.8 + (n.pos % 5) * 0.08));
+      else if (onUp) a = seg(climb * up, MINI_UP.indexOf(i), MINI_UP.indexOf(i) + 1);
+      else a = n.rank < shownMini ? 1 : 0;
+      if (a <= 0) continue;
+      if (onUp) roughLine(n.x, n.y, lerpN(n.x, p.x, a), lerpN(n.y, p.y, a), t < 4.4 ? K.accent : K.soft, 3, i * 3);
+      else roughLine(p.x, p.y, lerpN(p.x, n.x, a), lerpN(p.y, n.y, a), K.soft, 2, i * 3);
+    }
+    MINI.forEach((n, i) => {
+      const onUp = MINI_UP.includes(i);
+      let a = 0;
+      if (i === MINI_PASTED) a = pasted;
+      else if (n.late) a = bk(seg(t, 5.3 + (n.pos % 5) * 0.08, 5.8 + (n.pos % 5) * 0.08));
+      else if (onUp) a = bk(seg(climb * up, MINI_UP.indexOf(i) - 0.3, MINI_UP.indexOf(i) + 0.2));
+      else a = n.rank < shownMini ? 1 : 0;
+      if (a <= 0) return;
+      const d = (i === 0 ? 30 : 20) * a;
+      S(K.ink, 1, 2); F(i === MINI_PASTED ? K.accent : i === 0 ? K.root : authorCol(n.a)); circle(n.x, n.y, d);
+      if (n.trunc) {
+        const tp = seg(t, 4.9, 5.2) * (1 - seg(t, 5.4, 5.7));
+        if (tp > 0) withA(tp, () => { S(K.hot, 1, 3); line(n.x - 8, n.y + 22, n.x + 8, n.y + 22); line(n.x, n.y + 14, n.x, n.y + 30); });
+      }
+    });
+    if (pasted > 0) {
+      const n = MINI[MINI_PASTED];
+      scribbleCircle(n.x, n.y, 26, 26, seg(t, 2.5, 2.9), K.accent, 5, 3);
+      withA(seg(t, 2.5, 2.8) * (1 - seg(t, 3.9, 4.2)), () => txt('the post you pasted', n.x + 34, n.y + 50, 26, K.accent));
+    }
+    withA(seg(t, 3.3, 3.6), () => txt('root', MINI[0].x + 30, MINI[0].y - 12, 28, K.ink));
+    note(1100, 305, 'climb to the root', seg(t, 2.9, 3.6), { size: 26 });
+    note(1500, 305, 'every reply', seg(t, 4.2, 4.8), { size: 26 });
+    note(1090, 1000, 'truncated branches get fetched too', seg(t, 5.0, 5.9), { size: 26, col: K.hot });
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 2 · Grow — the whole conversation as one tree
+// ════════════════════════════════════════════════════════════
+const GROW_BOX = { x: 180, y: 360, w: 1560, h: 590 };
+scene({
+  id: 'grow', chapter: 'Tree', kicker: '02 · TREE', dur: 8.5,
+  cues: [[0.6, 'pluck', 74], [4.4, 'chime', 76], [6.4, 'pluck', 83]],
+  cam: (t) => {
+    const p = eio(seg(t, 5.0, 8.0));
+    return { x: lerpN(960, 900, p), y: lerpN(540, 590, p), z: lerpN(1, 1.18, p) };
+  },
+  draw(t) {
+    heading(t, '02 · TREE', 'Thousands of replies, one tree', 'Every reply hangs off its parent: side-arguments, dead ends, and the long back-and-forths.', { w: 1300, size: 78 });
+    const card = eout(seg(t, 0.1, 0.5));
+    withA(card, () => blobRect(120, 290, 1680, 740, K.card, { r: 20, seed: 301, sw: 2.6 }));
+    fillLayout('v', 'v', 0, GROW_BOX);
+    const grown = eio(seg(t, 0.5, 4.2));
+    drawTree({
+      a: card, shown: Math.round(NT * grown), r: 3.2, leafGlow: seg(t, 6.2, 6.6),
+      paths: [{ path: PATH_A, prog: eio(seg(t, 4.5, 5.9)), w: 4 }],
+    });
+    const shownN = Math.round(NT * grown);
+    withA(card, () => {
+      txt(t < 4.2 ? 'Loading thread... ' + fmtInt(shownN) + ' posts' : fmtInt(NT) + ' posts  ·  ' + fmtInt(PEOPLE) + ' people  ·  ' + (MAXD + 1) + ' levels deep', 1680, 990, 28, K.ink, { align: RIGHT });
+    });
+    const pa = PATH_A, mid = pa[Math.floor(pa.length * 0.55)];
+    fillLayout('v', 'v', 0, GROW_BOX);
+    const mx = PX[mid], my = PY[mid];
+    arrowTo(mx + 330, my - 40, mx + 22, my, seg(t, 5.2, 5.8), K.accent, { seed: 9, bend: -0.2 });
+    note(mx + 345, my - 50, 'the longest path, picked for you', seg(t, 5.3, 6.2), { size: 32 });
+    note(mx + 345, my - 6, PATH_A.length + ' posts, root to leaf', seg(t, 5.8, 6.4), { size: 26, col: K.muted });
+    const lx = PX[ROOT], ly = PY[ROOT];
+    note(lx + 30, ly - 16, 'the post', seg(t, 0.9, 1.4), { size: 28, col: K.ink });
+    note(1060, 720, fmtInt(LEAVES) + ' leaves = ' + fmtInt(LEAVES) + ' different endings', seg(t, 6.4, 7.3), { size: 30, col: K.olive });
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 3 · Layouts — vertical, horizontal, radial, chains
+// ════════════════════════════════════════════════════════════
+const LAYOUT_CHIPS = () => chipRowLayout(160, 318, ['Vertical', 'Horizontal', 'Radial', 'Chains'], 24, 12);
+const LAYOUT_SWITCH = [[1.7, 'v', 'h'], [3.5, 'h', 'r'], [8.6, 'r', 'c']];
+const KNOBS = { x: 1400, y: 450, w: 340 };
+scene({
+  id: 'layouts', chapter: 'Layouts', kicker: '03 · SHAPE', dur: 11.5,
+  cues: [[1.6, 'pluck', 78], [3.4, 'pluck', 81], [5.2, 'pluck', 83], [8.5, 'pluck', 86], [9.4, 'chime', 74]],
+  draw(t) {
+    heading(t, '03 · SHAPE', 'Four ways to see its shape', 'Vertical, horizontal, radial, or folded into self-reply chains. Zoom, pan and tune as you go.', { w: 1300, size: 78 });
+    const card = eout(seg(t, 0.1, 0.5));
+    if (card <= 0) return;
+    let from = 'v', to = 'v', mp = 0;
+    for (const [at, a, b] of LAYOUT_SWITCH) if (t >= at) { from = a; to = b; mp = eio(seg(t, at, at + 1.0)); }
+    const mode = mp > 0.5 ? to : from;
+    const arc = keyed(t, [[0, 360], [7.0, 180, 1.1]], 1)[0];
+    const start = keyed(t, [[0, 270], [8.1, 180, 0.7]], 1)[0];
+    const B = { x: 180, y: 430, w: 1560, h: 560, cx: 900, cy: lerpN(710, 850, seg(360 - arc, 0, 180)), r1: lerpN(290, 440, seg(360 - arc, 0, 180)), start, arc, rowH: 31, indent: 26 };
+    const chips = LAYOUT_CHIPS();
+    withA(card, () => {
+      blobRect(120, 290, 1680, 740, K.card, { r: 20, seed: 311, sw: 2.6 });
+      drawChipRow(chips, (l) => l.toLowerCase()[0] === mode, 24);
+      // zoom controls, as in the tree toolbar
+      const zr = chipRowLayout(1770, 318, ['−', '100%', '+'], 24, 10, true);
+      drawChipRow(zr, () => false, 24);
+    });
+    fillLayout(from, to, mp, B);
+    const chainsA = mode === 'c' ? 1 - seg(t, 9.1, 9.8) : 1;
+    drawTree({ a: card * chainsA, r: 3, clip: [130, 400, 1660, 620], paths: [{ path: PATH_A, a: chainsA }] });
+
+    // radial knobs
+    const kn = eout(seg(t, 5.3, 5.7)) * (1 - seg(t, 8.4, 8.8));
+    if (kn > 0) withA(kn, () => {
+      blobRect(KNOBS.x - 24, KNOBS.y - 30, KNOBS.w + 48, 470, K.paper, { r: 16, seed: 331, sw: 2.2 });
+      const rows = [['Min radius', '0px', 0], ['Max radius', '2400px', 0.57], ['Depth gap', '96px', 0.4], ['Leaf spread', '12px', 0.15], ['Node size', '18px', 0.37], ['Start angle', Math.round(start) + '°', start / 360], ['Arc span', Math.round(arc) + '°', arc / 360]];
+      rows.forEach(([l, v, f], k) => sliderRow(KNOBS.x, KNOBS.y + 10 + k * 58, KNOBS.w, l, v, f));
+    });
+    const kb = seg(t, 3.9, 4.3) * (1 - seg(t, 8.4, 8.8));
+    if (kb > 0) chipAt(1480, 400, kn > 0.5 ? 'Close knobs' : 'Radial knobs', K.note, { size: 22, seed: 341, a: kb });
+
+    // chains: one row per self-reply run, count first
+    const ra = seg(t, 9.0, 9.7);
+    if (ra > 0) clipRect(130, 400, 1660, 620, () => {
+      for (let r = 0; r < 19; r++) {
+        const row = ROWS[r], y = B.y + r * B.rowH, x = B.x + row.depth * B.indent;
+        const onPath = PATH_A.some((i) => ROW_OF[i] === r);
+        withA(ra * seg(t, 9.0 + r * 0.03, 9.4 + r * 0.03), () => {
+          if (onPath) { noStroke(); F(K.accent, 0.16); rect(x - 8, y - 22, 560, 28, 8); }
+          noStroke(); F(authorCol(row.a)); circle(x + 16, y - 8, 14);
+          txt(String(row.count), x + 40, y, 22, K.ink, { mono: true });
+          txt(nameOf(row.a), x + 90, y, 22, K.ink);
+        });
+      }
+    });
+    note(1000, 470, fmtInt(ROWS.length) + ' self-reply chains, nested', seg(t, 9.8, 10.6), { size: 30 });
+
+    const kr = (k) => KNOBS.y + 10 + k * 58 + 17;
+    drawCursor(t, [
+      [0, 900, 1060],
+      [1.7, chips[1].cx, chips[1].cy, 1],
+      [3.5, chips[2].cx, chips[2].cy, 1],
+      [5.2, 1580, 422, 1],
+      [5.9, KNOBS.x + KNOBS.w, kr(6), 'hold'],
+      [7.0, KNOBS.x + KNOBS.w * 0.5, kr(6), 0, 1.1],
+      [7.4, KNOBS.x + KNOBS.w * 0.75, kr(5), 'hold'],
+      [8.1, KNOBS.x + KNOBS.w * 0.5, kr(5), 0, 0.7],
+      [8.6, chips[3].cx, chips[3].cy, 1],
+      [11.5, chips[3].cx + 60, chips[3].cy + 140],
+    ]);
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 4 · Read — pick a path, read it as chat, switch branches
+// ════════════════════════════════════════════════════════════
+const TEXT = {
+  [SPINE[0]]: "Tell me the weirdest thing you believed as a kid. I'll go first.",
+  [SPINE[1]]: 'I thought the moon followed our car. Only ours. Every night.',
+  [DA[0]]: "same!! I used to wave at it so it wouldn't feel left out",
+  [BRANCH]: "wait. doesn't it, though?",
+  [DA[2]]: 'orbital no',
+  [DA[3]]: "orbital YES, I'm keeping this",
+  [DA[4]]: 'I will not be taking questions at this time',
+  [DA[5]]: 'this is the best reply in the whole thread',
+  [DB[0]]: 'Parallax! Close things whip past the window.',
+  [DB[1]]: 'The moon is ~384,000 km away, so it barely shifts as you drive.',
+  [DB[2]]: 'So it seems to keep pace with you. Diagram below.',
+  [DB[3]]: 'ok that is genuinely beautiful',
+  [DB[4]]: 'Same reason distant mountains look like they follow you.',
+  [DJ[0]]: 'my dad told me it was a streetlight on a very long string',
+  [DJ[1]]: 'I believed this until I was eleven',
+  [DJ[2]]: 'honestly a better explanation than parallax',
+  [DJ[3]]: 'he also said thunder is clouds bumping',
+  [DJ[4]]: 'your dad should write children’s books',
+  [BRANCH_ALTS[2]]: 'the moon is just very loyal',
+};
+const textOf = (i) => TEXT[i] || null;
+const READ_BOX = { x: 175, y: 450, w: 500, h: 1500, lo: 0, hi: 0 };
+READ_BOX.hi = (Math.max(POS[PATH_B[PATH_B.length - 1]], POS[PATH_A[PATH_A.length - 1]]) / (NL - 1)) * 1.9 + 0.004;
+
+function bubbleHeight(i, w) { return wrapText(textOf(i) || '…', w - 190, 25).length * 33 + 64; }
+function chatBubble(x, y, w, i, a, opts = {}) {
+  if (a <= 0.003) return;
+  const au = TN[i].a, right = au === 0, lines = wrapText(textOf(i) || '…', w - 190, 25);
+  const bx = right ? x + 130 : x + 66, bw = Math.min(w - 196, lines.reduce((m, l) => Math.max(m, (vf(25), textWidth(l))), 0) + 44);
+  const bxr = right ? x + w - 66 - bw : bx;
+  withA(a, () => {
+    avatarAt(right ? x + w - 28 : x + 28, y + 42, 44, au);
+    txt(nameOf(au) + '  @' + handleOf(au), right ? x + w - 66 : x + 66, y + 14, 17, K.muted, { mono: true, align: right ? RIGHT : LEFT });
+    blobRect(bxr, y + 24, bw, lines.length * 33 + 24, right ? K.root : K.paper, { r: 18, seed: i % 97, sw: 2, shadow: false, hl: opts.hl });
+    lines.forEach((l, k) => txt(l, bxr + 22, y + 58 + k * 33, 25, K.ink));
+  });
+}
+const READ_TOP = [SPINE[0], SPINE[1], DA[0], BRANCH];
+const READ_A = [DA[2], DA[3], DA[4], DA[5]];
+const READ_B = [DB[0], DB[1], DB[2], DB[3], DB[4]];
+const CHAT = { x: 780, y: 400, w: 980, h: 600 };
+const MENU_ROW = 84;
+function chatLayout(t) {
+  const scroll = keyed(t, [[0, 0], [3.9, 190, 0.7], [9.4, 520, 1.2]], 1)[0];
+  const menuP = eout(seg(t, 4.3, 4.8)) * (1 - eio(seg(t, 6.3, 6.7)));
+  let y = CHAT.y + 12 - scroll;
+  const top = READ_TOP.map((i) => { const r = { i, y }; y += bubbleHeight(i, CHAT.w) + 10; return r; });
+  const toggle = { x: CHAT.x + 66, y: y - 6 };
+  y += 44;
+  const menuY = y, menuH = (MENU_ROW * 3 + 40) * menuP;
+  y += menuH;
+  const listA = READ_A.map((i) => { const r = { i, y }; y += bubbleHeight(i, CHAT.w) + 10; return r; });
+  let yb = menuY + menuH;
+  const listB = READ_B.map((i) => { const r = { i, y: yb }; yb += bubbleHeight(i, CHAT.w) + 10; return r; });
+  return { top, toggle, menuY, menuH, menuP, listA, listB };
+}
+const branchOption = (k) => {
+  const c = BRANCH_ALTS[k];
+  return { c, head: '@' + handleOf(TN[c].a), meta: SIZE[c] + ' posts · longest ' + LONG[c], text: textOf(c) || '' };
+};
+
+scene({
+  id: 'read', chapter: 'Read', kicker: '04 · READ', dur: 12.5,
+  cues: [[2.8, 'pluck', 78], [4.2, 'pluck', 81], [6.2, 'chime', 76], [9.4, 'pluck', 83]],
+  draw(t) {
+    heading(t, '04 · READ', 'Pick a path, read it as chat', 'Click any post in the tree. The chat shows that one path, root to leaf.', { w: 860 });
+    const card = eout(seg(t, 0.1, 0.5));
+    if (card <= 0) return;
+    const sw = eio(seg(t, 6.3, 7.1));
+    const L = chatLayout(t);
+    withA(card, () => {
+      blobRect(120, 290, 1680, 740, K.card, { r: 20, seed: 401, sw: 2.6 });
+      // tree panel
+      blobRect(145, 315, 560, 690, K.paper, { r: 14, seed: 403, sw: 1.8, shadow: false });
+      txt('Quote lanes', 170, 356, 28, K.ink);
+      txt('1 lane · press T for tree', 170, 388, 18, K.muted, { mono: true });
+      chipAt(510, 336, 'Show all replies', K.card, { size: 18, seed: 405, shadow: false });
+      // splitter
+      S(K.soft, 1, 3); line(735, 600, 735, 700);
+      // chat header
+      txt('Main · selected path', CHAT.x, 344, 22, K.muted, { mono: true });
+      txt((sw > 0.5 ? PATH_B.length : PATH_A.length) + ' posts', CHAT.x, 376, 22, K.ink, { mono: true });
+      drawChipRow(chipRowLayout(1770, 322, ['Chat', 'Forum', 'Carousel'], 20, 8, true), (l) => l === 'Chat', 20);
+    });
+
+    fillLayout('v', 'v', 0, READ_BOX);
+    const pa = eio(seg(t, 0.6, 1.8));
+    drawTree({
+      a: card, r: 4, lw: 1.4, clip: [150, 405, 550, 590],
+      paths: [
+        { path: PATH_A, prog: pa, a: 1 - sw },
+        { path: PATH_B, from: PATH_B.indexOf(BRANCH), prog: eio(seg(t, 6.4, 7.6)), a: sw, col: K.ink },
+      ],
+    });
+    // focused node ring
+    const fx = PX[BRANCH], fy = PY[BRANCH];
+    if (t > 2.8) scribbleCircle(fx, fy, 16, 16, seg(t, 2.8, 3.1), K.hot, 11, 3);
+
+    // chat
+    clipRect(CHAT.x - 10, CHAT.y, CHAT.w + 20, CHAT.h, () => {
+      L.top.forEach(({ i, y }, k) => chatBubble(CHAT.x, y, CHAT.w, i, card * seg(t, 0.8 + k * 0.3, 1.1 + k * 0.3), { hl: i === BRANCH ? seg(t, 2.9, 3.2) * (1 - seg(t, 5.0, 5.4)) : 0 }));
+      withA(card * seg(t, 1.8, 2.1), () => chipAt(L.toggle.x, L.toggle.y, (L.menuP > 0.5 ? '− ' : '+ ') + BRANCH_ALTS.length + ' replies', K.note, { size: 20, seed: 411, shadow: false }));
+      if (L.menuP > 0.01) withA(L.menuP, () => {
+        clipRect(CHAT.x + 60, L.menuY, CHAT.w - 60, L.menuH, () => {
+          blobRect(CHAT.x + 66, L.menuY, 760, MENU_ROW * 3 + 30, K.paper, { r: 14, seed: 413, sw: 2, shadow: false });
+          for (let k = 0; k < 3; k++) {
+            const o = branchOption(k), y = L.menuY + 16 + k * MENU_ROW;
+            if (k === 0) { const hp = seg(t, 5.8, 6.1); if (hp > 0) { noStroke(); F(K.accent, 0.18 * hp); rect(CHAT.x + 76, y - 4, 740, MENU_ROW - 6, 10); } }
+            avatarAt(CHAT.x + 104, y + 28, 36, TN[o.c].a);
+            txt(o.head, CHAT.x + 136, y + 22, 20, K.ink, { mono: true });
+            txt(o.meta, CHAT.x + 806, y + 22, 20, K.accent, { mono: true, align: RIGHT });
+            txt(o.text ? '“' + o.text + '”' : '', CHAT.x + 136, y + 56, 22, K.muted);
+          }
+          txt('…and ' + (BRANCH_ALTS.length - 3) + ' more', CHAT.x + 136, L.menuY + 16 + 3 * MENU_ROW + 4, 18, K.muted, { mono: true });
+        });
+      });
+      L.listA.forEach(({ i, y }, k) => chatBubble(CHAT.x, y, CHAT.w, i, card * seg(t, 1.9 + k * 0.2, 2.2 + k * 0.2) * (1 - seg(t, 6.3, 6.6))));
+      L.listB.forEach(({ i, y }, k) => chatBubble(CHAT.x, y, CHAT.w, i, seg(t, 6.8 + k * 0.25, 7.2 + k * 0.25)));
+    });
+
+    // annotations
+    arrowTo(1310, 236, 1560, L.menuY + 20, seg(t, 4.9, 5.4) * (1 - seg(t, 6.4, 6.8)), K.accent, { seed: 21, bend: -0.2 });
+    withA(1 - seg(t, 6.4, 6.8), () => note(1000, 190, 'every fork: its size and how far it runs', seg(t, 4.9, 5.8), { size: 30 }));
+    withA(seg(t, 7.2, 7.5), () => note(1000, 190, 'the tree re-routes, the chat follows', seg(t, 7.2, 8.2), { size: 30 }));
+    arrowTo(1000, 212, fx + 30, fy - 20, seg(t, 7.6, 8.2), K.accent, { seed: 23, bend: 0.2 });
+
+    const L1 = chatLayout(4.2), L2 = chatLayout(6.2);
+    drawCursor(t, [
+      [0, 700, 1060],
+      [2.8, fx, fy, 1],
+      [4.2, L1.toggle.x + 70, L1.toggle.y + 18, 1],
+      [6.2, CHAT.x + 400, L2.menuY + 16 + 28, 1],
+      [8.4, 1300, 1040],
+    ]);
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 5 · Views — chat, forum, carousel; steer with the cards
+// ════════════════════════════════════════════════════════════
+const CAR_W = 400, CAR_H = 132, CAR_GAP = 440;
+const SEL_B = TN[BRANCH].kids.indexOf(DB[0]), SEL_J = TN[BRANCH].kids.indexOf(DJ[0]);
+function carouselCard(x, y, i, sel, a) {
+  if (a <= 0.003) return;
+  const au = TN[i].a;
+  withA(a, () => {
+    blobRect(x - CAR_W / 2, y, CAR_W, CAR_H, sel ? K.card : K.paper, { r: 12, seed: i % 89, sw: sel ? 3 : 1.6, strokeCol: sel ? K.accent : K.ink, shadow: sel });
+    avatarAt(x - CAR_W / 2 + 34, y + 34, 36, au);
+    txt(nameOf(au), x - CAR_W / 2 + 62, y + 32, 22, K.ink);
+    txt('@' + handleOf(au), x - CAR_W / 2 + 62, y + 52, 15, K.muted, { mono: true });
+    txt('↗', x + CAR_W / 2 - 22, y + 36, 22, K.muted, { align: CENTER });
+    const s = textOf(i);
+    if (s) txt(wrapText(s, CAR_W - 40, 22).slice(0, 2).join(' '), x - CAR_W / 2 + 20, y + 72, 22, K.ink, { w: CAR_W - 40, valign: TOP });
+    else scribbleLines(x - CAR_W / 2 + 22, y + 86, CAR_W - 60, 2, 22, K.ink, 1, i % 37, 0.35);
+  });
+}
+function forumGroup(x, y, a, posts, au, alpha, extras = {}) {
+  withA(alpha, () => {
+    avatarAt(x + 26, y + 26, 48, au);
+    txt(nameOf(au), x + 64, y + 22, 26, K.ink);
+    vf(26);
+    txt('@' + handleOf(au) + '  ·  Mar 3', x + 76 + textWidth(nameOf(au)), y + 22, 18, K.muted, { mono: true });
+    let yy = y + 44;
+    posts.forEach((i) => {
+      const lines = wrapText(textOf(i) || '…', 840, 24);
+      noStroke(); F(K.soft, 0.25); rect(x + 64, yy, 3, lines.length * 30 + 44);
+      lines.forEach((l, k) => txt(l, x + 80, yy + 26 + k * 30, 24, K.ink));
+      yy += lines.length * 30 + 8;
+      const alts = TN[i].kids.length - 1;
+      let bx = x + 80;
+      if (alts > 0) bx += chipAt(bx, yy, '+ ' + alts + ' repl' + (alts === 1 ? 'y' : 'ies'), K.card, { size: 16, seed: i % 31, shadow: false }) + 8;
+      if (extras.q && extras.q[i]) bx += chipAt(bx, yy, 'Q ' + extras.q[i], K.quote, { size: 16, seed: i % 29, shadow: false }) + 8;
+      txt('Open', bx + 6, yy + 20, 18, K.accent);
+      yy += 46;
+    });
+  });
+}
+const VIEW_TABS = () => chipRowLayout(1770, 322, ['Chat', 'Forum', 'Carousel'], 22, 8, true);
+function carouselLevels(t) {
+  // levels from Kite's reply down, following PATH_B then PATH_J after the steer
+  const steer = eio(seg(t, 7.7, 8.4));
+  const path = steer > 0.5 ? PATH_J : PATH_B;
+  const k0 = path.indexOf(DA[0]);
+  const lv = [];
+  for (let d = k0; d < k0 + 4; d++) {
+    const parent = path[d - 1], items = TN[parent].kids;
+    lv.push({ items, sel: items.indexOf(path[d]), d });
+  }
+  return { lv, steer };
+}
+scene({
+  id: 'views', chapter: 'Views', kicker: '05 · VIEWS', dur: 11,
+  cues: [[1.6, 'pluck', 78], [4.4, 'pluck', 81], [5.8, 'pluck', 76], [7.6, 'chime', 74]],
+  draw(t) {
+    heading(t, '05 · VIEWS', 'Chat, forum or carousel', 'Same path, three ways to read it. In the carousel every sibling is a card you can steer by.', { w: 1300, size: 78 });
+    const card = eout(seg(t, 0.1, 0.5));
+    if (card <= 0) return;
+    const mode = t < 1.6 ? 'Chat' : t < 4.4 ? 'Forum' : 'Carousel';
+    const fA = seg(t, 1.6, 2.0) * (1 - seg(t, 4.4, 4.7));
+    const cA = seg(t, 0.2, 0.5) * (1 - seg(t, 1.6, 1.9));
+    const allReplies = t >= 5.8;
+    const tabs = VIEW_TABS();
+    withA(card, () => {
+      blobRect(120, 290, 1680, 740, K.card, { r: 20, seed: 501, sw: 2.6 });
+      txt('Main · ' + (allReplies ? 'all replies' : 'selected path'), 160, 344, 22, K.muted, { mono: true });
+      txt((allReplies ? fmtInt(NT) : t > 8.0 ? PATH_J.length : PATH_B.length) + ' posts', 160, 376, 22, K.ink, { mono: true });
+      drawChipRow(tabs, (l) => l === mode, 22);
+      chipAt(1130, 322, allReplies ? 'Path only  T' : 'Show all replies  T', allReplies ? K.root : K.card, { size: 20, seed: 507, shadow: false });
+    });
+    clipRect(130, 400, 1660, 620, () => {
+      // chat
+      if (cA > 0) { let y = 420; [SPINE[1], DA[0], BRANCH, DB[0]].forEach((i) => { chatBubble(360, y, 1200, i, cA * card); y += bubbleHeight(i, 1200) + 8; }); }
+      // forum
+      if (fA > 0) {
+        const scroll = 260 * eio(seg(t, 2.6, 3.8));
+        forumGroup(200, 420 - scroll, 1, [SPINE[0], SPINE[1]], 0, fA, { q: { [SPINE[0]]: 40 } });
+        forumGroup(200, 700 - scroll, 1, [DA[0]], 1, fA);
+        forumGroup(200, 840 - scroll, 1, [BRANCH], 2, fA, { q: { [BRANCH]: 3 } });
+        forumGroup(200, 980 - scroll, 1, [DB[0], DB[1]], 3, fA);
+      }
+      // carousel
+      const kA = seg(t, 4.5, 4.9);
+      if (kA > 0) {
+        const { lv, steer } = carouselLevels(t);
+        const spread = eio(seg(t, 6.0, 6.8));
+        lv.forEach((L, r) => {
+          const y = 440 + r * 150;
+          const shift = r === 2 ? -lerpN(SEL_B, SEL_J, steer) : -L.sel;
+          const cross = r === 3 ? Math.abs(steer * 2 - 1) : 1;
+          if (L.items.length > 1 && spread > 0) txt((L.sel + 1) + ' of ' + L.items.length + ' replies', 1770, y + 24, 20, K.muted, { a: spread * kA, mono: true, align: RIGHT });
+          L.items.forEach((i, k) => {
+            const isSel = k === L.sel;
+            const x = 960 + (k + shift) * CAR_GAP;
+            const a = kA * card * cross * (isSel ? 1 : spread * 0.85);
+            if (x < -300 || x > 2200) return;
+            carouselCard(x, y, i, isSel && L.items.length > 1, a * seg(t, 4.5 + r * 0.12, 4.9 + r * 0.12));
+          });
+        });
+      }
+    });
+    keycap(1720, 180, 'T', seg(t, 5.7, 5.8) * (1 - seg(t, 5.9, 6.0)), seg(t, 5.3, 5.5) * (1 - seg(t, 6.6, 7.0)));
+    note(1660, 195, 'click a sibling to steer the path', seg(t, 8.5, 9.4), { size: 30, align: RIGHT });
+
+    drawCursor(t, [
+      [0, 900, 1060],
+      [1.6, tabs[1].cx, tabs[1].cy, 1],
+      [4.4, tabs[2].cx, tabs[2].cy, 1],
+      [5.5, 1100, 250],
+      [7.6, 960 + (SEL_J - SEL_B) * CAR_GAP, 440 + 2 * 150 + 60, 1],
+      [11, 1300, 1060],
+    ]);
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 6 · Quotes — every quote post becomes its own lane
+// ════════════════════════════════════════════════════════════
+const QUOTE_TOTAL = 40;
+const LANES = Array.from({ length: 6 }, (_, k) => {
+  const nodes = [{ p: -1, d: 0 }];
+  const n = 6 + Math.floor(R(k, 51) * 30);
+  for (let i = 1; i < n; i++) { const p = Math.floor(Math.pow(R(k * 97 + i, 52), 1.6) * i); nodes.push({ p, d: nodes[p].d + 1 }); }
+  const kids = nodes.map(() => []);
+  nodes.forEach((m, i) => { if (m.p >= 0) kids[m.p].push(i); });
+  let leaves = 0, md = 0;
+  (function lay(i) { md = Math.max(md, nodes[i].d); if (!kids[i].length) { nodes[i].pos = leaves++; return; } kids[i].forEach(lay); nodes[i].pos = (nodes[kids[i][0]].pos + nodes[kids[i][kids[i].length - 1]].pos) / 2; })(0);
+  return { nodes, leaves, md, a: 30 + k * 17, col: k % 3, row: Math.floor(k / 3) };
+});
+const LANE_W = 330, LANE_H = 280;
+const laneOrigin = (k) => [720 + LANES[k].col * (LANE_W + 30), 440 + LANES[k].row * (LANE_H + 20)];
+const QBOX = { x: 180, y: 470, w: 440, h: 500 };
+scene({
+  id: 'quotes', chapter: 'Quotes', kicker: '06 · QUOTES', dur: 10,
+  cues: [[1.8, 'pluck', 78], [2.6, 'pluck', 81], [6.0, 'chime', 76], [8.3, 'pluck', 74]],
+  draw(t) {
+    heading(t, '06 · QUOTES', 'Quotes grow their own trees', 'Download every quote of a post in the background. Each one opens as a lane beside the main tree.', { w: 1300, size: 78 });
+    const card = eout(seg(t, 0.1, 0.5));
+    if (card <= 0) return;
+    const lanesIn = (k) => eout(seg(t, 6.2 + k * 0.12, 6.8 + k * 0.12)) * (k === 2 ? 1 - eio(seg(t, 8.4, 8.9)) : 1);
+    const nLanes = t < 6.2 ? 1 : t < 8.6 ? 1 + QUOTE_TOTAL : QUOTE_TOTAL;
+    withA(card, () => {
+      blobRect(120, 290, 1680, 740, K.card, { r: 20, seed: 601, sw: 2.6 });
+      txt('Quote lanes', 160, 350, 28, K.ink);
+      txt(nLanes + ' lane' + (nLanes === 1 ? '' : 's') + ' · press T for tree', 160, 380, 18, K.muted, { mono: true });
+      chipAt(160, 402, 'Main  @maya.garden', K.root, { size: 18, seed: 603, shadow: false });
+    });
+    fillLayout('v', 'v', 0, QBOX);
+    drawTree({ a: card, r: 2.2, lw: 1, paths: [{ path: PATH_A, w: 3 }] });
+    const rx = PX[ROOT], ry = PY[ROOT];
+
+    // the root post with its quote button
+    const pc = eout(seg(t, 0.8, 1.2)) * (1 - seg(t, 5.6, 6.0));
+    const x = 700, y = 420;
+    vf(18);
+    const qw = textWidth('Q ' + QUOTE_TOTAL) + 18 * 1.3, w1 = textWidth('Load quotes') + 18 * 1.3, w2 = textWidth('Show all') + 18 * 1.3;
+    const qbtn = [x + 30 + qw / 2, y + 162], showAll = [x + 60 + qw + w1 + w2 / 2, y + 162];
+    if (pc > 0) withA(pc, () => {
+      blobRect(x, y, 760, 200, K.paper, { r: 14, seed: 611, sw: 2.2 });
+      avatarAt(x + 36, y + 38, 44, 0);
+      txt('Maya  @maya.garden', x + 70, y + 44, 22, K.ink);
+      txt(textOf(ROOT), x + 30, y + 96, 24, K.ink, { w: 700, valign: TOP });
+      chipAt(x + 30, y + 146, 'Q ' + QUOTE_TOTAL, K.quote, { size: 18, seed: 613, shadow: false });
+      const mp = eout(seg(t, 2.0, 2.3));
+      if (mp > 0) withA(mp, () => {
+        chipAt(x + 50 + qw, y + 146, 'Load quotes', K.card, { size: 18, seed: 615, shadow: false });
+        chipAt(x + 60 + qw + w1, y + 146, 'Show all', K.note, { size: 18, seed: 617, shadow: false });
+      });
+    });
+    // background download row
+    const dl = seg(t, 2.8, 3.1) * (1 - seg(t, 6.0, 6.3));
+    const done = Math.round(QUOTE_TOTAL * eio(seg(t, 2.9, 5.2)));
+    if (dl > 0) withA(dl, () => {
+      blobRect(700, 660, 760, 60, K.note, { r: 14, seed: 621, sw: 2, shadow: false });
+      txt('Main: ' + (done < QUOTE_TOTAL ? 'Downloading ' + done + '/' + QUOTE_TOTAL : QUOTE_TOTAL + ' trees ready'), 724, 698, 22, K.ink, { mono: true });
+      chipAt(1180, 670, 'Refresh view', done < QUOTE_TOTAL ? K.card : K.leaf, { size: 18, seed: 623, shadow: false, a: done < QUOTE_TOTAL ? 0.45 : 1 });
+      chipAt(1340, 670, 'Cancel', K.card, { size: 18, seed: 625, shadow: false });
+    });
+
+    // lanes + dashed quote connectors from the root
+    LANES.forEach((ln, k) => {
+      const a = lanesIn(k);
+      if (a <= 0) return;
+      const [ox, oy] = laneOrigin(k);
+      const lx = ox + LANE_W / 2, ly = oy + 70;
+      withA(a, () => {
+        noFill(); S(K.purple, 0.8, 2.4); drawingContext.setLineDash([9, 8]);
+        bezier(rx, ry, rx + 260, ry - 60, lx - 120, ly - 160, lx, ly - 18);
+        drawingContext.setLineDash([]);
+        blobRect(ox, oy, LANE_W, LANE_H, k === 2 ? K.quote : K.paper, { r: 14, seed: 630 + k, sw: 2, shadow: false });
+        txt('Q' + (k + 1), ox + 18, oy + 34, 22, K.accent, { mono: true });
+        txt('@' + handleOf(ln.a), ox + 64, oy + 34, 18, K.ink, { mono: true });
+        txt('x', ox + LANE_W - 22, oy + 34, 20, K.muted, { align: CENTER, mono: true });
+        const px = (n) => ox + 30 + (ln.leaves > 1 ? n.pos / (ln.leaves - 1) : 0.5) * (LANE_W - 60);
+        const py = (n) => oy + 70 + (n.d / Math.max(1, ln.md)) * (LANE_H - 100);
+        S(K.soft, 1, 1.4);
+        ln.nodes.forEach((n) => { if (n.p >= 0) line(px(ln.nodes[n.p]), py(ln.nodes[n.p]), px(n), py(n)); });
+        noStroke();
+        ln.nodes.forEach((n, i) => { F(authorCol(ln.a + i)); circle(px(n), py(n), i === 0 ? 14 : 8); });
+      });
+    });
+    withA(seg(t, 7.2, 7.6), () => txt('+ ' + (QUOTE_TOTAL - 6) + ' more lanes →', 1770, 1000, 24, K.muted, { align: RIGHT }));
+    keycap(1720, 180, 'X', seg(t, 8.35, 8.45) * (1 - seg(t, 8.55, 8.65)), seg(t, 8.0, 8.2) * (1 - seg(t, 9.2, 9.5)));
+    note(1660, 195, 'X closes the active lane', seg(t, 8.4, 9.1), { size: 28, align: RIGHT });
+
+    drawCursor(t, [
+      [0, 1000, 1060],
+      [1.8, qbtn[0], qbtn[1], 1],
+      [2.6, showAll[0], showAll[1], 1],
+      [5.6, 1250, 686, 1],
+      [7.6, laneOrigin(2)[0] + LANE_W / 2, laneOrigin(2)[1] + 120, 1],
+      [10, 1400, 1060],
+    ]);
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 7 · More — X threads through the userscript, export, dark mode
+// ════════════════════════════════════════════════════════════
+scene({
+  id: 'more', chapter: 'X threads', kicker: '07 · MORE', dur: 8,
+  cues: [[1.3, 'pluck', 78], [3.4, 'chime', 74], [3.9, 'pluck', 83]],
+  draw(t) {
+    heading(t, '07 · MORE', 'X threads, too', 'A small userscript reads the conversation on x.com and hands it over. It never leaves your browser.', { w: 1300, size: 78 });
+    const bw = eout(seg(t, 0.1, 0.6));
+    const got = Math.round(212 * eio(seg(t, 1.5, 3.3)));
+    withA(bw, () => {
+      blobRect(120, 330, 700, 560, K.card, { r: 18, seed: 701, sw: 2.6 });
+      S(K.ink, 1, 2); line(124, 384, 816, 384);
+      txt('x.com/…/status/18412…', 160, 368, 22, K.muted, { mono: true });
+      avatarAt(180, 440, 50, 5);
+      txt('Quill  @quill', 220, 448, 24, K.ink);
+      txt('what is a small thing you would genuinely defend to the end? replies are going feral', 160, 500, 26, K.ink, { w: 620, valign: TOP });
+      for (let k = 0; k < 3; k++) { avatarAt(180, 640 + k * 76, 36, 40 + k * 3); scribbleLines(214, 640 + k * 76, 480, 1, 0, K.ink, 1, k * 13, 0.4); }
+      // the floating grabber button
+      const pr = seg(t, 1.25, 1.35) * (1 - seg(t, 1.35, 1.5));
+      push(); translate(740, 820); scale(1 - 0.1 * pr);
+      noStroke(); F(K.shadow, 0.2); circle(4, 6, 76);
+      S(K.ink, 1, 2.6); F(K.leaf); circle(0, 0, 72);
+      S(K.ink, 1, 3); line(0, 18, 0, -2); line(0, -2, -12, -14); line(0, -2, 12, -14);
+      noStroke(); F(K.teal); circle(-12, -16, 12); circle(12, -16, 12); circle(0, -22, 12);
+      pop();
+    });
+    const tt = seg(t, 1.5, 1.8) * (1 - seg(t, 4.2, 4.6));
+    if (tt > 0) withA(tt, () => {
+      blobRect(300, 900, 520, 70, K.note, { r: 16, seed: 703, sw: 2 });
+      txt(got < 212 ? 'walking replies… ' + got + ' tweets' : '212 tweets captured', 330, 945, 24, K.ink, { mono: true });
+    });
+    arrowTo(840, 600, 1040, 600, seg(t, 3.2, 3.7), K.accent, { seed: 31, bend: -0.15 });
+    note(860, 570, 'postMessage', seg(t, 3.3, 3.8), { size: 22 });
+    const vw = eout(seg(t, 3.4, 3.9));
+    if (vw > 0) withA(vw, () => {
+      blobRect(1070, 330, 730, 460, K.card, { r: 18, seed: 705, sw: 2.6 });
+      S(K.ink, 1, 2); line(1074, 384, 1796, 384);
+      txt('threadviewer.app/treeviewer', 1110, 368, 22, K.muted, { mono: true });
+      fillLayout('r', 'r', 0, { cx: 1435, cy: 590, r1: 180 * vw, start: 270, arc: 360 });
+      drawTree({ a: 1, r: 1.8, lw: 0.8, paths: [{ path: PATH_A, w: 2.5 }] });
+    });
+    // extras row
+    const chips = chipRowLayout(1070, 830, ['Export md · yaml · json', 'Hide tree', 'Hide chat', 'Fonts', 'Dark mode'], 20, 10);
+    chips.forEach((c, k) => chipAt(c.x, c.y, c.label, c.label === 'Dark mode' && t > 3.9 ? K.root : K.card, { size: 20, seed: 720 + k, a: seg(t, 2.2 + k * 0.12, 2.6 + k * 0.12) }));
+    drawCursor(t, [
+      [0, 900, 1060],
+      [1.3, 740, 820, 1],
+      [3.9, chips[4].cx, chips[4].cy, 1],
+      [5.2, chips[0].cx, chips[0].cy + 90],
+      [8, 1300, 1060],
+    ]);
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 8 · Finale — pull back over the whole notebook, then the end card
+// ════════════════════════════════════════════════════════════
+function worldBounds() {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  scenes.forEach((s) => { if (s.world) return; x0 = Math.min(x0, s.ox); y0 = Math.min(y0, s.oy); x1 = Math.max(x1, s.ox + W); y1 = Math.max(y1, s.oy + H); });
+  return { x0, y0, x1, y1 };
+}
+scene({
+  id: 'finale', chapter: 'End card', kicker: 'FIN', dur: 7.5, world: true,
+  cues: [[3.0, 'boom'], [3.1, 'chime', 81]],
+  cam(t) {
+    const prev = scenes[scenes.length - 2];
+    const a = { x: prev.ox + W / 2, y: prev.oy + H / 2, z: 1.035 };
+    const b = worldBounds(), bx = (b.x0 + b.x1) / 2, by = (b.y0 + b.y1) / 2;
+    const zf = Math.min(W / (b.x1 - b.x0 + 900), H / (b.y1 - b.y0 + 700));
+    const p = eio(seg(t, 0.2, 2.8));
+    return { x: lerpN(a.x, bx, p), y: lerpN(a.y, by, p), z: Math.exp(lerpN(Math.log(a.z), Math.log(zf), p)) * (1 + 0.04 * seg(t, 2.8, 7.5)) };
+  },
+  draw() {},
+  overlay(t) {
+    const dim = 0.86 * eio(seg(t, 2.3, 3.3));
+    noStroke(); F(K.paper, dim); rect(0, 0, W, H);
+    const ec = eout(seg(t, 3.0, 3.8));
+    if (ec <= 0) return;
+    const cx = 960;
+    dotCurve([200, 140, 420, 260, 300, 520, 420, 700], eio(seg(t, 3.4, 5.0)), K.teal, 4.2, 16, 0.7);
+    dotCurve([1720, 940, 1520, 820, 1680, 560, 1540, 380], eio(seg(t, 3.6, 5.2)), K.purple, 4.2, 16, 0.7);
+    dotCurve([1700, 150, 1560, 220, 1480, 160, 1380, 240], eio(seg(t, 3.8, 5.2)), K.hot, 4.2, 16, 0.7);
+    push(); translate(cx, 540); scale(0.9 + 0.1 * ec); rotate(-0.01);
+    withA(ec, () => {
+      blobRect(-640, -300, 1280, 600, K.card, { r: 26, seed: 901, sw: 3.2 });
+      txt('Treeviewer', 0, -70, 150, K.ink, { align: CENTER });
+      vf(150); uline(-textWidth('Treeviewer') / 2, -38, textWidth('Treeviewer'), seg(t, 3.8, 4.6), K.accent, 9, 6);
+      txt('threadviewer.app/treeviewer', 0, 40, 44, K.accent, { align: CENTER, mono: true });
+      txt('Thousands of replies. Every branch. One path at a time.', 0, 130, 40, K.muted, { align: CENTER });
+      txt('github.com/Carbonadoks/threadviewer', 0, 220, 26, K.soft, { align: CENTER, mono: true });
+    });
+    pop();
+    tapeAt(cx - 540, 252, 170, 46, -0.14, seg(t, 4.0, 4.2));
+    tapeAt(cx + 540, 828, 170, 46, 0.12, seg(t, 4.2, 4.4));
+    [['root', 330, 910, 'root', -0.08], ['branch', 1600, 960, 'r1', 0.06], ['quote lane', 1600, 110, 'quote', -0.05]]
+      .forEach(([l, x, y, c, rot], k) => doodleNode({ label: l, x, y, c, rot, at: 4.2 + k * 0.2 }, 90 + k, t));
+  },
+});
+
+// ── generative score: warm pads, a soft arpeggio, a boom for every flight
+const CHORDS = {
+  open:    [50, 57, 64, 66, 73],
+  load:    [47, 54, 62, 69, 73],
+  grow:    [43, 50, 59, 66, 73],
+  layouts: [45, 52, 59, 62, 66],
+  read:    [42, 49, 57, 64, 69],
+  views:   [50, 57, 62, 66, 69, 76],
+  quotes:  [43, 50, 57, 62, 66, 69],
+  more:    [47, 54, 62, 66, 73],
+  finale:  [38, 45, 50, 57, 62, 66, 69, 74],
+};
+const Snd = {
+  ctx: null, on: true, voices: [], chord: null, nextArp: 0, step: 0,
+  ensure() {
+    if (this.ctx) return this.ctx;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    try {
+      const c = (this.ctx = new AC());
+      this.master = c.createGain(); this.master.gain.value = this.on ? 0.85 : 0;
+      const comp = c.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 3;
+      this.master.connect(comp); comp.connect(c.destination);
+      this.dest = c.createMediaStreamDestination(); comp.connect(this.dest);
+      const verb = c.createConvolver(); verb.buffer = this.impulse(3.6);
+      const wet = c.createGain(); wet.gain.value = 0.6; verb.connect(wet); wet.connect(this.master);
+      this.lp = c.createBiquadFilter(); this.lp.type = 'lowpass'; this.lp.frequency.value = 1300; this.lp.Q.value = 0.5;
+      const lfo = c.createOscillator(), lfoG = c.createGain(); lfo.frequency.value = 0.07; lfoG.gain.value = 450;
+      lfo.connect(lfoG); lfoG.connect(this.lp.frequency); lfo.start();
+      this.bus = c.createGain(); this.bus.connect(this.lp); this.lp.connect(this.master); this.lp.connect(verb);
+      this.fx = c.createGain(); this.fx.gain.value = 1; this.fx.connect(this.master); this.fx.connect(verb);
+      return c;
+    } catch (e) { this.ctx = null; return null; }
+  },
+  impulse(sec) {
+    const c = this.ctx, len = Math.floor(c.sampleRate * sec), b = c.createBuffer(2, len, c.sampleRate);
+    for (let ch = 0; ch < 2; ch++) { const d = b.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6); }
+    return b;
+  },
+  mtof: (m) => 440 * Math.pow(2, (m - 69) / 12),
+  setChord(id) {
+    const c = this.ctx; if (!c || id === this.chord || !CHORDS[id]) return;
+    this.chord = id;
+    const now = c.currentTime;
+    for (const v of this.voices) {
+      v.g.gain.cancelScheduledValues(now); v.g.gain.setValueAtTime(v.g.gain.value, now);
+      v.g.gain.linearRampToValueAtTime(0, now + 2.4); v.o.forEach((o) => o.stop(now + 2.6));
+    }
+    this.voices = CHORDS[id].map((m, k) => {
+      const g = c.createGain(); g.gain.value = 0;
+      g.gain.linearRampToValueAtTime(0.022 / Math.sqrt(1 + k * 0.4), now + 2.6);
+      const o = [-7, 7].map((dt) => { const o = c.createOscillator(); o.type = 'sawtooth'; o.frequency.value = this.mtof(m); o.detune.value = dt; o.connect(g); o.start(now); return o; });
+      g.connect(this.bus);
+      return { g, o };
+    });
+  },
+  pluck(m, when, vel = 0.04, type = 'triangle', dec = 1.5) {
+    const c = this.ctx; if (!c) return;
+    const o = c.createOscillator(); o.type = type; o.frequency.value = this.mtof(m);
+    const g = c.createGain(); g.gain.setValueAtTime(0.0001, when);
+    g.gain.exponentialRampToValueAtTime(vel, when + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, when + dec);
+    o.connect(g); g.connect(this.fx); o.start(when); o.stop(when + dec + 0.05);
+  },
+  boom() {
+    const c = this.ctx; if (!c) return; const t = c.currentTime;
+    const o = c.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(92, t); o.frequency.exponentialRampToValueAtTime(36, t + 1.3);
+    const g = c.createGain(); g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.2, t + 0.04); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.7);
+    o.connect(g); g.connect(this.master); o.start(t); o.stop(t + 1.8);
+    const len = Math.floor(c.sampleRate * 1.4), b = c.createBuffer(1, len, c.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    const n = c.createBufferSource(); n.buffer = b;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 1.3;
+    bp.frequency.setValueAtTime(280, t); bp.frequency.exponentialRampToValueAtTime(3000, t + 0.75); bp.frequency.exponentialRampToValueAtTime(500, t + 1.4);
+    const ng = c.createGain(); ng.gain.setValueAtTime(0.0001, t);
+    ng.gain.exponentialRampToValueAtTime(0.07, t + 0.55); ng.gain.exponentialRampToValueAtTime(0.0001, t + 1.4);
+    n.connect(bp); bp.connect(ng); ng.connect(this.fx); n.start(t); n.stop(t + 1.45);
+  },
+  chime(base = 74) {
+    const c = this.ctx; if (!c) return; const t = c.currentTime;
+    [0, 4, 7, 12, 16, 19].forEach((iv, k) => this.pluck(base + iv, t + k * 0.07, 0.045, 'sine', 3.2));
+  },
+  tick(id) {
+    const c = this.ctx; if (!c || c.state !== 'running') return;
+    this.setChord(id);
+    const stepDur = 0.3125, ch = CHORDS[this.chord] || CHORDS.open;
+    if (this.nextArp < c.currentTime) this.nextArp = c.currentTime + 0.05;
+    const pat = [0, 2, 4, 1, 3, 2, 4, 3];
+    while (this.nextArp < c.currentTime + 0.14) {
+      const s = this.step++, bar = s % 16;
+      if (bar !== 7 && bar !== 15 && bar !== 13) {
+        const m = ch[pat[s % 8] % ch.length] + 12 + (this.chord === 'finale' && s % 4 === 0 ? 12 : 0);
+        this.pluck(m, this.nextArp, s % 4 === 0 ? 0.05 : 0.028, s % 2 ? 'sine' : 'triangle', 1.3);
+      }
+      this.nextArp += stepDur;
+    }
+  },
+  setOn(v) {
+    this.on = v;
+    if (this.ctx) { const t = this.ctx.currentTime; this.master.gain.cancelScheduledValues(t); this.master.gain.setTargetAtTime(v ? 0.85 : 0, t, 0.08); }
+  },
+  resume() { const c = this.ensure(); if (c && c.state === 'suspended') c.resume(); },
+  pause() { if (this.ctx && this.ctx.state === 'running') this.ctx.suspend(); },
+};
+
+// cue sheet: scenes may list [localTime, 'boom'|'chime'|'pluck'] pairs
+function fireCues() {
+  if (!playing || !Snd.ctx) return;
+  for (const s of scenes) {
+    if (s.flight > 0 && PREV_T < s.start && T >= s.start) Snd.boom();
+    for (const [at, kind, arg] of s.cues || []) {
+      const abs = s.start + s.flight + at;
+      if (PREV_T < abs && T >= abs) {
+        if (kind === 'boom') Snd.boom();
+        else if (kind === 'chime') Snd.chime(arg);
+        else Snd.pluck(arg ?? 81, Snd.ctx.currentTime, 0.05, 'sine', 1.8);
+      }
+    }
+  }
+}
+
+// ── pause-and-poke: what each on-screen label means, and which chapter shows it (see hotspots.js)
+const HOT_INFO = [
+  { match: 'the post', text: 'Any post in a conversation. Paste it and the Treeviewer climbs to the root on its own.', go: 'load' },
+  { match: 'reply', text: 'Every reply becomes a node in one big tree.', go: 'grow' },
+  { match: 'side-argument', text: 'Side conversations branch off and keep their own shape in the tree.', go: 'grow' },
+  { match: 'branch', text: 'Wherever a post has more than one reply, the tree forks. You choose which way to read.', go: 'read' },
+  { match: 'leaf', text: 'Where a line of replies ends. Every leaf is a different ending to the conversation.', go: 'grow' },
+  { match: 'quote lane', text: 'Quote posts open in lanes of their own, beside the main thread.', go: 'quotes' },
+  { match: /^(paste a thread|Load Thread)$/, text: 'Paste any post URL. It finds the root, fetches every reply and fills in branches Bluesky cut short.', go: 'load' },
+  { match: 'read a path', text: 'Read one line of the conversation, root to leaf, and steer between branches as you go.', go: 'read' },
+  { match: /^saved in your browser/, text: 'Loaded threads are kept in your browser, so opening them again is instant and needs no network.', go: 'load' },
+  { match: 'Vertical', text: 'Classic top-down tree: the root at the top, replies growing downwards.', go: 'layouts' },
+  { match: 'Horizontal', text: 'The same tree laid on its side, which suits long, deep threads.', go: 'layouts' },
+  { match: 'Radial', text: 'The root in the middle, replies spiralling outwards. Good for seeing a huge thread at once.', go: 'layouts' },
+  { match: 'Chains', text: 'Collapses the tree into self-reply chains, nested inside each other.', go: 'layouts' },
+  { match: /^(−|\+|100%)$/, text: 'Zoom the tree in and out.', go: 'layouts' },
+  { match: /knobs$/, text: 'Fine-tune the radial layout: spacing, spread and ring size.', go: 'layouts' },
+  { match: /^(\+|−) \d+ repl/, text: 'This post has other replies. Open the list and pick one to send the path down that branch.', go: 'read' },
+  { match: /^(Show all replies|Path only)/, text: 'Switch between reading only your path and seeing every reply around it. Shortcut: T.', go: 'views' },
+  { match: 'Chat', text: 'Read the path as a chat: one bubble per post.', go: 'views' },
+  { match: 'Forum', text: 'Read the path as a forum thread, with the replies around each post.', go: 'views' },
+  { match: 'Carousel', text: 'Read the path one card at a time, swiping sideways between branches.', go: 'views' },
+  { match: /^Q \d+/, text: 'How many times this post was quoted. Load them to open a quote lane.', go: 'quotes' },
+  { match: /^Main /, text: 'The main lane: the thread you loaded. Quote lanes open beside it.', go: 'quotes' },
+  { match: /^(Load quotes|Show all|Refresh view|Cancel)$/, text: 'Fetch the quote posts and lay them out in lanes next to the thread.', go: 'quotes' },
+  { match: /^Export /, text: 'Save the current path as Markdown, YAML or JSON.', go: 'more' },
+  { match: /^(Hide tree|Hide chat)$/, text: 'Give the whole screen to the tree or to the reading pane.', go: 'more' },
+  { match: 'Fonts', text: 'Pick the reading font. The choice is remembered.', go: 'more' },
+  { match: 'Dark mode', text: 'Switch the whole viewer to a dark theme.', go: 'more' },
+];
+
+// ── p5 lifecycle
+let cnv, recording = false, recorder = null, recChunks = [];
+const POSTER_T = 4.8;
+
+function hostSize() {
+  const host = document.getElementById('canvas-host');
+  const w = Math.max(200, host.clientWidth);
+  return [w, Math.round((w * 9) / 16)];
+}
+
+function setup() {
+  layoutScenes();
+  const [w, h] = hostSize();
+  pixelDensity(Math.min(2, window.devicePixelRatio || 1));
+  cnv = createCanvas(w, h);
+  cnv.parent('canvas-host');
+  noiseSeed(7); randomSeed(7);
+  T = POSTER_T;
+  buildUI();
+  if (document.fonts) {
+    document.fonts.load('40px Virgil');
+    document.fonts.load('40px "Share Tech Mono"');
+  }
+}
+
+function windowResized() {
+  if (recording) return;
+  const [w, h] = hostSize();
+  resizeCanvas(w, h);
+}
+
+function draw() {
+  const now = millis();
+  PREV_T = T;
+  if (playing) {
+    T += Math.min(0.1, (now - lastMs) / 1000);
+    if (T >= TOTAL) { T = TOTAL; setPlaying(false); onEnded(); }
+  }
+  lastMs = now;
+  BOIL = Math.floor(T * 8);
+  NIGHT = nightAt(T);
+  mixPalette(NIGHT);
+  fireCues();
+  if (playing) Snd.tick(scenes[sceneIndexAt(T)].id);
+
+  Hot.frame();
+  Hot.begin(started && !playing && !recording);
+  background(K.paper[0], K.paper[1], K.paper[2]);
+  push();
+  scale(width / W);
+  const cam = camAt(T);
+  push();
+  translate(W / 2, H / 2); scale(cam.z); translate(-cam.x, -cam.y);
+  drawGrid(cam);
+  drawThreadPath(cam);
+  scenes.forEach((s, i) => {
+    if (s.world || !visible(s, cam)) return;
+    push(); translate(s.ox, s.oy);
+    Hot.setScene(s);
+    const lod = seg(cam.z, 0.5, 0.36);
+    if (lod < 1) withA(1 - lod, () => s.draw(Math.min(localT(s), s.dur)));
+    if (lod > 0) withA(lod, () => drawLOD(s, i));
+    pop();
+  });
+  pop();
+  const fin = scenes[scenes.length - 1];
+  if (fin.world && T >= fin.start) fin.overlay(T - fin.start);
+  vignette();
+  pop();
+  Hot.end();
+  syncUI();
+}
+
+// ── controls
+const $ = (id) => document.getElementById(id);
+const fmtTime = (s) => { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+let chapterButtons = [], lastChapter = -1;
+
+function setPlaying(v) {
+  playing = v;
+  lastMs = millis();
+  $('play').textContent = v ? 'Pause' : 'Play';
+  $('bigplay').hidden = v || started;
+  if (v) { started = true; Snd.resume(); } else Snd.pause();
+}
+function togglePlay() {
+  if (!started && !playing) T = 0;
+  if (!playing && T >= TOTAL - 0.05) T = 0;
+  setPlaying(!playing);
+}
+function seekTo(t) { T = Math.max(0, Math.min(TOTAL, t)); PREV_T = T; started = true; $('bigplay').hidden = true; }
+function onEnded() {
+  if (recording && recorder) recorder.stop();
+}
+
+function buildUI() {
+  $('play').addEventListener('click', togglePlay);
+  $('bigplay').addEventListener('click', togglePlay);
+  const scrub = $('scrub');
+  scrub.addEventListener('input', () => { dragging = true; seekTo((scrub.value / 1000) * TOTAL); });
+  scrub.addEventListener('change', () => { dragging = false; });
+  $('sound').addEventListener('click', () => {
+    const on = !Snd.on; Snd.setOn(on);
+    $('sound').setAttribute('aria-pressed', String(on)); $('sound').textContent = on ? 'Sound on' : 'Sound off';
+  });
+  $('full').addEventListener('click', toggleFull);
+  document.addEventListener('fullscreenchange', () => { setTimeout(windowResized, 60); });
+  document.addEventListener('keydown', (e) => {
+    const tag = e.target && e.target.tagName;
+    if (tag === 'BUTTON' && (e.code === 'Space' || e.key === 'Enter')) return;
+    if (tag === 'INPUT' && e.code !== 'Space') return;
+    if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); seekTo(T + 5); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); seekTo(T - 5); }
+    else if (e.key === 'f' || e.key === 'F') toggleFull();
+  });
+
+  const ticks = $('ticks'), nav = $('chapters');
+  scenes.forEach((s, i) => {
+    const tick = document.createElement('i'); tick.style.left = ((s.start / TOTAL) * 100).toFixed(2) + '%'; ticks.appendChild(tick);
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'chap';
+    b.innerHTML = '<b>' + fmtTime(s.start) + '</b>' + s.chapter;
+    b.addEventListener('click', () => { seekTo(s.start + (s.flight ? 0.2 : 0)); if (!playing) setPlaying(true); });
+    nav.appendChild(b); chapterButtons.push(b);
+  });
+
+  // Recording only works when this file is opened directly, not inside a framed viewer.
+  let framed = true; try { framed = window.self !== window.top; } catch (e) { framed = true; }
+  if (!framed && window.MediaRecorder && HTMLCanvasElement.prototype.captureStream) {
+    $('rec').hidden = false;
+    $('rec').addEventListener('click', startRecording);
+  }
+}
+
+function toggleFull() {
+  const st = $('stage');
+  try {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (st.requestFullscreen) st.requestFullscreen().catch(() => {});
+  } catch (e) { /* fullscreen is optional */ }
+}
+
+function syncUI() {
+  $('clock').textContent = fmtTime(T) + ' / ' + fmtTime(TOTAL);
+  if (!dragging) $('scrub').value = String(Math.round((T / TOTAL) * 1000));
+  const ci = sceneIndexAt(T);
+  if (ci !== lastChapter) {
+    chapterButtons.forEach((b, i) => b.setAttribute('aria-current', i === ci ? 'true' : 'false'));
+    lastChapter = ci;
+  }
+}
+
+function startRecording() {
+  if (recording) return;
+  const note = $('rec-note');
+  Snd.ensure();
+  const types = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  const mime = types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
+  recording = true;
+  $('canvas-host').classList.add('fixed');
+  pixelDensity(1); resizeCanvas(1920, 1080);
+  const stream = cnv.elt.captureStream(60);
+  if (Snd.dest) Snd.dest.stream.getAudioTracks().forEach((tr) => stream.addTrack(tr));
+  recChunks = [];
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 14e6 } : undefined);
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+  recorder.onstop = () => {
+    recording = false;
+    $('canvas-host').classList.remove('fixed');
+    pixelDensity(Math.min(2, window.devicePixelRatio || 1)); windowResized();
+    const blob = new Blob(recChunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'treeviewer-showreel.webm';
+    document.body.appendChild(a); a.click(); a.remove();
+    note.textContent = 'Saved treeviewer-showreel.webm (' + (blob.size / 1e6).toFixed(1) + ' MB). Convert with: ffmpeg -i treeviewer-showreel.webm -c:v libx264 -crf 18 -c:a aac treeviewer-showreel.mp4';
+    $('rec').textContent = 'Record .webm';
+  };
+  note.hidden = false;
+  note.textContent = 'Recording 1920×1080 in real time. Keep this tab in front until the film ends.';
+  $('rec').textContent = 'Recording…';
+  seekTo(0);
+  recorder.start(250);
+  setPlaying(true);
+}
+
+</script>
+</body>
+</html>

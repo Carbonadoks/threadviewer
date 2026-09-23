@@ -38,7 +38,20 @@ Goal: no scroll/pan lag with hundreds of quote lanes and very large threads. Dec
 - Connector culling tests each curve's actual shape, not just its bounding box (`clipCubicToRect` / `cullConnectorsToRect`). With ~1,600 quote lanes, the bounding-box query returned ~1,470 connectors for almost any view, because a fan from one source crosses the whole board. Console profiling (since removed) showed the JavaScript for a click at ~5–15 ms, but frames of 23–86 ms went to painting these SVG paths. Now only curves that pass through the cull rect are drawn. Curves with both ends in the rect are always drawn. All others are merged, whatever their source, when their visible parts and in-view endpoints coincide on a 6 px grid. This covers fans crossing the view and thousands of quote lanes pointing back at one post in the main lane. If more than 250 remain, the grid doubles until they fit, so the number drawn stays bounded however many lanes there are. `getConnectorCurve` is shared by drawing and culling.
 - Scroll animations read board geometry (stage offset, view size, horizontal scroll limit, bottom padding) once at the start. The vertical scroll limit comes from `rowLayout`. Reading them every frame forced a synchronous layout whenever cards had mounted earlier in that frame.
 
-Still open for rendering: `moveActiveCard` scans every card per keypress; a canvas-rendered tier for extremely low zoom.
+- Card moves use FLIP instead of a `left` transition, which relaid out the whole board every frame. When the board model changes (lanes arriving, branch switch, tree fan open/fold), each mounted card jumps to its new left/top and a Web Animations `translate` animation, run on the compositor, plays the offset back to zero. Rows now glide vertically too; before, only x animated and y snapped. Row re-measurement alone never animates. The offset includes the row-anchor scroll correction, so cards that correction already holds still do not move on screen. An interrupted glide continues from its current on-screen position. Reduced-motion users get no animation.
+- Scroll handling reads geometry (viewport rect, minimap box) in the scroll event, where layout is clean, instead of in a later rAF after card mounts, where the read forced a synchronous layout.
+- Card dates use one shared `Intl.DateTimeFormat`. `toLocaleDateString` with options built a new formatter for every card that mounted.
+- While drag-panning, cards ignore pointer events, so cards sliding under the cursor no longer start hover lift/shadow transitions.
+
+Still open for rendering: `moveActiveCard` scans every card per keypress; a canvas-rendered tier for extremely low zoom; connectors and rails snap to their final position while cards glide; `.tree-search-panel` uses `backdrop-filter: blur(14px)` over the scrolling board (94% opaque, so the blur is barely visible but re-rendered every scroll frame); toggling a tree fan transitions `box-shadow` on every muted card (paint per frame).
+
+## Implemented: reply fan and branch rail (alongside the tree fan)
+
+The expanded tree fan (`t`, the lane marker's Tree/Fold button) is unchanged. The reply fan and the branch rail are added next to it.
+
+- Reply fan: one reply level spread out in a horizontal strip over the board, like `/carousel`. It opens from `b`, a double-click on a card (stacked cards included), a card's "Fan n" button, or a rail chip. A single click on a stacked card still brings that branch to the front. The focused reply is centred. Its own replies show in a lane underneath, and clicking one moves the fan down a level. ←/→ browse, ↓/↑ go down or up a level, and Enter (or clicking the focused card) makes that reply's branch the lane's active chain. The active chain is kept if it already runs through that reply; otherwise the longest chain through it is used. Browsing is a preview and leaves the board unchanged until then. Esc or `b` closes the fan.
+- When scrolling the strip settles, the card nearest the centre becomes the focus. The strip renders in pages (40 at a time) and the reply lane shows up to 40 replies.
+- Branch rail: a bar above the board. It shows the path from the root to the selected post along the lane's active chain, with posts below the selection dimmed. In tree view, a selected card off the active chain shows its own path from the root. While the fan is open, the rail shows the preview path instead. Steps with other replies get a `▾n` chip that opens the fan there. Chains longer than 40 steps show a window around the current step.
 
 ## Implemented: loading (queue, streaming, sharing, cancellation)
 
@@ -76,6 +89,26 @@ Still open for rendering: `moveActiveCard` scans every card per keypress; a canv
 - Quote loads that are already running can be promoted. Fetch mode scans every board post's quotes with `fetchAll` at priority 2, behind thousands of queued thread loads. Opening that post's picker, or asking for the same quotes, used to join that scan, so "Load all quote posts" sat on "Loading all..." indefinitely. Now opening the picker or joining a load calls `promoteQuoteLoad`: later pages use the new priority, and the queued page moves via `RequestScheduler.promote(key, priority)`. Quote pages time out after 20 s as a retryable network error, so a hung request cannot hold a slot forever. Refresh after a full load puts new quotes in front and keeps the loaded list and its cursor, instead of dropping back to the first 12.
 
 - The Loading panel has a **Quote posts** section: every quote load in progress (picker, lane jobs, fetch mode) with progress, a Pause/Resume button on each "load all", and Pause all / Resume all. The list scrolls (max 240 px). Pausing lets the page in flight finish, then holds the load and its cursor open (`pausedQuoteUris`, `waitWhileQuoteLoadPaused`); callers sharing the load wait with it, and aborting still cancels. The picker's load-all button reads "Resume loading" while paused.
+
+- Rate limits: `public.api.bsky.app` (unauthenticated, BunnyCDN, `cache-control: public, max-age=30`) sends no `ratelimit-*` headers, and its CORS response exposes no headers, so browsers cannot read `retry-after`. Bluesky documents the public AppView limits only as "generous"; the general figure is 3,000 requests / 5 min / IP. The scheduler now has a sliding-window budget (`rateLimit`, board: 2,500 per 5 min, retries included) so long runs stay under it. When 429s arrive with no readable retry-after, the queue pauses for 5 s, doubling up to 60 s. 429 retries have their own bound (8) and no longer use up the 3 ordinary retries, so a rate-limit pause does not turn lanes into errors.
+- Bulk lane jobs no longer stall in a hidden tab. `yieldToBrowser` waited on `requestAnimationFrame`, which does not run in background tabs, so discovery and every lane completion froze until the tab was shown again. A trailing timer flushes finished lanes even if no later load completes.
+
+- `getFullThread` is pipelined:
+  - Root discovery is one `getPostThreadV2` call. The `getPostThread` parent walk only runs if that fails. Before, both ran one after the other on every load.
+  - Hidden-gap recovery (Constellation backlinks + `getPosts`) runs 4 gaps at a time instead of one by one.
+  - Hydration is a continuous pool of 10 instead of rounds of 10-node batches. A slow branch no longer idles the other slots, and replies that arrive truncated are queued immediately rather than after the whole round.
+  - A queued node that an ancestor's hydration already filled is skipped.
+  - Abort signals reach the requests themselves.
+  - Test: `getFullThread hydrates truncated branches without waiting for slower siblings`.
+
+- Fetch mode is a command center (the "Fetch mode" pill opens it; nothing starts until "Start fetching").
+  - **Settings** (saved in localStorage `parallelboard:fetch-mode:v1`): quote posts, quoted posts, full threads for truncated lanes, how many generations of new lanes to follow, whether new lanes are scanned at their quote post or at every post, and a new-lane limit.
+  - **Plan:** posts to scan, expected quote posts/pages, quoted posts, full threads, an upper bound on requests, and the minimum time under the rate budget.
+  - **Live stats:** posts scanned, quote posts found, lanes opened/linked/failed, generation, full threads, requests running/waiting, budget used, rate-limit countdown, recent events. Pause/Resume/Stop.
+  - **Engine** runs on the main thread, with no dispatch worker, 300 ms delay or 1,000-task ceiling. Each scanned post streams its quotes through `streamQuoteLanes`, the same pipeline as "Create all quote lanes": paged discovery, shared queue and rate budget, batched board writes, conversation linking. It runs at priority 2, behind user actions and bulk jobs.
+  - Three posts are scanned at once, and full threads load two at a time.
+  - Posts with nothing to fetch are never queued, and each post is scanned at most once per run. New lanes feed the next generation as soon as they land on the board.
+  - The worker now only loads and parses full threads.
 
 Still open: `getFullThread` fans out internally (up to 10 hydration requests), so one queued "thread" request can be several HTTP calls. Fetch mode keeps its fixed 1,000-task ceiling (#7). Lanes of one conversation are linked rather than drawn as separate anchored lanes.
 

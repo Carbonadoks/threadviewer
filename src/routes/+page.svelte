@@ -1,5 +1,5 @@
 <script lang="ts">
-	import LandingPage from './landing/+page.svelte';
+	import AnimationsPage from './animations/+page.svelte';
 </script>
 
-<LandingPage />
+<AnimationsPage />

@@ -11,7 +11,7 @@
 	let { children } = $props();
 	let headerHeight = $state(0);
 	let registered = $state.raw<{ context: RouteNavContext; pathname: string } | null>(null);
-	let current = $derived((page.url.pathname.replace(/^\/|\/$/g, '') || 'landing') as RouteNavContext['current']);
+	let current = $derived((page.url.pathname.replace(/^\/|\/$/g, '') || 'animations') as RouteNavContext['current']);
 	let navigation = $derived<RouteNavContext>(registered?.pathname === page.url.pathname && registered.context.current === current
 		? registered.context
 		: { current, threadUrl: page.url.searchParams.get('url'), handle: page.url.searchParams.get('handle'),
@@ -77,7 +77,8 @@
 	.app-header {
 		position: relative;
 		padding: 16px 120px 14px;
-		font-family: var(--font-hand);
+		/* Follows the page's font picker (FontPicker sets --app-font on the root). */
+		font-family: var(--app-font, var(--font-hand));
 		color: var(--landing-ink);
 		background:
 			linear-gradient(var(--landing-grid) 1px, transparent 1px),

@@ -1,5 +1,6 @@
 export type RouteNavPage =
 	| 'landing'
+	| 'animations'
 	| 'frontpage'
 	| 'home'
 	| 'threadviewer'

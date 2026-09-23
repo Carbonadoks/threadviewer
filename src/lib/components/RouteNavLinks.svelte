@@ -19,7 +19,8 @@
 	}: RouteNavContext = $props();
 
 	const items: RouteNavItem[] = [
-		{ id: 'landing', href: '/', label: 'Landing', compactLabel: 'Start' },
+		{ id: 'animations', href: '/', label: 'Tour', compactLabel: 'Start' },
+		{ id: 'landing', href: '/landing', label: 'Landing', compactLabel: 'Landing' },
 		{ id: 'frontpage', href: '/frontpage', label: 'Frontpage', compactLabel: 'Front' },
 		{ id: 'viewer2', href: '/viewer2', label: 'Repo Viewer', compactLabel: 'Repo' },
 		{ id: 'viewer2db', href: '/viewer2db', label: 'Repo DB', compactLabel: 'Repo DB' },
@@ -161,7 +162,7 @@
 		gap: 8px;
 		margin: 0;
 		min-width: 0;
-		font-family: var(--font-hand);
+		font-family: var(--app-font, var(--font-hand));
 		letter-spacing: 0;
 	}
 

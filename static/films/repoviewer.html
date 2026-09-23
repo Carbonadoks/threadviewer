@@ -1,0 +1,1893 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Repo Viewer Showreel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap">
+<style>
+@font-face {
+  font-family: 'Virgil';
+  src: url('/Virgil.woff2') format('woff2');
+  font-display: swap;
+}
+:root {
+  color-scheme: dark;
+  --room: #13110e;
+  --room-2: #1c1914;
+  --paper: #fff9ea;
+  --ink: #211d18;
+  --text: #efe6d6;
+  --muted: #a89c88;
+  --line: rgba(239, 230, 214, 0.14);
+  --accent: #e07a5f;
+  --accent-ink: #1b1510;
+  --tape: rgba(255, 219, 117, 0.55);
+  --hand: 'Virgil', 'Patrick Hand', 'Comic Sans MS', cursive;
+  --mono: 'Share Tech Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+}
+html, body { background: var(--room); margin: 0; }
+[hidden] { display: none !important; }
+body {
+  color: var(--text);
+  font-family: var(--mono);
+  padding-inline: 16px;
+  padding-block: 28px 40px;
+  background:
+    radial-gradient(1200px 520px at 50% -10%, rgba(224, 122, 95, 0.10), transparent 70%),
+    var(--room);
+  min-height: 100%;
+}
+.room { max-width: 1280px; margin: 0 auto; display: grid; gap: 18px; }
+.top { display: grid; gap: 6px; }
+.eyebrow {
+  margin: 0; font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+}
+.top h1 {
+  margin: 0; font-family: var(--hand); font-weight: 400;
+  font-size: clamp(34px, 5.4vw, 60px); line-height: 1; color: var(--text); text-wrap: balance;
+}
+.top h1 span { color: var(--accent); }
+.lede { margin: 4px 0 0; max-width: 68ch; color: var(--muted); font-size: 15px; line-height: 1.5; }
+
+.stage {
+  position: relative; background: var(--paper); border-radius: 6px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 249, 234, 0.08);
+}
+.stage::before, .stage::after {
+  content: ""; position: absolute; width: 118px; height: 30px; background: var(--tape);
+  border: 1px solid rgba(113, 84, 56, 0.16); z-index: 2; pointer-events: none;
+}
+.stage::before { left: 7%; top: -12px; transform: rotate(-6deg); }
+.stage::after { right: 9%; bottom: -12px; transform: rotate(5deg); }
+#canvas-host { position: relative; width: 100%; aspect-ratio: 16 / 9; max-width: 100%; overflow: hidden; border-radius: 6px; }
+#canvas-host canvas { display: block; }
+#canvas-host.fixed canvas { width: 100% !important; height: auto !important; }
+.stage:fullscreen { background: #000; border-radius: 0; display: grid; place-items: center; }
+.stage:fullscreen::before, .stage:fullscreen::after { display: none; }
+.stage:fullscreen #canvas-host { width: min(100vw, calc(100vh * 16 / 9)); border-radius: 0; }
+
+.bigplay {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(-1.5deg);
+  font-family: var(--hand); font-size: clamp(18px, 2.6vw, 30px); color: #fffdf4;
+  background: #211d18; border: 2px solid #211d18; padding: 0.55em 1.2em 0.6em;
+  border-radius: 255px 18px 230px 20px / 16px 230px 18px 245px;
+  box-shadow: 8px 10px 0 rgba(33, 29, 24, 0.18); cursor: pointer; z-index: 3;
+  display: inline-flex; align-items: center; gap: 0.5em;
+}
+.bigplay svg { width: 0.9em; height: 0.9em; }
+.bigplay:hover { background: #e07a5f; border-color: #211d18; }
+
+.controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+  padding: 10px 12px; background: var(--room-2); border: 1px solid var(--line); border-radius: 10px;
+}
+.btn {
+  font-family: var(--mono); font-size: 14px; color: var(--text); background: transparent;
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; cursor: pointer; min-height: 36px;
+}
+.btn:hover { border-color: var(--accent); color: #fff; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); min-width: 84px; }
+.btn.primary:hover { filter: brightness(1.08); color: var(--accent-ink); }
+.btn[aria-pressed="false"] { color: var(--muted); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.clock { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 14px; min-width: 96px; }
+.scrub { position: relative; flex: 1 1 260px; min-width: 0; height: 36px; display: flex; align-items: center; }
+.scrub input { width: 100%; accent-color: var(--accent); position: relative; z-index: 1; background: transparent; }
+.ticks { position: absolute; left: 8px; right: 8px; top: 50%; height: 14px; transform: translateY(-50%); pointer-events: none; }
+.ticks i { position: absolute; top: 0; width: 1px; height: 14px; background: rgba(239, 230, 214, 0.35); }
+.rec-note { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 13px; }
+
+.chapters { display: flex; flex-wrap: wrap; gap: 8px; }
+.chap {
+  font-family: var(--mono); font-size: 13px; color: var(--muted); background: transparent;
+  border: 1px dashed var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer;
+  display: inline-flex; gap: 8px; align-items: baseline;
+}
+.chap b { font-weight: 400; color: rgba(239, 230, 214, 0.45); font-variant-numeric: tabular-nums; }
+.chap:hover { color: var(--text); border-color: var(--accent); }
+.chap[aria-current="true"] { color: var(--accent-ink); background: var(--accent); border-style: solid; border-color: var(--accent); }
+.chap[aria-current="true"] b { color: rgba(27, 21, 16, 0.6); }
+.foot { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; max-width: 90ch; }
+.foot a { color: var(--text); text-decoration-color: var(--accent); text-underline-offset: 3px; }
+.keys { color: rgba(239, 230, 214, 0.45); }
+
+@media (max-width: 560px) {
+  body { padding-block: 18px 28px; }
+  .controls { gap: 8px; }
+  .scrub { flex-basis: 100%; order: 5; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bigplay { transform: translate(-50%, -50%); }
+}
+</style>
+
+</head>
+<body>
+<main class="room">
+  <header class="top">
+    <p class="eyebrow">threadviewer.app/viewer2 · a p5.js showreel</p>
+    <h1>Your whole repo, <span>one timeline</span></h1>
+    <p class="lede">A minute and a half with Threadviewer's Repo Viewer: it pulls a whole Bluesky repo into your browser, lays every post out on a timeline, then filters them down to exactly what you're looking for.</p>
+  </header>
+
+  <div class="stage" id="stage">
+    <div id="canvas-host"></div>
+    <button class="bigplay" id="bigplay" type="button">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3 L17 10 L5 17 Z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      Play the film
+    </button>
+  </div>
+
+  <div class="controls" role="group" aria-label="Playback">
+    <button class="btn primary" id="play" type="button">Play</button>
+    <span class="clock" id="clock">0:00 / 0:00</span>
+    <div class="scrub">
+      <div class="ticks" id="ticks"></div>
+      <input type="range" id="scrub" min="0" max="1000" value="0" step="1" aria-label="Seek through the film">
+    </div>
+    <button class="btn" id="sound" type="button" aria-pressed="true">Sound on</button>
+    <button class="btn" id="full" type="button">Fullscreen</button>
+    <button class="btn" id="rec" type="button" hidden>Record .webm</button>
+    <p class="rec-note" id="rec-note" hidden></p>
+  </div>
+
+  <nav class="chapters" id="chapters" aria-label="Chapters"></nav>
+
+  <p class="foot">Every control shown is a real part of the Repo Viewer in <a href="https://github.com/Carbonadoks/threadviewer" target="_blank" rel="noreferrer">Carbonadoks/threadviewer</a>. The handle, DID and numbers are sample data. <span class="keys">Space plays and pauses · ← → skip five seconds · F goes fullscreen.</span></p>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
+<script src="hotspots.js"></script>
+<script>
+// ─────────────────────────────────────────────────────────────
+// Follow the thread — a p5.js showreel for threadviewer.app
+// Virtual frame is 1920×1080. Every scene lives on one endless
+// sheet of grid paper and the camera flies between them.
+// ─────────────────────────────────────────────────────────────
+const W = 1920, H = 1080;
+const FLIGHT = 1.3;          // seconds spent flying between scenes
+const COLS = 4, GAPX = 2500, GAPY = 1650;
+
+let T = 0, PREV_T = 0, TOTAL = 0, BOIL = 0, GA = 1;
+let playing = false, started = false, lastMs = 0, dragging = false;
+let NIGHT = 0;
+const scenes = [];
+const K = {};
+
+// ── palette: [day, night] — lifted from src/app.css landing tokens
+const PAL = {
+  paper:  ['#fff9ea', '#161b26'],
+  grid:   ['#e9dfc6', '#222a39'],
+  grid2:  ['#e2d5b6', '#283146'],
+  ink:    ['#211d18', '#f2eadc'],
+  muted:  ['#6d6356', '#a9a293'],
+  soft:   ['#b3a892', '#5b6272'],
+  card:   ['#fffdf4', '#202837'],
+  accent: ['#e07a5f', '#4f7cff'],
+  hot:    ['#d95f43', '#ff8a6e'],
+  teal:   ['#1d7f6e', '#5cc2ae'],
+  purple: ['#8a4f83', '#c58bd0'],
+  blue:   ['#245e91', '#7fb0ff'],
+  olive:  ['#7b6a21', '#d2bd5a'],
+  root:   ['#fff1ac', '#4b4261'],
+  r1:     ['#d8f3eb', '#224a45'],
+  r2:     ['#dceafd', '#223d61'],
+  leaf:   ['#e8efb7', '#3f4b2c'],
+  branch: ['#ffd9c7', '#4a3442'],
+  quote:  ['#efd8f2', '#403454'],
+  note:   ['#fff6c9', '#26324a'],
+  map:    ['#dff1ff', '#1f3048'],
+  tape:   ['#ffdb75', '#4f7cff'],
+  shadow: ['#211d18', '#000000'],
+  dark:   ['#12201b', '#0b1411'],
+  green:  ['#5cf2a0', '#5cf2a0'],
+};
+const hexToArr = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16), 255];
+const PALA = {};
+for (const k in PAL) PALA[k] = [hexToArr(PAL[k][0]), hexToArr(PAL[k][1])];
+function mixPalette(n) {
+  for (const k in PALA) {
+    const a = PALA[k][0], b = PALA[k][1];
+    K[k] = [a[0] + (b[0] - a[0]) * n, a[1] + (b[1] - a[1]) * n, a[2] + (b[2] - a[2]) * n, 255];
+  }
+}
+mixPalette(0);
+
+// ── math
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const seg = (t, a, b) => clamp01((t - a) / (b - a));
+const eio = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+const eout = (p) => 1 - Math.pow(1 - p, 3);
+const bk = (p) => { if (p <= 0) return 0; if (p >= 1) return 1; const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2); };
+const R = (i, k = 0) => { const s = Math.sin(i * 127.1 + k * 311.7 + 0.5) * 43758.5453; return s - Math.floor(s); };
+const lerpN = (a, b, p) => a + (b - a) * p;
+const mixC = (a, b, p) => [lerpN(a[0], b[0], p), lerpN(a[1], b[1], p), lerpN(a[2], b[2], p), lerpN(a[3] ?? 255, b[3] ?? 255, p)];
+const fmtInt = (n) => Math.round(n).toLocaleString('en-US');
+
+// ── paint helpers (colors are [r,g,b,a] arrays, GA is a group alpha)
+function F(c, a = 1) { fill(c[0], c[1], c[2], (c[3] ?? 255) * a * GA); }
+function S(c, a = 1, w) { stroke(c[0], c[1], c[2], (c[3] ?? 255) * a * GA); if (w !== undefined) strokeWeight(w); }
+function withA(a, fn) { if (a <= 0.003) return; const prev = GA; GA *= a; fn(); GA = prev; }
+function vf(size) { textFont('Virgil'); textSize(size); textStyle(NORMAL); }
+function mf(size) { textFont('Share Tech Mono'); textSize(size); textStyle(NORMAL); }
+function txt(str, x, y, size, col, opts = {}) {
+  if (!str) return;
+  (opts.mono ? mf : vf)(size);
+  noStroke(); F(col, opts.a ?? 1);
+  textAlign(opts.align ?? LEFT, opts.valign ?? BASELINE);
+  if (opts.w) text(str, x, y, opts.w, opts.h ?? 2000); else text(str, x, y);
+}
+const typed = (str, p) => str.slice(0, Math.floor(str.length * clamp01(p) + 0.0001));
+
+// hand-drawn wobble: re-rolls 8 times a second, like boiling ink
+function jit(seed, amp = 1.5) { return (noise(seed * 7.13, BOIL * 1.37) - 0.5) * 2 * amp; }
+
+function roughLine(x1, y1, x2, y2, col, w = 2.5, seed = 0, a = 1) {
+  noFill();
+  for (let k = 0; k < 2; k++) {
+    const s = seed + k * 31;
+    S(col, a * (k ? 0.55 : 1), k ? w * 0.55 : w);
+    beginShape();
+    vertex(x1 + jit(s + 3, 1.4), y1 + jit(s + 4, 1.4));
+    quadraticVertex((x1 + x2) / 2 + jit(s + 1, 2.2), (y1 + y2) / 2 + jit(s + 2, 2.2), x2 + jit(s + 5, 1.4), y2 + jit(s + 6, 1.4));
+    endShape();
+  }
+}
+
+function blobPath(x, y, w, h, r, seed, a) {
+  const j = (k) => jit(seed + k * 1.7, a);
+  r = Math.min(r, w / 2, h / 2);
+  const r1 = r * (0.8 + 0.4 * R(seed, 1)), r2 = r * (0.8 + 0.4 * R(seed, 2));
+  const r3 = r * (0.8 + 0.4 * R(seed, 3)), r4 = r * (0.8 + 0.4 * R(seed, 4));
+  beginShape();
+  vertex(x + r1 + j(1), y + j(2));
+  vertex(x + w - r2 + j(3), y + j(4));
+  quadraticVertex(x + w + j(5), y + j(6), x + w + j(7), y + r2 + j(8));
+  vertex(x + w + j(9), y + h - r3 + j(10));
+  quadraticVertex(x + w + j(11), y + h + j(12), x + w - r3 + j(13), y + h + j(14));
+  vertex(x + r4 + j(15), y + h + j(16));
+  quadraticVertex(x + j(17), y + h + j(18), x + j(19), y + h - r4 + j(20));
+  vertex(x + j(21), y + r1 + j(22));
+  quadraticVertex(x + j(23), y + j(24), x + r1 + j(1), y + j(2));
+  endShape(CLOSE);
+}
+
+// sketchy card: offset flat shadow, fill, ink outline (the app's wobbly-border look)
+function blobRect(x, y, w, h, col, opts = {}) {
+  const seed = opts.seed ?? 0, r = opts.r ?? 16, a = opts.a ?? 1;
+  if (opts.shadow !== false) { noStroke(); F(K.shadow, 0.10 * a); blobPath(x + 8, y + 10, w, h, r, seed + 50, 0.8); }
+  if (col) F(col, a); else noFill();
+  if (opts.stroke === false) noStroke(); else S(opts.strokeCol ?? K.ink, a, opts.sw ?? 2.4);
+  blobPath(x, y, w, h, r, seed, opts.wob ?? 1.6);
+  if (opts.hl) { noFill(); S(K.accent, a * opts.hl, 5); blobPath(x - 7, y - 7, w + 14, h + 14, r + 6, seed + 9, 2); }
+}
+
+function bezPt(b, t) { return [bezierPoint(b[0], b[2], b[4], b[6], t), bezierPoint(b[1], b[3], b[5], b[7], t)]; }
+function bezLen(b) { let L = 0, p = bezPt(b, 0); for (let i = 1; i <= 24; i++) { const q = bezPt(b, i / 24); L += Math.hypot(q[0] - p[0], q[1] - p[1]); p = q; } return L; }
+
+// the doodle line from the landing page: fat round dots on a curve
+function dotCurve(b, prog, col, r = 3.6, gap = 15, a = 1) {
+  if (prog <= 0) return;
+  const L = bezLen(b), n = Math.floor((L * clamp01(prog)) / gap);
+  noStroke(); F(col, a);
+  for (let i = 0; i <= n; i++) {
+    const p = bezPt(b, (i * gap) / L);
+    circle(p[0] + jit(i * 3.1, 0.6), p[1] + jit(i * 5.3, 0.6), r * 2);
+  }
+}
+
+// partial rough curve with an arrowhead
+function arrowTo(x1, y1, x2, y2, prog, col, opts = {}) {
+  if (prog <= 0) return;
+  const bend = opts.bend ?? 0.18, seed = opts.seed ?? 0, w = opts.w ?? 3;
+  const dx = x2 - x1, dy = y2 - y1;
+  const b = [x1, y1, x1 + dx / 3 - dy * bend, y1 + dy / 3 + dx * bend, x1 + (2 * dx) / 3 - dy * bend, y1 + (2 * dy) / 3 + dx * bend, x2, y2];
+  const p = clamp01(prog), steps = 26;
+  noFill(); S(col, opts.a ?? 1, w);
+  beginShape();
+  for (let i = 0; i <= steps * p; i++) { const q = bezPt(b, i / steps); vertex(q[0] + jit(seed + i, 0.9), q[1] + jit(seed + i + 40, 0.9)); }
+  endShape();
+  if (p > 0.92) {
+    const e = bezPt(b, 1), d = bezPt(b, 0.9), ang = Math.atan2(e[1] - d[1], e[0] - d[0]), s = 18 * seg(p, 0.92, 1);
+    beginShape(); vertex(e[0] - Math.cos(ang - 0.45) * s, e[1] - Math.sin(ang - 0.45) * s); vertex(e[0], e[1]); vertex(e[0] - Math.cos(ang + 0.45) * s, e[1] - Math.sin(ang + 0.45) * s); endShape();
+  }
+}
+
+function tapeAt(x, y, w, h, rot, a = 1) {
+  if (a <= 0) return;
+  push(); translate(x, y); rotate(rot);
+  noStroke(); F(K.tape, 0.55 * a); rectMode(CENTER); rect(0, 0, w, h);
+  S(K.ink, 0.12 * a, 1); noFill(); rect(0, 0, w, h);
+  rectMode(CORNER); pop();
+}
+
+// swoosh underline
+function uline(x, y, w, prog, col, seed = 0, sw = 4) {
+  if (prog <= 0) return;
+  noFill(); S(col, 1, sw);
+  beginShape();
+  const n = 20;
+  for (let i = 0; i <= n * clamp01(prog); i++) { const u = i / n; vertex(x + u * w, y + Math.sin(u * Math.PI) * 6 - u * 4 + jit(seed + i, 0.8)); }
+  endShape();
+}
+
+function scribbleCircle(cx, cy, rw, rh, prog, col, seed = 0, sw = 3.5) {
+  if (prog <= 0) return;
+  noFill(); S(col, 1, sw);
+  beginShape();
+  const turns = 1.15, n = 48;
+  for (let i = 0; i <= n * clamp01(prog); i++) {
+    const u = (i / n) * turns * Math.PI * 2 - 2.2;
+    const wob = 1 + 0.05 * Math.sin(u * 3 + seed) + (i / n) * 0.06;
+    vertex(cx + Math.cos(u) * rw * wob + jit(seed + i, 0.8), cy + Math.sin(u) * rh * wob + jit(seed + i + 9, 0.8));
+  }
+  endShape();
+}
+
+// fake handwriting: a few scribbled lines
+function scribbleLines(x, y, w, lines, gap, col, prog = 1, seed = 0, a = 1) {
+  noFill();
+  for (let l = 0; l < lines; l++) {
+    const lw = w * (l === lines - 1 ? 0.55 + 0.3 * R(seed, l) : 0.82 + 0.18 * R(seed, l));
+    const p = clamp01(prog * lines - l);
+    if (p <= 0) break;
+    S(col, a, 3);
+    beginShape();
+    const n = Math.max(2, Math.floor(lw / 14));
+    for (let i = 0; i <= n * p; i++) vertex(x + (i / n) * lw, y + l * gap + Math.sin(i * 1.7 + seed + l) * 2.2 + jit(seed + l * 20 + i, 0.6));
+    endShape();
+  }
+}
+
+function chipAt(x, y, label, col, opts = {}) {
+  const size = opts.size ?? 26;
+  (opts.mono ? mf : vf)(size);
+  const w = textWidth(label) + size * 1.3, h = size * 1.75;
+  const a = opts.a ?? 1;
+  withA(a, () => {
+    blobRect(x, y, w, h, col, { r: h / 2, seed: opts.seed ?? 3, sw: 2, dashed: opts.dashed, shadow: opts.shadow });
+    txt(label, x + w / 2, y + h / 2 + size * 0.33, size, opts.textCol ?? K.ink, { align: CENTER, mono: opts.mono });
+    Hot.add(label, x, y, w, h, col === K.root || col === K.accent ? 'on' : undefined);
+  });
+  return w;
+}
+
+function cloudAt(cx, cy, rw, rh, col, seed = 0, a = 1) {
+  withA(a, () => {
+    F(col); S(K.ink, 1, 2.6);
+    beginShape();
+    const n = 80;
+    for (let i = 0; i < n; i++) {
+      const u = (i / n) * Math.PI * 2;
+      const bump = 0.86 + 0.2 * Math.abs(Math.sin(u * 3.5 + seed));
+      let y = cy + Math.sin(u) * rh * bump;
+      y = Math.min(y, cy + rh * 0.62);
+      vertex(cx + Math.cos(u) * rw * bump + jit(seed + i, 0.7), y + jit(seed + i + 90, 0.7));
+    }
+    endShape(CLOSE);
+  });
+}
+
+// scene heading: mono kicker, big hand title with swoosh, typed subtitle
+function heading(t, kicker, title, sub, opts = {}) {
+  const x = opts.x ?? 120, y = opts.y ?? 150, w = opts.w ?? 760;
+  const a1 = seg(t, -0.5, 0.2), a2 = eout(seg(t, -0.3, 0.6)), a3 = seg(t, 0.4, 1.8);
+  withA(a1, () => txt(kicker, x, y - 70, 24, K.accent, { mono: true }));
+  if (a2 > 0) {
+    push(); translate(x, y + (1 - a2) * 30);
+    withA(a2, () => txt(title, 0, 0, opts.size ?? 82, K.ink));
+    vf(opts.size ?? 82);
+    if (a2 > 0.5) Hot.heading(title, sub, 0, -(opts.size ?? 82) * 0.8, textWidth(title), opts.size ?? 82);
+    uline(0, 26, Math.min(textWidth(title), w), seg(t, 0.2, 1.1), K.accent, 7);
+    pop();
+  }
+  if (sub) txt(typed(sub, a3), x, y + 56, opts.subSize ?? 30, K.muted, { w, valign: TOP });
+}
+
+// ── scene registry & timeline
+function scene(def) { scenes.push(def); }
+
+function layoutScenes() {
+  let t = 0, idx = 0;
+  for (const s of scenes) {
+    s.flight = (idx === 0 || s.world) ? 0 : FLIGHT;
+    s.start = t;
+    t += s.flight + s.dur;
+    if (!s.world) {
+      const row = Math.floor(idx / COLS), col = idx % COLS;
+      s.col = row % 2 === 0 ? col : COLS - 1 - col;
+      s.row = row;
+      s.ox = s.col * GAPX; s.oy = row * GAPY;
+    }
+    idx++;
+  }
+  TOTAL = t;
+}
+
+function localT(s) { return T - s.start - s.flight; }
+function sceneIndexAt(tt) { let i = 0; for (let k = 0; k < scenes.length; k++) if (tt >= scenes[k].start) i = k; return i; }
+
+function sceneCam(s, t) {
+  if (s.world) return s.cam(t);
+  const c = s.cam ? s.cam(t) : { x: W / 2, y: H / 2, z: 1 + 0.035 * clamp01(t / s.dur) };
+  return { x: s.ox + c.x, y: s.oy + c.y, z: c.z };
+}
+
+function camAt(tt) {
+  const i = sceneIndexAt(tt), s = scenes[i], lt = tt - s.start - s.flight;
+  const b = sceneCam(s, Math.max(0, lt));
+  if (lt < 0 && i > 0) {
+    const pa = scenes[i - 1], a = sceneCam(pa, pa.dur);
+    const p = eio(clamp01((tt - s.start) / s.flight));
+    return { x: lerpN(a.x, b.x, p), y: lerpN(a.y, b.y, p), z: lerpN(a.z, b.z, p) * (1 - 0.45 * Math.sin(Math.PI * p)) };
+  }
+  return b;
+}
+
+// exit/entry points of each scene for the connecting thread
+function threadCurve(a, b) {
+  let p1, p2, c1, c2;
+  if (a.row === b.row) {
+    const dir = b.ox > a.ox ? 1 : -1;
+    p1 = [a.ox + (dir > 0 ? W + 40 : -40), a.oy + H * 0.62];
+    p2 = [b.ox + (dir > 0 ? -40 : W + 40), b.oy + H * 0.38];
+    c1 = [p1[0] + dir * 260, p1[1] + 180]; c2 = [p2[0] - dir * 260, p2[1] - 180];
+  } else {
+    p1 = [a.ox + W * 0.5, a.oy + H + 40];
+    p2 = [b.ox + W * 0.5, b.oy - 40];
+    c1 = [p1[0] + 320, p1[1] + 220]; c2 = [p2[0] - 320, p2[1] - 220];
+  }
+  return [p1[0], p1[1], c1[0], c1[1], c2[0], c2[1], p2[0], p2[1]];
+}
+const THREAD_COLS = ['accent', 'teal', 'purple', 'blue', 'hot', 'olive'];
+
+function drawThreadPath(cam) {
+  const zf = Math.max(1, 0.5 / cam.z);
+  const list = scenes.filter((s) => !s.world);
+  for (let i = 0; i < list.length - 1; i++) {
+    const a = list[i], b = list[i + 1];
+    const p = clamp01((T - b.start) / (b.flight * 0.8));
+    if (p <= 0) continue;
+    dotCurve(threadCurve(a, b), eio(p), K[THREAD_COLS[i % THREAD_COLS.length]], 5.5 * zf, 22 * zf, 0.8);
+  }
+}
+
+function drawGrid(cam) {
+  const hw = W / 2 / cam.z, hh = H / 2 / cam.z;
+  const x0 = cam.x - hw, x1 = cam.x + hw, y0 = cam.y - hh, y1 = cam.y + hh;
+  const step = cam.z < 0.3 ? 180 : 36;
+  strokeWeight(1 / cam.z);
+  S(K.grid, cam.z < 0.3 ? 0.6 : 1);
+  for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) line(x, y0, x, y1);
+  for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) line(x0, y, x1, y);
+}
+
+function visible(s, cam) {
+  const hw = W / 2 / cam.z, hh = H / 2 / cam.z;
+  return s.ox < cam.x + hw && s.ox + W > cam.x - hw && s.oy < cam.y + hh && s.oy + H > cam.y - hh;
+}
+
+// far-away scenes become index cards with their chapter name
+function drawLOD(s, i) {
+  const seen = T >= s.start;
+  withA(seen ? 1 : 0.25, () => {
+    blobRect(40, 40, W - 80, H - 80, K.card, { r: 40, seed: i * 11, sw: 6, wob: 3 });
+    txt(s.kicker, W / 2, H / 2 - 150, 80, K.accent, { align: CENTER, mono: true });
+    txt(s.chapter, W / 2, H / 2 + 90, 190, K.ink, { align: CENTER });
+    tapeAt(W * 0.2, 44, 360, 90, -0.08); tapeAt(W * 0.8, H - 44, 360, 90, 0.06);
+  });
+}
+
+function vignette() {
+  const g = drawingContext.createRadialGradient(W / 2, H / 2, H * 0.32, W / 2, H / 2, H * 1.0);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, NIGHT > 0.5 ? 'rgba(0,0,0,0.45)' : 'rgba(70,45,15,0.16)');
+  drawingContext.fillStyle = g;
+  drawingContext.fillRect(0, 0, W, H);
+}
+
+// dark mode switches on with Blast mode and dawn comes back for the end card
+function nightAt(tt) {
+  const a = scenes.find((s) => s.id === 'more'), f = scenes.find((s) => s.id === 'finale');
+  if (!a || !f) return 0;
+  const up = seg(tt, a.start + a.flight + 3.9, a.start + a.flight + 4.8);
+  const down = seg(tt, f.start + 2.6, f.start + 3.8);
+  return eio(up) * (1 - eio(down));
+}
+
+const gauss = (i, k) => (R(i, k) + R(i, k + 1) + R(i, k + 2) - 1.5) / 1.5;
+
+// keyed values: keys are [time, ...values, glide?]; each key glides in over `glide` seconds ending at its time
+function keyed(t, keys, n, glide = 0.6) {
+  const v = keys[0].slice(1, 1 + n);
+  for (let i = 1; i < keys.length; i++) {
+    const k = keys[i], g = k[1 + n] ?? glide;
+    const p = eio(seg(t, k[0] - g, k[0]));
+    if (p <= 0) break;
+    for (let j = 0; j < n; j++) v[j] = lerpN(v[j], k[1 + j], p);
+  }
+  return v;
+}
+
+// a drawn mouse pointer: keys are [time, x, y, click?, glide?]
+function arrowShape(ox, oy) {
+  beginShape(); vertex(ox, oy); vertex(ox, oy + 44); vertex(ox + 11, oy + 34); vertex(ox + 20, oy + 52);
+  vertex(ox + 28, oy + 48); vertex(ox + 19, oy + 31); vertex(ox + 33, oy + 31); endShape(CLOSE);
+}
+function drawCursor(t, keys, a = 1) {
+  if (a <= 0.003) return;
+  Hot.cursor(t, keys);
+  let x = keys[0][1], y = keys[0][2];
+  for (let i = 1; i < keys.length; i++) {
+    const [t1, x1, y1, , g] = keys[i];
+    const p = eio(seg(t, t1 - (g ?? Math.min(0.55, t1 - keys[i - 1][0])), t1));
+    if (p <= 0) break;
+    x = lerpN(x, x1, p); y = lerpN(y, y1, p);
+  }
+  let press = 1;
+  for (const k of keys) {
+    if (!k[3]) continue;
+    const d = t - k[0];
+    if (d >= 0 && d < 0.5) { noFill(); S(K.accent, a * (1 - d / 0.5), 3); circle(k[1], k[2], 18 + d * 110); }
+    if (d >= -0.05 && d < 0.14) press = 0.86;
+    if (k[3] === 'hold' && d >= 0) { const nx = keys[keys.indexOf(k) + 1]; if (nx && t < nx[0]) press = 0.86; }
+  }
+  withA(a, () => {
+    push(); translate(x, y); scale(press);
+    noStroke(); F(K.shadow, 0.2); arrowShape(5, 6);
+    F(K.card); S(K.ink, 1, 2.6); arrowShape(0, 0);
+    pop();
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// 0 · Cold open — the landing page doodle draws itself
+// ════════════════════════════════════════════════════════════
+const OPEN_NODES = [
+  { label: 'root note', x: 960, y: 215, c: 'root', rot: -0.09, at: 0.8 },
+  { label: 'reply', x: 1110, y: 390, c: 'r1', rot: 0.05, at: 1.3 },
+  { label: 'branch', x: 1560, y: 300, c: 'branch', rot: -0.07, at: 2.0 },
+  { label: 'hmm', x: 1300, y: 600, c: 'r2', rot: -0.035, at: 1.8 },
+  { label: 'leaf', x: 1470, y: 880, c: 'leaf', rot: 0.07, at: 2.4 },
+  { label: 'quote lane', x: 1720, y: 760, c: 'quote', rot: 0.05, at: 2.6 },
+];
+function doodleNode(n, s, t) {
+  const p = bk(seg(t, n.at, n.at + 0.55));
+  if (p <= 0) return;
+  vf(28);
+  const w = textWidth(n.label) + 46, h = 56;
+  push(); translate(n.x, n.y); rotate(n.rot); scale(p);
+  blobRect(-w / 2, -h / 2, w, h, K[n.c], { r: 26, seed: s * 7 });
+  txt(n.label, 0, 10, 28, K.ink, { align: CENTER });
+  Hot.add(n.label, -w / 2, -h / 2, w, h);
+  pop();
+}
+function sketchButton(x, y, label, primary, press = 0, a = 1) {
+  vf(28);
+  const w = textWidth(label) + 52, h = 60;
+  push(); translate(x + w / 2, y + h / 2); scale(1 - 0.06 * Math.sin(Math.PI * press));
+  withA(a, () => {
+    blobRect(-w / 2, -h / 2, w, h, primary ? K.ink : K.note, { r: 22, seed: label.length * 3 });
+    txt(label, 0, 10, 28, primary ? K.card : K.ink, { align: CENTER });
+    Hot.add(label, -w / 2, -h / 2, w, h, press > 0 && press < 1 ? 'press' : undefined);
+  });
+  pop();
+  return w;
+}
+
+scene({
+  id: 'open', chapter: 'Repo Viewer', kicker: 'PROLOGUE', dur: 5.5,
+  cues: [[0.4, 'pluck', 81], [1.9, 'chime', 74], [5.0, 'pluck', 86]],
+  cam: (t) => {
+    const p = eio(seg(t, 0.2, 2.6));
+    return { x: lerpN(1010, 960, p), y: lerpN(250, 540, p), z: lerpN(2.6, 1, p) + 0.035 * seg(t, 2.6, 5.5) };
+  },
+  draw(t) {
+    // the first ink dot
+    const d0 = bk(seg(t, 0.0, 0.5));
+    noStroke(); F(K.ink); circle(1010, 250, 12 * d0);
+    dotCurve([1010, 250, 1150, 420, 1300, 640, 1500, 900], eio(seg(t, 0.5, 2.6)), K.ink, 4.2, 16, 0.72);
+    dotCurve([1180, 500, 1400, 470, 1600, 300, 1840, 250], eio(seg(t, 1.0, 2.9)), K.teal, 4.2, 16, 0.72);
+    dotCurve([1360, 700, 1560, 660, 1740, 730, 1860, 880], eio(seg(t, 1.3, 3.1)), K.purple, 4.2, 16, 0.72);
+    dotCurve([1140, 420, 1090, 600, 1060, 760, 980, 940], eio(seg(t, 1.2, 3.0)), K.hot, 4.2, 16, 0.72);
+    OPEN_NODES.forEach((n, i) => doodleNode(n, i, t));
+
+    // sticky notes from the landing hero
+    const cn = bk(seg(t, 2.4, 2.9));
+    if (cn > 0) {
+      push(); translate(1720, 150); rotate(0.045); scale(cn);
+      blobRect(-120, -80, 240, 170, K.note, { r: 14, seed: 41 });
+      txt('timeline', -94, -38, 30, K.ink);
+      for (let k = 0; k < 3; k++) {
+        const w = [190, 150, 170][k], x = k === 1 ? 190 - w - 94 + 0 : -94;
+        noFill(); S(K.soft, 1, 1.8); F(K.card, 0.6); rect(x + (k === 1 ? 30 : 0), -18 + k * 30, w - (k === 1 ? 30 : 0), 18, 9);
+      }
+      pop();
+    }
+    const mn = bk(seg(t, 2.6, 3.1));
+    if (mn > 0) {
+      push(); translate(1250, 890); rotate(-0.05); scale(mn);
+      blobRect(-110, -75, 220, 150, K.map, { r: 14, seed: 43 });
+      txt('filters', -86, -34, 30, K.ink);
+      [[-60, 30, 'accent'], [-18, -2, 'teal'], [34, 26, 'blue'], [56, -20, 'purple']].forEach(([x, y, c]) => {
+        noStroke(); F(K[c], 0.18); circle(x, y, 30); F(K[c]); circle(x, y, 15);
+      });
+      pop();
+    }
+
+    // title card
+    const cp = eout(seg(t, 1.8, 2.5));
+    if (cp > 0) {
+      push(); translate(510, 560); rotate(-0.012); scale(0.92 + 0.08 * cp); translate(-510, -560);
+      withA(cp, () => {
+        blobRect(110, 270, 800, 590, K.card, { r: 22, seed: 5, sw: 3 });
+        txt('Repo', 168, 452, 150, K.ink);
+        txt('Viewer', 168, 596, 150, K.ink);
+      });
+      txt(typed('Download your whole Bluesky repo straight into your browser. Every post on one timeline, filtered any way you like.', seg(t, 2.6, 4.2)), 172, 640, 30, K.muted, { w: 690, valign: TOP });
+      const bp = seg(t, 4.2, 4.5);
+      if (bp > 0) {
+        const w1 = sketchButton(172, 770, 'download my repo', true, seg(t, 4.9, 5.2), bp);
+        sketchButton(172 + w1 + 16, 770, 'open the timeline', false, 0, bp);
+      }
+      pop();
+      tapeAt(200, 280, 150, 42, -0.12, seg(t, 2.3, 2.5));
+      tapeAt(830, 858, 150, 42, 0.1, seg(t, 2.5, 2.7));
+    }
+
+    // address bar
+    const ab = eout(seg(t, 3.2, 3.6));
+    if (ab > 0) withA(ab, () => {
+      blobRect(110, 120, 560, 70, K.card, { r: 35, seed: 61 });
+      noFill(); S(K.ink, 1, 2.4); rect(146, 146, 20, 16, 3); arc(156, 146, 14, 18, Math.PI, 0);
+      txt(typed('threadviewer.app/viewer2', seg(t, 3.4, 4.3)), 190, 167, 32, K.ink, { mono: true });
+    });
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 1 · Repo Viewer — resolve a handle to a DID to a PDS
+// ════════════════════════════════════════════════════════════
+scene({
+  id: 'resolve', chapter: 'Handle', kicker: '01 · RESOLVE', dur: 5.5,
+  cues: [[2.35, 'pluck', 78], [3.0, 'pluck', 81], [3.6, 'pluck', 83], [4.6, 'pluck', 86]],
+  draw(t) {
+    heading(t, '01 · RESOLVE', 'Start with a handle', 'Type any handle. The Repo Viewer finds where that repo lives.', { w: 780 });
+
+    const sb = eout(seg(t, 0.2, 0.7));
+    withA(sb, () => {
+      blobRect(120, 420, 830, 96, K.card, { r: 48, seed: 21, sw: 2.8 });
+      noFill(); S(K.ink, 1, 3); circle(176, 466, 30); line(187, 478, 200, 492);
+      const handle = typed('@you.bsky.social', seg(t, 0.6, 2.0));
+      txt(handle, 222, 482, 40, K.ink);
+      vf(40);
+      if (t < 2.4 && (t * 2) % 1 < 0.55) { S(K.accent, 1, 3); line(226 + textWidth(handle), 446, 226 + textWidth(handle), 490); }
+      sketchButton(712, 438, 'load repo', true, seg(t, 2.2, 2.5));
+    });
+    withA(eout(seg(t, 1.2, 1.7)), () => {
+      noFill(); S(K.soft, 1, 2); drawingContext.setLineDash([10, 9]);
+      rect(120, 560, 470, 60, 30); drawingContext.setLineDash([]);
+      txt('+ add another Bluesky user…', 146, 600, 26, K.muted);
+    });
+
+    // resolution chain
+    const fa = eout(seg(t, 2.5, 3.2));
+    if (fa > 0) {
+      const x = lerpN(222, 1060, fa), y = lerpN(420, 250, fa);
+      blobRect(x, y, 600, 96, K.root, { r: 30, seed: 71 });
+      txt('@you.bsky.social', x + 34, y + 62, 40, K.ink);
+    }
+    arrowTo(1300, 360, 1330, 470, seg(t, 3.0, 3.5), K.ink, { seed: 3, bend: 0.25 });
+    withA(seg(t, 3.2, 3.6), () => txt('handle → DID', 1400, 428, 28, K.muted));
+    const bp = bk(seg(t, 3.5, 4.0));
+    if (bp > 0) {
+      push(); translate(1440, 528); scale(bp);
+      blobRect(-380, -48, 760, 96, K.r2, { r: 30, seed: 73 });
+      txt('did:plc:q7xk3vbm4tnw6rj5hpfyace2', 0, 12, 36, K.ink, { align: CENTER, mono: true });
+      pop();
+    }
+    arrowTo(1300, 590, 1330, 700, seg(t, 4.0, 4.5), K.ink, { seed: 5, bend: 0.25 });
+    withA(seg(t, 4.1, 4.5), () => txt('plc.directory → PDS', 1400, 658, 28, K.muted));
+    const cp = bk(seg(t, 4.5, 5.0));
+    if (cp > 0) {
+      push(); translate(1440, 765); scale(cp);
+      blobRect(-380, -58, 760, 116, K.leaf, { r: 30, seed: 77 });
+      txt('your PDS', -340, -8, 34, K.ink);
+      txt('shiitake.us-east.host.bsky.network', -340, 34, 28, K.ink, { mono: true });
+      pop();
+    }
+    const cl = eout(seg(t, 4.8, 5.3));
+    if (cl > 0) {
+      cloudAt(1600, 950, 170 * cl, 70 * cl, K.map, 3);
+      withA(cl, () => txt('your repo lives here', 1600, 962, 26, K.ink, { align: CENTER }));
+    }
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 2 · Repo Viewer — download the CAR file
+// ════════════════════════════════════════════════════════════
+const PARTICLE_COLS = ['accent', 'teal', 'purple', 'blue', 'olive', 'hot'];
+const HEXES = ['3a', 'f1', '0b', '9e', 'c4', '7d', 'a2', '51'];
+scene({
+  id: 'download', chapter: 'Download', kicker: '02 · DOWNLOAD', dur: 6.5,
+  cues: [[0.7, 'pluck', 78], [5.3, 'chime', 74]],
+  draw(t) {
+    heading(t, '02 · DOWNLOAD', 'Straight from your PDS', 'One request pulls the entire repo down as a single CAR file.', { w: 820 });
+    const p = eio(seg(t, 0.7, 5.3));
+
+    const cl = eout(seg(t, 0.1, 0.7));
+    if (cl > 0) {
+      cloudAt(360, 660, 220 * cl, 140 * cl, K.map, 9);
+      withA(cl, () => { txt('your PDS', 360, 660, 40, K.ink, { align: CENTER }); txt('did:plc:q7xk…', 360, 706, 24, K.muted, { align: CENTER, mono: true }); });
+    }
+    const pipe = [570, 600, 720, 380, 940, 360, 1110, 500];
+    withA(seg(t, 0.4, 0.9), () => {
+      dotCurve(pipe, 1, K.soft, 3, 18, 0.8);
+      txt('GET /xrpc/com.atproto.sync.getRepo', 560, 330, 26, K.accent, { mono: true });
+    });
+
+    // browser window with the crate filling up
+    const bw = eout(seg(t, 0.3, 0.9));
+    if (bw > 0) withA(bw, () => {
+      blobRect(1120, 290, 690, 520, K.card, { r: 20, seed: 81, sw: 2.8 });
+      S(K.ink, 1, 2); line(1124, 344, 1806, 344);
+      noStroke(); [0, 1, 2].forEach((k) => { F(K[['hot', 'olive', 'teal'][k]]); circle(1150 + k * 26, 318, 13); });
+      txt('threadviewer.app/viewer2', 1240, 327, 24, K.muted, { mono: true });
+      // crate
+      const cx = 1310, cy = 400, cw = 310, ch = 280;
+      noStroke(); F(K.accent, 0.3); rect(cx + 8, cy + ch - 6 - (ch - 14) * p, cw - 16, (ch - 14) * p, 6);
+      blobRect(cx, cy, cw, ch, null, { r: 10, seed: 83, sw: 3, shadow: false });
+      S(K.ink, 0.35, 2); for (let k = 1; k < 4; k++) line(cx + 12, cy + (ch * k) / 4, cx + cw - 12, cy + (ch * k) / 4);
+      txt('repo.car', cx + cw / 2, cy + ch + 56, 34, K.ink, { align: CENTER, mono: true });
+    });
+
+    // byte stream
+    if (t > 0.7 && t < 5.9) {
+      const live = seg(t, 0.7, 1.1) * (1 - seg(t, 5.3, 5.9));
+      for (let i = 0; i < 170; i++) {
+        const u = (((t - 0.7) * (0.32 + 0.3 * R(i, 2)) + R(i, 1)) % 1);
+        const q = bezPt(pipe, u), q2 = bezPt(pipe, Math.min(1, u + 0.01));
+        const nx = -(q2[1] - q[1]), ny = q2[0] - q[0], nl = Math.hypot(nx, ny) || 1;
+        const off = (R(i, 3) - 0.5) * 70 * Math.sin(u * Math.PI);
+        const x = q[0] + (nx / nl) * off, y = q[1] + (ny / nl) * off;
+        const a = live * Math.min(1, u * 6, (1 - u) * 6);
+        if (i % 7 === 0) { txt(HEXES[i % HEXES.length], x, y, 20, K.ink, { mono: true, a, align: CENTER }); continue; }
+        push(); translate(x, y); rotate(u * 6 + i);
+        noStroke(); F(K[PARTICLE_COLS[i % PARTICLE_COLS.length]], a); rectMode(CENTER); rect(0, 0, 8 + 7 * R(i, 4), 8 + 7 * R(i, 4), 2); rectMode(CORNER);
+        pop();
+      }
+    }
+
+    // progress
+    const pa = seg(t, 0.7, 1.1);
+    if (pa > 0) withA(pa, () => {
+      blobRect(1120, 850, 690, 42, K.card, { r: 21, seed: 85, sw: 2.4, shadow: false });
+      noStroke(); F(K.accent); rect(1128, 857, 674 * p, 28, 14);
+      const done = t > 5.3;
+      txt(done ? 'Repository downloaded' : 'Downloading repository…', 1120, 950, 32, K.ink);
+      txt((p * 44.1).toFixed(1) + ' MB of 44.1 MB · ' + Math.round(p * 100) + '%', 1810, 950, 26, K.muted, { mono: true, align: RIGHT });
+    });
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 3 · Repo Viewer — parse the CAR with WASM
+// ════════════════════════════════════════════════════════════
+const COLLECTIONS = [
+  { name: 'app.bsky.feed.post', n: 48213, c: 'r1', dot: 'teal' },
+  { name: 'app.bsky.feed.like', n: 131902, c: 'branch', dot: 'hot' },
+  { name: 'app.bsky.feed.repost', n: 6380, c: 'r2', dot: 'blue' },
+  { name: 'app.bsky.graph.follow', n: 2417, c: 'leaf', dot: 'olive' },
+  { name: 'app.bsky.graph.block', n: 94, c: 'quote', dot: 'purple' },
+];
+const MST_LEVELS = [1, 2, 4, 8];
+function mstPos(L, i) { const n = MST_LEVELS[L]; return [560 + ((i + 0.5) * 680) / n, 400 + L * 118]; }
+scene({
+  id: 'parse', chapter: 'Parse', kicker: '03 · PARSE', dur: 6.5,
+  cues: [[0.9, 'pluck', 69], [2.7, 'pluck', 81], [5.6, 'chime', 76]],
+  draw(t) {
+    heading(t, '03 · PARSE', 'Cracked open in your browser', 'A WASM CAR parser walks every block and sorts the records by collection.', { w: 820 });
+
+    // the crate shakes, then its lid flies off
+    const shake = seg(t, 0.2, 0.9) * (1 - seg(t, 0.9, 0.95));
+    const sx = Math.sin(t * 60) * 5 * shake;
+    const cx = 150 + sx, cy = 560, cw = 280, ch = 220;
+    withA(eout(seg(t, -0.4, 0.3)), () => {
+      blobRect(cx, cy, cw, ch, K.branch, { r: 10, seed: 91, sw: 3 });
+      S(K.ink, 0.35, 2); for (let k = 1; k < 3; k++) line(cx + 12, cy + (ch * k) / 3, cx + cw - 12, cy + (ch * k) / 3);
+      txt('repo.car', cx + cw / 2, cy + ch + 50, 32, K.ink, { align: CENTER, mono: true });
+      const lid = eout(seg(t, 0.9, 1.4));
+      push(); translate(cx + cw / 2 - lid * 80, cy - 14 - lid * 140); rotate(-lid * 0.9);
+      blobRect(-cw / 2 - 8, -14, cw + 16, 28, K.branch, { r: 8, seed: 93, sw: 3 });
+      pop();
+      chipAt(140, 420, 'WASM CAR parser', K.note, { mono: true, size: 24, seed: 95 });
+    });
+
+    // Merkle search tree assembling level by level
+    withA(seg(t, 0.9, 1.3), () => txt('Merkle search tree', 560, 352, 30, K.muted));
+    for (let L = 0; L < MST_LEVELS.length; L++) {
+      const lp = eout(seg(t, 1.0 + L * 0.38, 1.5 + L * 0.38));
+      if (lp <= 0) continue;
+      for (let i = 0; i < MST_LEVELS[L]; i++) {
+        const [x, y] = mstPos(L, i);
+        if (L > 0 && lp > 0.6) { const [px, py] = mstPos(L - 1, Math.floor(i / 2)); roughLine(px, py + 18, x, y - 18, K.ink, 2, L * 20 + i, seg(lp, 0.6, 1)); }
+        const fx = lerpN(cx + cw / 2, x, lp), fy = lerpN(cy + 40, y, lp);
+        push(); translate(fx, fy); rotate((1 - lp) * (R(L, i) - 0.5) * 4);
+        blobRect(-38, -18, 76, 36, K[['root', 'r1', 'r2', 'quote'][L]], { r: 8, seed: L * 10 + i, sw: 2, shadow: false });
+        txt('bafy…' + HEXES[(L * 3 + i) % HEXES.length], 0, 6, 15, K.ink, { align: CENTER, mono: true });
+        pop();
+      }
+    }
+
+    // records pour into collections
+    const flow = seg(t, 2.7, 3.0) * (1 - seg(t, 5.5, 5.9));
+    if (flow > 0) {
+      for (let i = 0; i < 150; i++) {
+        const leaf = i % 8, r = R(i, 5);
+        const b = r < 0.3 ? 0 : r < 0.8 ? 1 : r < 0.9 ? 2 : r < 0.98 ? 3 : 4;
+        const [lx, ly] = mstPos(3, leaf), by = 300 + b * 128 + 52;
+        const u = ((t - 2.7) * (0.55 + 0.4 * R(i, 6)) + R(i, 7)) % 1;
+        const bz = [lx, ly + 20, lx + 120, ly + 160, 1200, by, 1330, by];
+        const q = bezPt(bz, u);
+        noStroke(); F(K[COLLECTIONS[b].dot], flow * Math.min(1, u * 5, (1 - u) * 5)); circle(q[0], q[1], 9);
+      }
+    }
+    COLLECTIONS.forEach((c, k) => {
+      const ap = eout(seg(t, 2.2 + k * 0.1, 2.7 + k * 0.1));
+      if (ap <= 0) return;
+      const y = 300 + k * 128;
+      push(); translate((1 - ap) * 60, 0);
+      withA(ap, () => {
+        blobRect(1330, y, 480, 104, K[c.c], { r: 18, seed: 100 + k });
+        txt(c.name, 1356, y + 40, 24, K.ink, { mono: true });
+        const v = c.n * eio(seg(t, 2.8 + k * 0.12, 5.6));
+        txt(fmtInt(v), 1786, y + 84, 46, K.ink, { align: RIGHT });
+        const frac = Math.log10(1 + v) / Math.log10(1 + 131902);
+        noStroke(); F(K.ink, 0.18); rect(1356, y + 60, 250, 10, 5); F(K.ink, 0.75); rect(1356, y + 60, 250 * frac, 10, 5);
+      });
+      pop();
+    });
+
+    const st = seg(t, 2.8, 3.2);
+    withA(st, () => {
+      const posts = Math.round(48213 * eio(seg(t, 2.8, 5.6)));
+      txt(t > 5.6 ? 'Parsed ' + fmtInt(48213) + ' posts' : 'Parsing repository posts… ' + fmtInt(posts), 120, 930, 30, K.muted);
+    });
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 4 · Repo Viewer — posts become threads
+// ════════════════════════════════════════════════════════════
+const CHAINS = [26, 22, 19, 16, 14, 12, 11, 9, 8, 7, 6, 5];
+const CHAIN_OF = [];
+(() => { let i = 0; CHAINS.forEach((L, k) => { for (let j = 0; j < L; j++) CHAIN_OF[i++] = [k, j]; }); })();
+const CHAIN_COLS = ['accent', 'teal', 'purple', 'blue', 'olive', 'hot'];
+function chainPos(k, j) { return [1010 + k * 68, 930 - j * 26]; }
+scene({
+  id: 'threads', chapter: 'Threads', kicker: '04 · THREAD', dur: 6.5,
+  cues: [[1.4, 'pluck', 78], [3.0, 'pluck', 83], [4.0, 'chime', 74]],
+  draw(t) {
+    heading(t, '04 · THREAD', 'Every self-reply chain, found', 'Replies snap to their parents, chains grow, and the longest threads rise to the top.', { w: 780 });
+
+    CHAINS.forEach((L, k) => {
+      const arrive = seg(t, 2.3 + k * 0.06, 2.7 + k * 0.06);
+      if (arrive <= 0) return;
+      const [x] = chainPos(k, 0);
+      S(K[CHAIN_COLS[k % 6]], arrive * 0.9, 3); noFill();
+      line(x, 930, x, 930 - (L - 1) * 26 * arrive);
+    });
+    for (let i = 0; i < 240; i++) {
+      const ap = eout(seg(t, R(i, 3) * 0.8, R(i, 3) * 0.8 + 0.35));
+      if (ap <= 0) continue;
+      const sx = 1000 + R(i, 1) * 820, sy = 190 + R(i, 2) * 760;
+      const ch = CHAIN_OF[i];
+      if (ch) {
+        const [k, j] = ch;
+        const mp = eio(seg(t, 1.3 + k * 0.06 + j * 0.01, 2.3 + k * 0.06 + j * 0.01));
+        const [tx, ty] = chainPos(k, j);
+        S(K.ink, ap, 1.6); F(mp > 0.5 ? K[CHAIN_COLS[k % 6]] : K.card, ap); circle(lerpN(sx, tx, mp), lerpN(sy, ty, mp), 14 * ap);
+      } else {
+        const fade = 1 - 0.8 * seg(t, 1.3, 2.2);
+        S(K.ink, ap * fade * 0.6, 1.2); F(K.card, ap * fade); circle(sx, sy, 11 * ap * (0.6 + 0.4 * fade));
+      }
+    }
+    CHAINS.forEach((L, k) => {
+      const lp = bk(seg(t, 2.9 + k * 0.05, 3.3 + k * 0.05));
+      if (lp <= 0) return;
+      const [x, y] = chainPos(k, L - 1);
+      push(); translate(x, y - 34); scale(lp); txt(String(L), 0, 0, 28, K.ink, { align: CENTER }); pop();
+      if (k < 3) scribbleCircle(x, y, 20, 20, seg(t, 4.0 + k * 0.2, 4.5 + k * 0.2), K.accent, k * 7, 3);
+    });
+
+    // the Repo Viewer's own stats bars
+    withA(eout(seg(t, 0.6, 1.0)), () => {
+      blobRect(120, 350, 790, 120, K.card, { r: 16, seed: 141 });
+      txt(typed('Downloaded 48,213 posts in 6.2s from 44.1 MB via PDS', seg(t, 0.7, 1.6)), 146, 398, 21, K.ink, { mono: true });
+      txt(typed('48,213 posts scanned / 9,873 chains found / 1,204 with self-replies', seg(t, 1.5, 2.6)), 146, 440, 21, K.muted, { mono: true });
+    });
+    ['26-post thread · Mar 14, 2025', '22-post thread · Mar 6, 2025', '19-post thread · Jul 3, 2025'].forEach((label, k) => {
+      const cp = eout(seg(t, 3.6 + k * 0.2, 4.1 + k * 0.2));
+      if (cp <= 0) return;
+      const y = 520 + k * 112;
+      push(); translate(-(1 - cp) * 80, 0);
+      withA(cp, () => {
+        blobRect(120, y, 790, 92, K[['r1', 'r2', 'leaf'][k]], { r: 16, seed: 120 + k });
+        noStroke(); F(K[CHAIN_COLS[k]]); circle(170, y + 46, 34);
+        txt(label, 206, y + 44, 30, K.ink);
+        scribbleLines(208, y + 66, 460, 1, 0, K.ink, 1, k * 9, 0.35);
+      });
+      pop();
+    });
+    withA(seg(t, 4.6, 5.0), () => txt('1,204 threads with depth 2+', 120, 900, 32, K.accent));
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 5 · Timeline — every post as a dot: date across, likes up
+// ════════════════════════════════════════════════════════════
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const mIdx = (m) => ((Math.floor(m) % 12) + 12) % 12;
+const mYear = (m) => 2023 + Math.floor(Math.floor(m) / 12);
+const mName = (m) => MONTHS[mIdx(m)];
+const mDay = (m) => 1 + Math.min(MONTH_DAYS[mIdx(m)] - 1, Math.floor((m - Math.floor(m)) * MONTH_DAYS[mIdx(m)]));
+const fmtDay = (m) => mName(m) + ' ' + mDay(m) + ', ' + mYear(m);
+const isoDay = (m) => mYear(m) + '-' + String(mIdx(m) + 1).padStart(2, '0') + '-' + String(mDay(m)).padStart(2, '0');
+
+const TL_N = 1400, TL_SCALE = 48213 / TL_N, TL_MAXL = 2418;
+const TL = [];
+(() => {
+  const bursts = [8.3, 17.1, 26.4, 30.2, 38.6, 41.5];
+  for (let i = 0; i < TL_N; i++) {
+    let m = 44 * Math.pow(R(i, 1), 0.72);
+    if (R(i, 2) < 0.22) m = bursts[i % bursts.length] + gauss(i, 3) * 0.5;
+    m = Math.max(0.02, Math.min(43.98, m));
+    TL.push({ m, likes: Math.floor(Math.exp(Math.pow(R(i, 6), 2.2) * 7.2)) - 1, hyd: R(i, 7) < 0.8 });
+  }
+  TL.push({ m: 26.45, likes: TL_MAXL, hyd: true, star: true });
+})();
+const TL_HYD_TOTAL = TL.filter((p) => p.hyd).length;
+const TLX0 = 230, TLX1 = 1740, TLY0 = 470, TLY1 = 760, TLW = TLX1 - TLX0;
+// visible window in months (0 = Jan 2023): zoom, zoom, drag-pan, then month by month
+const TL_VIEW = [[0, 0, 44], [10.9, 20, 36], [11.7, 23.5, 32.5], [13.6, 25, 34, 1.0], [14.4, 27, 28], [15.3, 28, 29], [16.1, 29, 30]];
+const tlYFor = (L) => TLY1 - (Math.log1p(L) / Math.log1p(TL_MAXL)) * (TLY1 - TLY0);
+
+function chipRowLayout(x, y, labels, size = 22, gap = 10, alignRight = false) {
+  vf(size);
+  const ws = labels.map((l) => textWidth(l) + size * 1.3), h = size * 1.75;
+  let cx = alignRight ? x - ws.reduce((a, b) => a + b, 0) - gap * (labels.length - 1) : x;
+  return labels.map((label, i) => { const r = { label, x: cx, y, w: ws[i], h, cx: cx + ws[i] / 2, cy: y + h / 2 }; cx += ws[i] + gap; return r; });
+}
+function drawChipRow(rects, isActive, size = 22, a = 1, isDim) {
+  rects.forEach((r, i) => chipAt(r.x, r.y, r.label, isActive(r.label, i) ? K.root : K.card, { size, seed: 900 + i * 7 + r.label.length, shadow: false, a: a * (isDim && isDim(r.label, i) ? 0.45 : 1) }));
+}
+function tlChips(monthAnchor) {
+  const labels = monthAnchor == null ? ['Reset', '+', '−', 'Month', 'Lock', 'Log scale']
+    : ['Reset', '+', '−', '◀', mName(monthAnchor) + ' ' + mYear(monthAnchor), '▶', 'Lock', 'Log scale'];
+  return chipRowLayout(1770, 318, labels, 22, 10, true);
+}
+
+scene({
+  id: 'timeline', chapter: 'Timeline', kicker: '05 · TIMELINE', dur: 17,
+  cues: [[3.0, 'chime', 74], [5.9, 'pluck', 81], [8.6, 'pluck', 78], [9.5, 'pluck', 83], [10.3, 'pluck', 86], [11.1, 'pluck', 88], [13.9, 'pluck', 81], [14.8, 'pluck', 83], [15.6, 'pluck', 86]],
+  draw(t) {
+    heading(t, '05 · TIMELINE', 'Every post on one timeline', 'Each dot is a post, placed by date. Hydrate engagement and they rise to their like counts.', { w: 1150, size: 76, subSize: 28 });
+    const card = eout(seg(t, 0.1, 0.6));
+    if (card <= 0) return;
+
+    const [vMin, vMax] = keyed(t, TL_VIEW, 2), span = vMax - vMin;
+    const xFor = (m) => TLX0 + ((m - vMin) / span) * TLW;
+    const zoomR = Math.min(2.2, Math.sqrt(44 / span));
+    const anchor = t >= 15.6 ? 29 : t >= 14.8 ? 28 : t >= 13.9 ? 27 : null;
+    let sel = null;
+    if (t >= 8.6) sel = [26.07, t >= 9.5 ? 29.57 : null];
+    if (anchor != null) sel = [anchor, anchor + 0.999];
+
+    // per-frame counts
+    let poured = 0, hydNow = 0;
+    const hp = TL.map((p) => {
+      if (t > 0.8 + (p.m / 44) * 1.9) poured++;
+      const h = p.hyd ? eout(seg(t, 3.0 + (p.m / 44) * 1.8, 3.7 + (p.m / 44) * 1.8)) : 0;
+      if (h > 0.5) hydNow++;
+      return h;
+    });
+
+    withA(card, () => {
+      blobRect(120, 290, 1680, 610, K.card, { r: 20, seed: 501, sw: 2.6 });
+      txt(fmtInt(poured * TL_SCALE) + ' posts  ·  ' + fmtInt(hydNow * TL_SCALE) + ' with likes', 160, 352, 30, K.ink);
+      const chips = tlChips(anchor);
+      drawChipRow(chips, (l) => l === 'Log scale' || (anchor != null && l.includes('2025')), 22, 1, (l) => l === 'Reset' && span > 43.9);
+
+      let hint;
+      if (t >= 3.0 && t < 5.6) hint = 'Hydrating engagement…  ' + fmtInt(hydNow * TL_SCALE) + ' / ' + fmtInt(TL_HYD_TOTAL * TL_SCALE);
+      else if (!sel) hint = 'Click a point to preview it · click empty space to set the range start · use +/− to zoom, drag to pan.';
+      else if (sel[1] == null) hint = 'Now click empty space to set the range end.    Start: ' + fmtDay(sel[0]);
+      else {
+        const toHyd = TL.filter((p) => !p.hyd && p.m >= sel[0] && p.m <= sel[1]).length;
+        const hi = anchor != null ? mName(anchor) + ' ' + MONTH_DAYS[mIdx(anchor)] + ', ' + mYear(anchor) : fmtDay(sel[1]);
+        hint = 'Range: ' + fmtDay(sel[0]) + ' → ' + hi + '  ·  ' + fmtInt(toHyd * TL_SCALE) + ' posts to hydrate';
+      }
+      txt(hint, 160, 418, 24, K.muted);
+
+      // y grid (log likes)
+      [0, 10, 100, 1000].forEach((L) => {
+        const y = tlYFor(L);
+        S(K.soft, 0.4, 1); line(TLX0, y, TLX1, y);
+        txt(fmtInt(L), TLX0 - 14, y + 6, 18, K.muted, { mono: true, align: RIGHT });
+      });
+      S(K.ink, 0.7, 2); line(TLX0, TLY1, TLX1, TLY1);
+      // x ticks adapt to the zoom level
+      const xt = [];
+      if (span > 14) { for (let m = 0; m <= 44; m += 3) xt.push([m, m % 12 === 0 ? String(mYear(m)) : '']); }
+      else if (span > 2.5) { for (let m = Math.ceil(vMin); m <= vMax; m++) xt.push([m, mIdx(m) === 0 ? mName(m) + ' ' + mYear(m) : mName(m)]); }
+      else { for (let m = Math.floor(vMin); m <= vMax; m += 0.25) if (m >= vMin) xt.push([m, mName(m) + ' ' + mDay(m)]); }
+      xt.forEach(([m, label]) => {
+        const x = xFor(m);
+        if (x < TLX0 - 1 || x > TLX1 + 1) return;
+        S(K.ink, 0.6, 1.5); line(x, TLY1, x, TLY1 + (label ? 8 : 4));
+        if (label) txt(label, x, TLY1 + 30, 18, K.muted, { mono: true, align: CENTER });
+      });
+
+      // selection band
+      if (sel) {
+        const clampX = (x) => Math.max(TLX0, Math.min(TLX1, x));
+        if (sel[1] != null) { noStroke(); F(K.accent, 0.13); rect(clampX(xFor(sel[0])), TLY0 - 10, clampX(xFor(sel[1])) - clampX(xFor(sel[0])), TLY1 - TLY0 + 10); }
+        drawingContext.setLineDash([8, 7]);
+        sel.forEach((m) => { if (m == null) return; const x = xFor(m); if (x >= TLX0 && x <= TLX1) { S(K.accent, 1, 2.5); line(x, TLY0 - 10, x, TLY1); } });
+        drawingContext.setLineDash([]);
+      }
+
+      // the dots: faint on the baseline until hydrated, then accent at their like height
+      noStroke();
+      for (let pass = 0; pass < 2; pass++) {
+        for (let i = 0; i < TL.length; i++) {
+          const p = TL[i], h = hp[i];
+          if ((pass === 0) !== (h < 0.5)) continue;
+          const ap = seg(t, 0.8 + (p.m / 44) * 1.9, 1.0 + (p.m / 44) * 1.9);
+          if (ap <= 0) continue;
+          const x = xFor(p.m);
+          if (x < TLX0 - 2 || x > TLX1 + 2) continue;
+          const y = lerpN(TLY1, tlYFor(p.likes), h);
+          if (pass === 0) { F(K.ink, 0.26 * ap); circle(x, y, 4.4 * zoomR); }
+          else { F(K.accent, 0.78); circle(x, y, (p.star ? 11 : 5.6) * zoomR); }
+        }
+      }
+
+      // scrollbar + actions
+      noStroke(); F(K.soft, 0.35); rect(TLX0, 800, TLW, 12, 6);
+      F(K.accent, span < 43.9 ? 0.85 : 0.35); rect(TLX0 + (vMin / 44) * TLW, 800, Math.max(0.04 * TLW, (span / 44) * TLW), 12, 6);
+      const ready = sel && sel[1] != null;
+      const toHydLabel = ready ? 'Hydrate ' + fmtInt(TL.filter((p) => !p.hyd && p.m >= sel[0] && p.m <= sel[1]).length * TL_SCALE) + ' posts in range' : 'Hydrate 0 posts in range';
+      const bw = chipAt(TLX0, 836, toHydLabel, ready ? K.note : K.card, { size: 22, seed: 531, a: ready ? 1 : 0.5 });
+      txt('Clear selection', TLX0 + bw + 24, 868, 22, K.muted, { a: ready ? 1 : 0.5 });
+    });
+
+    // point preview popup
+    const star = TL[TL.length - 1], sx = xFor(star.m), sy = tlYFor(star.likes);
+    const pp = bk(seg(t, 6.0, 6.35)) * (1 - seg(t, 7.95, 8.15));
+    if (t > 5.9 && t < 8.2) scribbleCircle(sx, sy, 22, 22, seg(t, 5.9, 6.2), K.hot, 3, 3);
+    if (pp > 0) {
+      const px = sx + 36, py = 445;
+      push(); translate(px, py); scale(pp);
+      blobRect(0, 0, 500, 250, K.paper, { r: 16, seed: 541, sw: 2.6 });
+      noStroke(); F(K.accent); circle(44, 46, 44);
+      txt('You', 80, 44, 28, K.ink); txt('@you.bsky.social', 80, 70, 18, K.muted, { mono: true });
+      txt('×', 470, 40, 30, K.muted, { align: CENTER });
+      txt('ok so here is a long thought about tomatoes, and it keeps going', 24, 100, 26, K.ink, { w: 450, valign: TOP });
+      txt('Mar 14, 2025', 24, 222, 18, K.muted, { mono: true });
+      txt('2,418 likes · 312 reposts · 97 replies', 170, 222, 18, K.ink, { mono: true });
+      txt('Open ↗', 476, 222, 20, K.accent, { align: RIGHT });
+      pop();
+    }
+
+    const dateLine = seg(t, 9.5, 9.9);
+    if (dateLine > 0 && sel && sel[1] != null) {
+      const hiIso = anchor != null ? mYear(anchor) + '-' + String(mIdx(anchor) + 1).padStart(2, '0') + '-' + MONTH_DAYS[mIdx(anchor)] : isoDay(sel[1]);
+      const inRange = TL.filter((p) => p.m >= sel[0] && p.m <= sel[1]).length;
+      txt('Filtered by date: ' + isoDay(sel[0]) + ' to ' + hiIso, 120, 968, 30, K.ink, { a: dateLine });
+      txt('→ the thread list shows ' + fmtInt(inRange * TL_SCALE * 0.025) + ' threads from this range', 1800, 968, 24, K.muted, { a: dateLine, align: RIGHT });
+    }
+
+    const chipsA = tlChips(null), chips27 = tlChips(27), chips28 = tlChips(28);
+    drawCursor(t, [
+      [0, 1560, 1010], [2.6, 1560, 1010],
+      [5.9, sx, sy, 1],
+      [7.9, TLX0 + (26.45 / 44) * TLW + 36 + 470, 475, 1],
+      [8.6, TLX0 + (26.07 / 44) * TLW, 690, 1],
+      [9.5, TLX0 + (29.57 / 44) * TLW, 690, 1],
+      [10.3, chipsA[1].cx, chipsA[1].cy, 1],
+      [11.1, chipsA[1].cx, chipsA[1].cy, 1],
+      [12.6, 1150, 640, 'hold'],
+      [13.6, 850, 640, 0, 1.0],
+      [13.9, chipsA[3].cx, chipsA[3].cy, 1],
+      [14.8, chips27[5].cx, chips27[5].cy, 1],
+      [15.6, chips28[5].cx, chips28[5].cy, 1],
+      [16.8, 1560, 1010],
+    ], seg(t, 0.4, 0.9));
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 6 · Filters — the same repo, narrowed down every way the page allows
+// ════════════════════════════════════════════════════════════
+const POOL = [
+  { id: 'T1', txt: 'ok so here is a long thought about tomatoes', depth: 26, m: 26.45, likes: 2418, img: 'tomato', aspect: 1.0, c: 'root' },
+  { id: 'T2', txt: 'garden log, week 12: the soil finally wakes up', depth: 22, m: 26.2, likes: 640, img: 'garden', aspect: 0.72, c: 'r1' },
+  { id: 'T3', txt: 'shipping a tiny CAR parser in WASM', depth: 19, m: 30.1, likes: 1210, img: null, c: 'r2' },
+  { id: 'T4', txt: 'why do my tomatoes split? a thread', depth: 16, m: 28.5, likes: 380, img: 'tomato2', aspect: 1.25, c: 'leaf' },
+  { id: 'T5', txt: 'night bike ride, 14 photos', depth: 14, m: 33.0, likes: 905, img: 'night', aspect: 0.8, c: 'branch' },
+  { id: 'T6', txt: 'a long thread about old maps', depth: 11, m: 21.3, likes: 120, img: null, c: 'quote' },
+  { id: 'T7', txt: 'soup from the garden, finally', depth: 9, m: 34.8, likes: 77, img: 'soup', aspect: 1.1, c: 'r1' },
+  { id: 'T8', txt: 'rewriting the parser, again (screen recording)', depth: 8, m: 40.2, likes: 260, img: 'movie', aspect: 0.62, c: 'r2' },
+  { id: 'T9', txt: 'compost is just slow soup', depth: 6, m: 29.2, likes: 1530, img: null, c: 'leaf' },
+  { id: 'T10', txt: 'loom notes, part 4', depth: 5, m: 37.5, likes: 44, img: null, c: 'branch' },
+  { id: 'T11', txt: 'first post here!', depth: 3, m: 2.0, likes: 12, img: null, c: 'root' },
+  { id: 'R1', txt: 'seed swap this saturday', by: '@moss.garden', m: 31.0, likes: 3100, img: 'garden2', aspect: 0.9, c: 'quote', repost: true },
+  { id: 'R2', txt: 'atproto repos are just CAR files', by: '@orbital.dev', m: 35.0, likes: 870, img: null, c: 'r2', repost: true },
+  { id: 'R3', txt: 'timelapse of a tomato plant', by: '@kite.blue', m: 27.8, likes: 450, img: 'movie2', aspect: 0.62, c: 'leaf', repost: true },
+];
+POOL.forEach((it, i) => { it.seedN = 700 + i * 13; });
+
+const FST = [
+  { at: 0, src: 'threads', min: 2, sort: 'depth', q: '', mode: 'default', gal: 'all', zoom: 100, count: '1,204 threads with depth 2+' },
+  { at: 2.0, src: 'both', count: '5,081 threads and reposts' },
+  { at: 3.9, src: 'threads', count: '1,204 threads with depth 2+' },
+  { at: 5.17, min: 4, count: '688 threads with depth 4+' },
+  { at: 5.33, min: 6, count: '403 threads with depth 6+' },
+  { at: 5.6, min: 8, count: '252 threads with depth 8+' },
+  { at: 6.9, sort: 'newest' },
+  { at: 7.9, sort: 'liked' },
+  { at: 10.1, q: 'tomatos', count: '31 threads with depth 8+' },
+  { at: 12.3, q: '/garden|soil/i', count: '17 threads with depth 8+' },
+  { at: 13.4, q: '', mode: 'gallery', count: '252 threads with depth 8+' },
+  { at: 15.0, gal: 'images', count: '96 image threads with depth 8+' },
+  { at: 16.9, zoom: 160 },
+];
+const FSTATES = [];
+FST.reduce((acc, s) => { const n = Object.assign({}, acc, s); FSTATES.push(n); return n; }, {});
+
+function matchRanges(str, q) {
+  if (!q) return null;
+  const out = [];
+  if (q.startsWith('/')) {
+    const m = q.match(/^\/(.+)\/([a-z]*)$/);
+    if (!m) return out;
+    const re = new RegExp(m[1], m[2].includes('g') ? m[2] : m[2] + 'g');
+    let r; while ((r = re.exec(str))) { out.push([r.index, r.index + r[0].length]); if (!r[0].length) re.lastIndex++; }
+    return out;
+  }
+  // fuzzy: the query's letters, in order, inside one word (so "tomatos" finds "tomatoes")
+  const re = /\S+/g; let w;
+  while ((w = re.exec(str))) { const word = w[0].toLowerCase(); let j = 0; for (const ch of word) if (ch === q[j]) j++; if (j >= q.length) out.push([w.index, w.index + w[0].length]); }
+  return out;
+}
+function poolView(st) {
+  let items = POOL.filter((it) => (st.src === 'both' ? true : st.src === 'reposts' ? it.repost : !it.repost && it.depth >= st.min));
+  if (st.q) items = items.filter((it) => matchRanges(it.txt, st.q).length > 0);
+  if (st.mode === 'gallery' && st.gal !== 'all') items = items.filter((it) => it.img && (st.gal === 'media' || (st.gal === 'images') === !it.img.startsWith('movie')));
+  const key = st.src === 'both' ? 'newest' : st.sort;
+  const cmp = { depth: (a, b) => (b.depth || 0) - (a.depth || 0), newest: (a, b) => b.m - a.m, oldest: (a, b) => a.m - b.m, liked: (a, b) => b.likes - a.likes }[key];
+  return items.slice().sort(cmp);
+}
+const FLX = 870, FLW = 930, FLY = 372;
+function poolTargets(st, prev) {
+  const vis = poolView(st), out = {};
+  if (st.mode === 'gallery') {
+    const cols = st.zoom >= 130 ? 2 : 3, gap = 18, tw = (FLW - gap * (cols - 1)) / cols, imgOnly = st.gal !== 'all';
+    const colH = new Array(cols).fill(FLY);
+    vis.forEach((it, r) => {
+      const c = imgOnly ? colH.indexOf(Math.min(...colH)) : r % cols;
+      const h = imgOnly ? tw * it.aspect : 212;
+      const y = imgOnly ? colH[c] : FLY + Math.floor(r / cols) * (h + gap);
+      colH[c] = y + h + gap;
+      out[it.id] = { x: FLX + c * (tw + gap), y, w: tw, h, al: 1, g: 1, im: imgOnly ? 1 : 0 };
+    });
+  } else {
+    vis.forEach((it, r) => { out[it.id] = { x: FLX, y: FLY + r * 90, w: FLW, h: 78, al: 1, g: 0, im: 0 }; });
+  }
+  for (const it of POOL) if (!out[it.id]) out[it.id] = prev && prev[it.id] ? Object.assign({}, prev[it.id], { al: 0 }) : { x: FLX, y: 1060, w: FLW, h: 78, al: 0, g: 0, im: 0 };
+  return out;
+}
+const POOL_T = [];
+FSTATES.forEach((st, i) => POOL_T.push(poolTargets(st, POOL_T[i - 1])));
+function poolProps(t) {
+  const P = {};
+  for (const it of POOL) P[it.id] = Object.assign({}, POOL_T[0][it.id]);
+  for (let i = 1; i < FSTATES.length; i++) {
+    const d = t - FSTATES[i].at;
+    if (d <= 0) break;
+    POOL.forEach((it, j) => {
+      const p = eio(clamp01((d - j * 0.025) / 0.7));
+      if (p <= 0) return;
+      const a = P[it.id], b = POOL_T[i][it.id];
+      for (const k of ['x', 'y', 'w', 'h', 'al', 'g', 'im']) a[k] = lerpN(a[k], b[k], p);
+    });
+  }
+  return P;
+}
+
+// procedural "photos" for media posts
+function drawPhoto(kind, x, y, w, h, seed) {
+  if (w < 6 || h < 6) return;
+  push();
+  drawingContext.beginPath(); drawingContext.rect(x, y, w, h); drawingContext.clip();
+  noStroke();
+  const cx = x + w / 2, cy = y + h / 2, s = Math.min(w, h);
+  if (kind.startsWith('tomato')) {
+    F(K.leaf); rect(x, y, w, h);
+    F(K.teal, 0.45); for (let k = 0; k < 6; k++) ellipse(x + R(seed, k) * w, y + R(seed, k + 9) * h, s * 0.5, s * 0.2);
+    const n = kind === 'tomato2' ? 3 : 1;
+    for (let k = 0; k < n; k++) {
+      const tx = n === 1 ? cx : x + w * (0.25 + k * 0.25), ty = cy + (n === 1 ? 0 : (k % 2 ? -1 : 1) * s * 0.12), r = s * (n === 1 ? 0.62 : 0.36);
+      F(K.hot); ellipse(tx, ty, r, r * 0.88);
+      F(K.card, 0.5); ellipse(tx - r * 0.18, ty - r * 0.16, r * 0.22, r * 0.13);
+      F(K.teal); for (let q = 0; q < 5; q++) { const a = q * 1.2566 - 1.57; ellipse(tx + Math.cos(a) * r * 0.12, ty - r * 0.4 + Math.sin(a) * r * 0.07, r * 0.2, r * 0.08); }
+    }
+  } else if (kind.startsWith('garden')) {
+    F(K.map); rect(x, y, w, h);
+    F(K.root); circle(x + w * 0.75, y + h * 0.28, s * 0.28);
+    ['olive', 'teal', 'leaf'].forEach((c, b) => {
+      F(K[c], 0.95); beginShape(); vertex(x, y + h);
+      for (let i = 0; i <= 20; i++) { const u = i / 20; vertex(x + u * w, y + h * (0.55 + b * 0.14) + Math.sin(u * 6 + b * 2 + seed) * h * 0.05); }
+      vertex(x + w, y + h); endShape(CLOSE);
+    });
+    S(K.teal, 1, 3); for (let k = 0; k < 7; k++) { const px = x + w * (0.1 + k * 0.13), py = y + h * 0.95; line(px, py, px, py - h * 0.1); }
+    noStroke();
+  } else if (kind === 'night') {
+    F([31, 48, 72, 255]); rect(x, y, w, h);
+    F([242, 234, 220, 255]); for (let k = 0; k < 26; k++) circle(x + R(seed, k) * w, y + R(seed, k + 30) * h * 0.6, 2 + R(seed, k + 60) * 3);
+    circle(x + w * 0.8, y + h * 0.22, s * 0.16);
+    noFill(); S([242, 234, 220, 255], 1, 4);
+    const wy = y + h * 0.72, r = s * 0.18;
+    circle(cx - r * 1.3, wy, r * 2); circle(cx + r * 1.3, wy, r * 2);
+    line(cx - r * 1.3, wy, cx, wy - r * 0.9); line(cx, wy - r * 0.9, cx + r * 1.3, wy); line(cx - r * 0.4, wy - r * 0.9, cx + r * 0.7, wy - r * 0.9);
+    noStroke();
+  } else if (kind === 'soup') {
+    F(K.branch); rect(x, y, w, h);
+    F(K.card); arc(cx, cy + s * 0.05, s * 0.7, s * 0.6, 0, Math.PI);
+    F(K.hot); ellipse(cx, cy + s * 0.05, s * 0.7, s * 0.14);
+    noFill(); S(K.muted, 0.7, 3);
+    for (let k = 0; k < 3; k++) { const px = cx - s * 0.15 + k * s * 0.15; beginShape(); for (let i = 0; i <= 10; i++) vertex(px + Math.sin(i * 0.9 + k) * 6, cy - s * 0.08 - i * s * 0.03); endShape(); }
+    noStroke();
+  } else {
+    F([24, 26, 32, 255]); rect(x, y, w, h);
+    F(K.card); for (let k = 0; k < Math.floor(w / 26); k++) { rect(x + 8 + k * 26, y + 6, 12, 9, 2); rect(x + 8 + k * 26, y + h - 15, 12, 9, 2); }
+    F(K.card, 0.95); triangle(cx - s * 0.12, cy - s * 0.16, cx - s * 0.12, cy + s * 0.16, cx + s * 0.17, cy);
+  }
+  pop();
+}
+
+function fitText(str, maxW) {
+  if (textWidth(str) <= maxW) return str;
+  let s = str;
+  while (s.length > 2 && textWidth(s + '…') > maxW) s = s.slice(0, -1);
+  return s.trimEnd() + '…';
+}
+function postText(it, x, y, w, size, q, qa) {
+  vf(size);
+  const s = fitText(it.txt, w);
+  const ranges = q && qa > 0 ? matchRanges(it.txt, q) : null;
+  if (ranges) ranges.forEach(([a, b]) => {
+    if (a >= s.length) return;
+    const x0 = x + textWidth(s.slice(0, a)), x1 = x + textWidth(s.slice(0, Math.min(b, s.length)));
+    noStroke(); F(K.accent, 0.32 * qa); rect(x0 - 3, y - size * 0.82, x1 - x0 + 6, size * 1.08, 6);
+  });
+  txt(s, x, y, size, K.ink);
+}
+function metaLine(it, compact) {
+  const who = it.repost ? '↻ ' + it.by : 'depth ' + it.depth;
+  return compact ? who + ' · ' + fmtInt(it.likes) + ' likes' : who + ' · ' + fmtDay(it.m) + ' · ' + fmtInt(it.likes) + ' likes';
+}
+function drawPoolItem(it, P, q, qa) {
+  if (P.al <= 0.01 || P.w < 8) return;
+  withA(P.al, () => {
+    blobRect(P.x, P.y, P.w, P.h, K[it.c], { r: 14, seed: it.seedN, sw: 2.2 });
+    if (P.im > 0.5) { drawPhoto(it.img, P.x + 8, P.y + 8, P.w - 16, P.h - 16, it.seedN); return; }
+    if (P.g > 0.5) {
+      let ty = P.y + 44;
+      if (it.img) { drawPhoto(it.img, P.x + 10, P.y + 10, P.w - 20, P.h * 0.56, it.seedN); ty = P.y + P.h * 0.56 + 44; }
+      postText(it, P.x + 16, ty, P.w - 32, 22, q, qa);
+      if (!it.img) scribbleLines(P.x + 18, ty + 34, P.w - 40, 3, 26, K.ink, 1, it.seedN, 0.3);
+      txt(metaLine(it, true), P.x + 16, P.y + P.h - 16, 16, K.muted, { mono: true });
+      return;
+    }
+    noStroke(); F(K[it.repost ? 'purple' : 'accent']); circle(P.x + 40, P.y + P.h / 2, 34);
+    if (it.repost) txt('↻', P.x + 40, P.y + P.h / 2 + 8, 24, K.card, { align: CENTER });
+    postText(it, P.x + 76, P.y + 36, P.w - 100, 26, q, qa);
+    txt(metaLine(it), P.x + 76, P.y + 64, 18, K.muted, { mono: true });
+  });
+}
+
+const SORT_LABELS = { depth: 'Highest chain', newest: 'Newest', oldest: 'Oldest', liked: 'Liked', reposted: 'Reposted', quoted: 'Quoted' };
+const knobX = (v) => 480 + ((v - 1) / 25) * 310;
+const zoomKnobX = (z) => 230 + ((z - 50) / 150) * 320;
+
+scene({
+  id: 'filters', chapter: 'Filters', kicker: '06 · FILTER', dur: 18.5,
+  cues: [[2.0, 'pluck', 78], [3.9, 'pluck', 76], [4.6, 'pluck', 74], [5.9, 'pluck', 81], [6.9, 'pluck', 83], [7.9, 'pluck', 86], [8.8, 'pluck', 78], [10.1, 'chime', 74], [12.3, 'pluck', 88], [13.4, 'pluck', 81], [15.0, 'chime', 76], [16.9, 'pluck', 86]],
+  draw(t) {
+    heading(t, '06 · FILTER', 'Filter every post you ever wrote', 'Threads or reposts, chain length, sort order, fuzzy or /regex/ search, and a media gallery.', { w: 1150, size: 76, subSize: 28 });
+    let si = 0; for (let i = 0; i < FSTATES.length; i++) if (t >= FSTATES[i].at) si = i;
+    const st = FSTATES[si];
+    const ui = eout(seg(t, 0.1, 0.6));
+    if (ui <= 0) return;
+
+    // layout of every control (also used to aim the cursor)
+    const showL = chipRowLayout(220, 327, ['Threads (1,204)', 'Reposts (3,877)', 'Both (5,081)'], 20, 8);
+    const modeL = chipRowLayout(140, 476, ['Default', 'Gallery'], 22, 10);
+    const sortA = chipRowLayout(220, 553, ['Highest chain', 'Newest', 'Oldest'], 20, 8);
+    const sortB = chipRowLayout(220, 600, ['Liked', 'Reposted', 'Quoted'], 20, 8);
+    const qModeL = chipRowLayout(636, 730, ['Fuzzy', 'Literal'], 20, 8);
+    const galL = chipRowLayout(240, 822, ['All', 'Media', 'Images', 'Movies'], 20, 8);
+    const v = Math.round(2 + 6 * eio(seg(t, 4.6, 5.9)));
+    const z = Math.round((100 + 60 * eio(seg(t, 16.0, 16.9))) / 5) * 5;
+
+    withA(ui, () => {
+      // Show
+      blobRect(120, 314, 700, 66, K.card, { r: 14, seed: 801, sw: 2, shadow: false });
+      txt('Show', 140, 356, 24, K.ink);
+      drawChipRow(showL, (l) => l.toLowerCase().startsWith(st.src), 20);
+      // Min chain length (threads only)
+      withA(1 - 0.6 * (seg(t, 2.0, 2.3) - seg(t, 3.9, 4.2)), () => {
+        blobRect(120, 394, 700, 66, K.card, { r: 14, seed: 802, sw: 2, shadow: false });
+        txt('Min chain length:', 140, 436, 24, K.ink);
+        vf(24); txt(String(v), 140 + textWidth('Min chain length: ') + 4, 436, 26, K.accent);
+        S(K.soft, 1, 6); line(480, 427, 790, 427);
+        S(K.accent, 1, 6); line(480, 427, knobX(v), 427);
+        noStroke(); F(K.accent); S(K.ink, 1, 2); circle(knobX(v), 427, 24);
+      });
+      // mode picker
+      drawChipRow(modeL, (l) => l.toLowerCase() === st.mode, 22);
+      // Sort
+      blobRect(120, 540, 700, 112, K.card, { r: 14, seed: 803, sw: 2, shadow: false });
+      txt('Sort', 140, 582, 24, K.ink);
+      drawChipRow(sortA, (l) => l === SORT_LABELS[st.sort], 20);
+      drawChipRow(sortB, (l) => l === SORT_LABELS[st.sort], 20);
+      // Search
+      blobRect(120, 668, 700, 128, K.card, { r: 14, seed: 804, sw: 2, shadow: false });
+      txt('Search threads:', 140, 706, 24, K.ink);
+      blobRect(140, 720, 480, 58, K.paper, { r: 10, seed: 805, sw: 2, shadow: false });
+      let qs = '';
+      if (t >= 9.0 && t < 10.8) qs = typed('tomatos', seg(t, 9.0, 9.9));
+      else if (t >= 10.8 && t < 11.0) qs = 'tomatos';
+      else if (t >= 11.0 && t < 13.4) qs = typed('/garden|soil/i', seg(t, 11.0, 12.1));
+      if (t >= 10.8 && t < 11.0) { mf(26); noStroke(); F(K.accent, 0.3); rect(154, 732, textWidth(qs) + 6, 34, 4); }
+      if (qs) txt(qs, 156, 758, 26, K.ink, { mono: true });
+      else txt('Fuzzy text or /pattern/flags...', 156, 757, 22, K.soft, { mono: true });
+      mf(26);
+      if (t >= 8.8 && t < 13.4 && (t * 2) % 1 < 0.55) { S(K.accent, 1, 2.5); line(160 + textWidth(qs), 733, 160 + textWidth(qs), 767); }
+      if (qs.length > 3 && qs.startsWith('/') && t > 12.1) chipAt(540, 735, 'regex', K.note, { mono: true, size: 16, shadow: false, seed: 806 });
+      drawChipRow(qModeL, (l) => l === 'Fuzzy', 20);
+      // Gallery controls
+      withA(eout(seg(t, 13.4, 13.9)), () => {
+        blobRect(120, 812, 700, 128, K.card, { r: 14, seed: 807, sw: 2, shadow: false });
+        txt('Gallery', 140, 852, 24, K.ink);
+        drawChipRow(galL, (l) => l.toLowerCase() === st.gal, 20);
+        txt('Grid', 140, 912, 24, K.ink);
+        S(K.soft, 1, 6); line(230, 904, 550, 904);
+        S(K.accent, 1, 6); line(230, 904, zoomKnobX(z), 904);
+        noStroke(); F(K.accent); S(K.ink, 1, 2); circle(zoomKnobX(z), 904, 22);
+        txt(z + '%', 574, 912, 22, K.ink, { mono: true });
+      });
+
+      // results
+      txt(st.count, FLX, 342, 30, K.accent);
+      const P = poolProps(t);
+      const qa = st.q ? seg(t, st.at, st.at + 0.3) : 0;
+      push();
+      drawingContext.beginPath(); drawingContext.rect(FLX - 14, 358, FLW + 40, 700); drawingContext.clip();
+      POOL.forEach((it) => drawPoolItem(it, P[it.id], st.q, qa));
+      pop();
+    });
+
+    drawCursor(t, [
+      [0, 1340, 1010],
+      [2.0, showL[2].cx, showL[2].cy, 1],
+      [3.9, showL[0].cx, showL[0].cy, 1],
+      [4.6, knobX(2), 427, 'hold'],
+      [5.9, knobX(8), 427, 0, 1.3],
+      [6.9, sortA[1].cx, sortA[1].cy, 1],
+      [7.9, sortB[0].cx, sortB[0].cy, 1],
+      [8.8, 380, 749, 1],
+      [10.8, 380, 749, 1],
+      [13.4, modeL[1].cx, modeL[1].cy, 1],
+      [15.0, galL[2].cx, galL[2].cy, 1],
+      [16.0, zoomKnobX(100), 904, 'hold'],
+      [16.9, zoomKnobX(160), 904, 0, 0.9],
+      [18.0, 1340, 1010],
+    ], seg(t, 0.3, 0.8));
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 7 · More — add repos, batch-download follows, then Blast mode
+// ════════════════════════════════════════════════════════════
+const BLAST_N = 74;
+const BLAST = Array.from({ length: BLAST_N }, (_, j) => ({
+  spawn: 4.05 + j * 0.04, fly: 1.7 + R(j, 1) * 0.8, y0: 120 + R(j, 2) * 850, arc: (R(j, 3) - 0.5) * 260,
+  rot: (R(j, 4) - 0.5) * 0.6, spin: (R(j, 5) - 0.5) * 1.2, sc: 0.55 + R(j, 6) * 0.95,
+  c: ['root', 'r1', 'r2', 'leaf', 'branch', 'quote'][j % 6], photo: j % 3 === 0 ? ['tomato', 'garden', 'night', 'soup', 'tomato2'][j % 5] : null,
+})).sort((a, b) => a.sc - b.sc);
+
+scene({
+  id: 'more', chapter: 'Blast', kicker: '07 · MORE', dur: 7,
+  cues: [[0.6, 'pluck', 78], [1.7, 'pluck', 81], [2.4, 'pluck', 83], [3.3, 'pluck', 86], [3.8, 'boom'], [3.9, 'chime', 74]],
+  draw(t) {
+    heading(t, '07 · MORE', 'Many repos, one blast', 'Add account repos or download every follow at once, then blast your posts across the screen.', { w: 1100, size: 76, subSize: 28 });
+
+    // + Add account repo → second repo downloaded
+    const addA = eout(seg(t, 0.1, 0.5)), open = eout(seg(t, 0.6, 0.9));
+    withA(addA * (1 - open), () => chipAt(120, 322, '+ Add account repo', K.card, { size: 24, seed: 1001 }));
+    withA(open, () => {
+      blobRect(120, 320, 560, 64, K.card, { r: 32, seed: 1002 });
+      const s = typed('friend.bsky.social', seg(t, 0.8, 1.5));
+      txt(s || 'Add another Bluesky user...', 150, 364, 28, s ? K.ink : K.soft);
+      sketchButton(700, 322, 'Download Repo', true, seg(t, 1.6, 1.9));
+    });
+    withA(eout(seg(t, 1.9, 2.3)), () => {
+      [['@you.bsky.social', 'accent', ''], ['@friend.bsky.social', 'teal', '  ·  312 threads']].forEach(([h, c, extra], k) => {
+        vf(24); const w = textWidth(h + extra) + 80, x = 120 + k * 360;
+        blobRect(x, 412, w, 56, K.card, { r: 28, seed: 1010 + k, sw: 2 });
+        noStroke(); F(K[c]); circle(x + 30, 440, 30);
+        txt(h + extra, x + 56, 449, 24, K.ink);
+      });
+    });
+
+    // Follow repos batch
+    withA(eout(seg(t, 2.0, 2.4)), () => {
+      blobRect(120, 500, 820, 330, K.card, { r: 18, seed: 1020 });
+      txt('Follow repos', 150, 550, 32, K.ink);
+      txt('@you.bsky.social', 360, 548, 20, K.muted, { mono: true });
+      chipAt(760, 516, 'Load follows', K.note, { size: 22, seed: 1021, shadow: false });
+      withA(seg(t, 2.6, 2.9), () => txt('214 follows  ·  36 selected  ·  36 not loaded', 150, 604, 20, K.muted, { mono: true }));
+      const done = Math.round(36 * eio(seg(t, 3.4, 6.8)));
+      for (let k = 0; k < 36; k++) {
+        const ap = bk(seg(t, 2.6 + k * 0.015, 2.9 + k * 0.015));
+        if (ap <= 0) continue;
+        const x = 168 + (k % 18) * 42, y = 648 + Math.floor(k / 18) * 44;
+        noStroke(); F(K[['accent', 'teal', 'purple', 'blue', 'olive', 'hot'][k % 6]]); circle(x, y, 32 * ap);
+        if (k < done) { noFill(); S(K.ink, 1, 3); circle(x, y, 40); }
+      }
+      sketchButton(150, 736, 'Download 36 repos', true, seg(t, 3.2, 3.5));
+      withA(seg(t, 3.4, 3.7), () => txt(done + ' / 36 processed  ·  ' + (done < 36 ? 4 : 0) + ' active', 470, 776, 22, K.ink, { mono: true }));
+    });
+
+    // Blast mode toggle + its sliders
+    const on = t >= 3.8;
+    withA(eout(seg(t, 2.8, 3.2)), () => {
+      chipAt(1180, 322, '    Blast mode ' + (on ? 'on' : 'off'), on ? K.accent : K.card, { size: 26, seed: 1031 });
+      F(K.hot); S(K.ink, 1, 2);
+      beginShape(); vertex(1206, 366); quadraticVertex(1190, 350, 1204, 334); quadraticVertex(1208, 346, 1214, 344); quadraticVertex(1224, 356, 1206, 366); endShape(CLOSE);
+      withA(eout(seg(t, 4.0, 4.4)), () => {
+        let x = 1180;
+        ['Rate 6/s', 'Burst 8', 'Fly time 2.2s', 'Size 140%'].forEach((l, k) => { x += chipAt(x, 400, l, K.card, { size: 20, mono: true, seed: 1040 + k, shadow: false }) + 10; });
+      });
+    });
+
+    drawCursor(t, [[0, 1500, 1000], [0.6, 250, 352, 1], [1.7, 830, 354, 1], [2.4, 830, 536, 1], [3.3, 300, 766, 1], [3.8, 1330, 352, 1], [4.9, 1700, 1020]], seg(t, 0.2, 0.6) * (1 - seg(t, 4.4, 4.9)));
+
+    // the blast itself: posts fly right to left over everything
+    for (const b of BLAST) {
+      const u = (t - b.spawn) / b.fly;
+      if (u <= 0 || u >= 1) continue;
+      const x = lerpN(2080, -380, u), y = b.y0 + Math.sin(u * Math.PI) * b.arc, sc = b.sc;
+      noStroke();
+      for (let k = 1; k <= 4; k++) { F(K[b.c], 0.5 - k * 0.1); circle(x + (250 + k * 34) * sc, y + 75 * sc, (14 - k * 2) * sc); }
+      push(); translate(x, y); rotate(b.rot + u * b.spin); scale(sc);
+      blobRect(0, 0, 240, 150, K[b.c], { r: 14, seed: Math.round(b.y0), sw: 2.4 });
+      noStroke(); F(K.accent); circle(30, 30, 30);
+      if (b.photo) drawPhoto(b.photo, 58, 14, 168, 122, Math.round(b.y0));
+      else scribbleLines(58, 34, 160, 3, 30, K.ink, 1, Math.round(b.y0), 0.5);
+      pop();
+    }
+  },
+});
+
+// ════════════════════════════════════════════════════════════
+// 8 · Finale — pull back over the whole notebook, then the end card
+// ════════════════════════════════════════════════════════════
+function worldBounds() {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  scenes.forEach((s) => { if (s.world) return; x0 = Math.min(x0, s.ox); y0 = Math.min(y0, s.oy); x1 = Math.max(x1, s.ox + W); y1 = Math.max(y1, s.oy + H); });
+  return { x0, y0, x1, y1 };
+}
+scene({
+  id: 'finale', chapter: 'End card', kicker: 'FIN', dur: 7.5, world: true,
+  cues: [[3.0, 'boom'], [3.1, 'chime', 81]],
+  cam(t) {
+    const prev = scenes[scenes.length - 2];
+    const a = { x: prev.ox + W / 2, y: prev.oy + H / 2, z: 1.035 };
+    const b = worldBounds(), bx = (b.x0 + b.x1) / 2, by = (b.y0 + b.y1) / 2;
+    const zf = Math.min(W / (b.x1 - b.x0 + 900), H / (b.y1 - b.y0 + 700));
+    const p = eio(seg(t, 0.2, 2.8));
+    return { x: lerpN(a.x, bx, p), y: lerpN(a.y, by, p), z: Math.exp(lerpN(Math.log(a.z), Math.log(zf), p)) * (1 + 0.04 * seg(t, 2.8, 7.5)) };
+  },
+  draw() {},
+  overlay(t) {
+    const dim = 0.86 * eio(seg(t, 2.3, 3.3));
+    noStroke(); F(K.paper, dim); rect(0, 0, W, H);
+    const ec = eout(seg(t, 3.0, 3.8));
+    if (ec <= 0) return;
+    const cx = 960;
+    dotCurve([200, 140, 420, 260, 300, 520, 420, 700], eio(seg(t, 3.4, 5.0)), K.teal, 4.2, 16, 0.7);
+    dotCurve([1720, 940, 1520, 820, 1680, 560, 1540, 380], eio(seg(t, 3.6, 5.2)), K.purple, 4.2, 16, 0.7);
+    dotCurve([1700, 150, 1560, 220, 1480, 160, 1380, 240], eio(seg(t, 3.8, 5.2)), K.hot, 4.2, 16, 0.7);
+    push(); translate(cx, 540); scale(0.9 + 0.1 * ec); rotate(-0.01);
+    withA(ec, () => {
+      blobRect(-640, -300, 1280, 600, K.card, { r: 26, seed: 901, sw: 3.2 });
+      txt('Repo Viewer', 0, -70, 150, K.ink, { align: CENTER });
+      vf(150); uline(-textWidth('Repo Viewer') / 2, -38, textWidth('Repo Viewer'), seg(t, 3.8, 4.6), K.accent, 9, 6);
+      txt('threadviewer.app/viewer2', 0, 40, 44, K.accent, { align: CENTER, mono: true });
+      txt('Your whole repo. Every post. Filtered your way.', 0, 130, 42, K.muted, { align: CENTER });
+      txt('github.com/Carbonadoks/threadviewer', 0, 220, 26, K.soft, { align: CENTER, mono: true });
+    });
+    pop();
+    tapeAt(cx - 540, 252, 170, 46, -0.14, seg(t, 4.0, 4.2));
+    tapeAt(cx + 540, 828, 170, 46, 0.12, seg(t, 4.2, 4.4));
+    [['root note', 330, 910, 'root', -0.08], ['timeline', 1600, 960, 'r1', 0.06], ['filters', 1600, 110, 'quote', -0.05]]
+      .forEach(([l, x, y, c, rot], k) => doodleNode({ label: l, x, y, c, rot, at: 4.2 + k * 0.2 }, 90 + k, t));
+  },
+});
+
+// ── generative score: warm pads, a soft arpeggio, a boom for every flight
+const CHORDS = {
+  open:     [50, 57, 64, 66, 73],
+  resolve:  [47, 54, 62, 69, 73],
+  download: [43, 50, 59, 66, 73],
+  parse:    [45, 52, 59, 62, 66],
+  threads:  [42, 49, 57, 64, 69],
+  timeline: [50, 57, 62, 66, 69, 76],
+  filters:  [43, 50, 57, 62, 66, 69],
+  more:     [47, 54, 62, 66, 73],
+  finale:   [38, 45, 50, 57, 62, 66, 69, 74],
+};
+const Snd = {
+  ctx: null, on: true, voices: [], chord: null, nextArp: 0, step: 0,
+  ensure() {
+    if (this.ctx) return this.ctx;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    try {
+      const c = (this.ctx = new AC());
+      this.master = c.createGain(); this.master.gain.value = this.on ? 0.85 : 0;
+      const comp = c.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 3;
+      this.master.connect(comp); comp.connect(c.destination);
+      this.dest = c.createMediaStreamDestination(); comp.connect(this.dest);
+      const verb = c.createConvolver(); verb.buffer = this.impulse(3.6);
+      const wet = c.createGain(); wet.gain.value = 0.6; verb.connect(wet); wet.connect(this.master);
+      this.lp = c.createBiquadFilter(); this.lp.type = 'lowpass'; this.lp.frequency.value = 1300; this.lp.Q.value = 0.5;
+      const lfo = c.createOscillator(), lfoG = c.createGain(); lfo.frequency.value = 0.07; lfoG.gain.value = 450;
+      lfo.connect(lfoG); lfoG.connect(this.lp.frequency); lfo.start();
+      this.bus = c.createGain(); this.bus.connect(this.lp); this.lp.connect(this.master); this.lp.connect(verb);
+      this.fx = c.createGain(); this.fx.gain.value = 1; this.fx.connect(this.master); this.fx.connect(verb);
+      return c;
+    } catch (e) { this.ctx = null; return null; }
+  },
+  impulse(sec) {
+    const c = this.ctx, len = Math.floor(c.sampleRate * sec), b = c.createBuffer(2, len, c.sampleRate);
+    for (let ch = 0; ch < 2; ch++) { const d = b.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.6); }
+    return b;
+  },
+  mtof: (m) => 440 * Math.pow(2, (m - 69) / 12),
+  setChord(id) {
+    const c = this.ctx; if (!c || id === this.chord || !CHORDS[id]) return;
+    this.chord = id;
+    const now = c.currentTime;
+    for (const v of this.voices) {
+      v.g.gain.cancelScheduledValues(now); v.g.gain.setValueAtTime(v.g.gain.value, now);
+      v.g.gain.linearRampToValueAtTime(0, now + 2.4); v.o.forEach((o) => o.stop(now + 2.6));
+    }
+    this.voices = CHORDS[id].map((m, k) => {
+      const g = c.createGain(); g.gain.value = 0;
+      g.gain.linearRampToValueAtTime(0.022 / Math.sqrt(1 + k * 0.4), now + 2.6);
+      const o = [-7, 7].map((dt) => { const o = c.createOscillator(); o.type = 'sawtooth'; o.frequency.value = this.mtof(m); o.detune.value = dt; o.connect(g); o.start(now); return o; });
+      g.connect(this.bus);
+      return { g, o };
+    });
+  },
+  pluck(m, when, vel = 0.04, type = 'triangle', dec = 1.5) {
+    const c = this.ctx; if (!c) return;
+    const o = c.createOscillator(); o.type = type; o.frequency.value = this.mtof(m);
+    const g = c.createGain(); g.gain.setValueAtTime(0.0001, when);
+    g.gain.exponentialRampToValueAtTime(vel, when + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, when + dec);
+    o.connect(g); g.connect(this.fx); o.start(when); o.stop(when + dec + 0.05);
+  },
+  boom() {
+    const c = this.ctx; if (!c) return; const t = c.currentTime;
+    const o = c.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(92, t); o.frequency.exponentialRampToValueAtTime(36, t + 1.3);
+    const g = c.createGain(); g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.2, t + 0.04); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.7);
+    o.connect(g); g.connect(this.master); o.start(t); o.stop(t + 1.8);
+    const len = Math.floor(c.sampleRate * 1.4), b = c.createBuffer(1, len, c.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    const n = c.createBufferSource(); n.buffer = b;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 1.3;
+    bp.frequency.setValueAtTime(280, t); bp.frequency.exponentialRampToValueAtTime(3000, t + 0.75); bp.frequency.exponentialRampToValueAtTime(500, t + 1.4);
+    const ng = c.createGain(); ng.gain.setValueAtTime(0.0001, t);
+    ng.gain.exponentialRampToValueAtTime(0.07, t + 0.55); ng.gain.exponentialRampToValueAtTime(0.0001, t + 1.4);
+    n.connect(bp); bp.connect(ng); ng.connect(this.fx); n.start(t); n.stop(t + 1.45);
+  },
+  chime(base = 74) {
+    const c = this.ctx; if (!c) return; const t = c.currentTime;
+    [0, 4, 7, 12, 16, 19].forEach((iv, k) => this.pluck(base + iv, t + k * 0.07, 0.045, 'sine', 3.2));
+  },
+  tick(id) {
+    const c = this.ctx; if (!c || c.state !== 'running') return;
+    this.setChord(id);
+    const stepDur = 0.3125, ch = CHORDS[this.chord] || CHORDS.open;
+    if (this.nextArp < c.currentTime) this.nextArp = c.currentTime + 0.05;
+    const pat = [0, 2, 4, 1, 3, 2, 4, 3];
+    while (this.nextArp < c.currentTime + 0.14) {
+      const s = this.step++, bar = s % 16;
+      if (bar !== 7 && bar !== 15 && bar !== 13) {
+        const m = ch[pat[s % 8] % ch.length] + 12 + (this.chord === 'finale' && s % 4 === 0 ? 12 : 0);
+        this.pluck(m, this.nextArp, s % 4 === 0 ? 0.05 : 0.028, s % 2 ? 'sine' : 'triangle', 1.3);
+      }
+      this.nextArp += stepDur;
+    }
+  },
+  setOn(v) {
+    this.on = v;
+    if (this.ctx) { const t = this.ctx.currentTime; this.master.gain.cancelScheduledValues(t); this.master.gain.setTargetAtTime(v ? 0.85 : 0, t, 0.08); }
+  },
+  resume() { const c = this.ensure(); if (c && c.state === 'suspended') c.resume(); },
+  pause() { if (this.ctx && this.ctx.state === 'running') this.ctx.suspend(); },
+};
+
+// cue sheet: scenes may list [localTime, 'boom'|'chime'|'pluck'] pairs
+function fireCues() {
+  if (!playing || !Snd.ctx) return;
+  for (const s of scenes) {
+    if (s.flight > 0 && PREV_T < s.start && T >= s.start) Snd.boom();
+    for (const [at, kind, arg] of s.cues || []) {
+      const abs = s.start + s.flight + at;
+      if (PREV_T < abs && T >= abs) {
+        if (kind === 'boom') Snd.boom();
+        else if (kind === 'chime') Snd.chime(arg);
+        else Snd.pluck(arg ?? 81, Snd.ctx.currentTime, 0.05, 'sine', 1.8);
+      }
+    }
+  }
+}
+
+// ── pause-and-poke: what each on-screen label means, and which chapter shows it (see hotspots.js)
+const HOT_INFO = [
+  { match: 'root note', text: 'The first post of a self-reply chain. The Repo Viewer finds every chain in the repo.', go: 'threads' },
+  { match: 'reply', text: 'Replies snap onto the post they answer, and chains grow from them.', go: 'threads' },
+  { match: /^(download my repo|load repo)$/, text: 'Type a handle and the whole repo is fetched straight from the PDS it lives on.', go: 'resolve' },
+  { match: 'open the timeline', text: 'Every post in the repo on one timeline, placed by date.', go: 'timeline' },
+  { match: 'WASM CAR parser', text: 'The repo arrives as one CAR file. A WebAssembly parser cracks it open in your browser, with no server in between.', go: 'parse' },
+  { match: 'Reset', text: 'Zoom the timeline back out to the whole history.', go: 'timeline' },
+  { match: /^(\+|−)$/, text: 'Zoom the timeline in and out.', go: 'timeline' },
+  { match: /^(Month|◀|▶)$/, text: 'Jump to one month at a time and step between months.', go: 'timeline' },
+  { match: /^[A-Z][a-z]{2} 20\d\d$/, text: 'The month on screen. Use the arrows to step through your history.', go: 'timeline' },
+  { match: 'Lock', text: 'Lock the selected date range, so clicking dots only opens posts instead of moving the range.', go: 'timeline' },
+  { match: 'Log scale', text: 'Put like counts on a log scale, so a few viral posts don\'t flatten the rest.', go: 'timeline' },
+  { match: /^Hydrate /, text: 'Fetch likes, reposts and quotes for the posts in range. Dots then rise to their like counts.', go: 'timeline' },
+  { match: /^(Threads|Reposts|Both) \(/, text: 'Show your own threads, your reposts, or both.', go: 'filters' },
+  { match: 'Default', text: 'The normal list of posts and threads.', go: 'filters' },
+  { match: 'Gallery', text: 'A grid of every image and video in the repo.', go: 'filters' },
+  { match: /^(Highest chain|Newest|Oldest|Liked|Reposted|Quoted)$/, text: 'Sort by chain length, date, or engagement.', go: 'filters' },
+  { match: /^(Fuzzy|Literal|regex)$/, text: 'Search fuzzily, literally, or with a /regex/.', go: 'filters' },
+  { match: /^(All|Media|Images|Movies)$/, text: 'Narrow the gallery to images, videos, or any media.', go: 'filters' },
+  { match: /^(\+ Add account repo|Download Repo)$/, text: 'Load more accounts\' repos next to your own.', go: 'more' },
+  { match: /^(Load follows|Download \d+ repos)$/, text: 'Download the repo of every account you follow in one go.', go: 'more' },
+  { match: /Blast mode/, text: 'Fire the posts from your current tab and filters across the screen.', go: 'more' },
+  { match: /^(Rate|Burst|Fly time|Size) /, text: 'Tune the blast: how fast posts launch, how many at once, how long they fly, how big they are.', go: 'more' },
+];
+
+// ── p5 lifecycle
+let cnv, recording = false, recorder = null, recChunks = [];
+const POSTER_T = 4.8;
+
+function hostSize() {
+  const host = document.getElementById('canvas-host');
+  const w = Math.max(200, host.clientWidth);
+  return [w, Math.round((w * 9) / 16)];
+}
+
+function setup() {
+  layoutScenes();
+  const [w, h] = hostSize();
+  pixelDensity(Math.min(2, window.devicePixelRatio || 1));
+  cnv = createCanvas(w, h);
+  cnv.parent('canvas-host');
+  noiseSeed(7); randomSeed(7);
+  T = POSTER_T;
+  buildUI();
+  if (document.fonts) {
+    document.fonts.load('40px Virgil');
+    document.fonts.load('40px "Share Tech Mono"');
+  }
+}
+
+function windowResized() {
+  if (recording) return;
+  const [w, h] = hostSize();
+  resizeCanvas(w, h);
+}
+
+function draw() {
+  const now = millis();
+  PREV_T = T;
+  if (playing) {
+    T += Math.min(0.1, (now - lastMs) / 1000);
+    if (T >= TOTAL) { T = TOTAL; setPlaying(false); onEnded(); }
+  }
+  lastMs = now;
+  BOIL = Math.floor(T * 8);
+  NIGHT = nightAt(T);
+  mixPalette(NIGHT);
+  fireCues();
+  if (playing) Snd.tick(scenes[sceneIndexAt(T)].id);
+
+  Hot.frame();
+  Hot.begin(started && !playing && !recording);
+  background(K.paper[0], K.paper[1], K.paper[2]);
+  push();
+  scale(width / W);
+  const cam = camAt(T);
+  push();
+  translate(W / 2, H / 2); scale(cam.z); translate(-cam.x, -cam.y);
+  drawGrid(cam);
+  drawThreadPath(cam);
+  scenes.forEach((s, i) => {
+    if (s.world || !visible(s, cam)) return;
+    push(); translate(s.ox, s.oy);
+    Hot.setScene(s);
+    const lod = seg(cam.z, 0.5, 0.36);
+    if (lod < 1) withA(1 - lod, () => s.draw(Math.min(localT(s), s.dur)));
+    if (lod > 0) withA(lod, () => drawLOD(s, i));
+    pop();
+  });
+  pop();
+  const fin = scenes[scenes.length - 1];
+  if (fin.world && T >= fin.start) fin.overlay(T - fin.start);
+  vignette();
+  pop();
+  Hot.end();
+  syncUI();
+}
+
+// ── controls
+const $ = (id) => document.getElementById(id);
+const fmtTime = (s) => { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+let chapterButtons = [], lastChapter = -1;
+
+function setPlaying(v) {
+  playing = v;
+  lastMs = millis();
+  $('play').textContent = v ? 'Pause' : 'Play';
+  $('bigplay').hidden = v || started;
+  if (v) { started = true; Snd.resume(); } else Snd.pause();
+}
+function togglePlay() {
+  if (!started && !playing) T = 0;
+  if (!playing && T >= TOTAL - 0.05) T = 0;
+  setPlaying(!playing);
+}
+function seekTo(t) { T = Math.max(0, Math.min(TOTAL, t)); PREV_T = T; started = true; $('bigplay').hidden = true; }
+function onEnded() {
+  if (recording && recorder) recorder.stop();
+}
+
+function buildUI() {
+  $('play').addEventListener('click', togglePlay);
+  $('bigplay').addEventListener('click', togglePlay);
+  const scrub = $('scrub');
+  scrub.addEventListener('input', () => { dragging = true; seekTo((scrub.value / 1000) * TOTAL); });
+  scrub.addEventListener('change', () => { dragging = false; });
+  $('sound').addEventListener('click', () => {
+    const on = !Snd.on; Snd.setOn(on);
+    $('sound').setAttribute('aria-pressed', String(on)); $('sound').textContent = on ? 'Sound on' : 'Sound off';
+  });
+  $('full').addEventListener('click', toggleFull);
+  document.addEventListener('fullscreenchange', () => { setTimeout(windowResized, 60); });
+  document.addEventListener('keydown', (e) => {
+    const tag = e.target && e.target.tagName;
+    if (tag === 'BUTTON' && (e.code === 'Space' || e.key === 'Enter')) return;
+    if (tag === 'INPUT' && e.code !== 'Space') return;
+    if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); seekTo(T + 5); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); seekTo(T - 5); }
+    else if (e.key === 'f' || e.key === 'F') toggleFull();
+  });
+
+  const ticks = $('ticks'), nav = $('chapters');
+  scenes.forEach((s, i) => {
+    const tick = document.createElement('i'); tick.style.left = ((s.start / TOTAL) * 100).toFixed(2) + '%'; ticks.appendChild(tick);
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'chap';
+    b.innerHTML = '<b>' + fmtTime(s.start) + '</b>' + s.chapter;
+    b.addEventListener('click', () => { seekTo(s.start + (s.flight ? 0.2 : 0)); if (!playing) setPlaying(true); });
+    nav.appendChild(b); chapterButtons.push(b);
+  });
+
+  // Recording only works when this file is opened directly, not inside a framed viewer.
+  let framed = true; try { framed = window.self !== window.top; } catch (e) { framed = true; }
+  if (!framed && window.MediaRecorder && HTMLCanvasElement.prototype.captureStream) {
+    $('rec').hidden = false;
+    $('rec').addEventListener('click', startRecording);
+  }
+}
+
+function toggleFull() {
+  const st = $('stage');
+  try {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (st.requestFullscreen) st.requestFullscreen().catch(() => {});
+  } catch (e) { /* fullscreen is optional */ }
+}
+
+function syncUI() {
+  $('clock').textContent = fmtTime(T) + ' / ' + fmtTime(TOTAL);
+  if (!dragging) $('scrub').value = String(Math.round((T / TOTAL) * 1000));
+  const ci = sceneIndexAt(T);
+  if (ci !== lastChapter) {
+    chapterButtons.forEach((b, i) => b.setAttribute('aria-current', i === ci ? 'true' : 'false'));
+    lastChapter = ci;
+  }
+}
+
+function startRecording() {
+  if (recording) return;
+  const note = $('rec-note');
+  Snd.ensure();
+  const types = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  const mime = types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
+  recording = true;
+  $('canvas-host').classList.add('fixed');
+  pixelDensity(1); resizeCanvas(1920, 1080);
+  const stream = cnv.elt.captureStream(60);
+  if (Snd.dest) Snd.dest.stream.getAudioTracks().forEach((tr) => stream.addTrack(tr));
+  recChunks = [];
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 14e6 } : undefined);
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+  recorder.onstop = () => {
+    recording = false;
+    $('canvas-host').classList.remove('fixed');
+    pixelDensity(Math.min(2, window.devicePixelRatio || 1)); windowResized();
+    const blob = new Blob(recChunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'threadviewer-showreel.webm';
+    document.body.appendChild(a); a.click(); a.remove();
+    note.textContent = 'Saved threadviewer-showreel.webm (' + (blob.size / 1e6).toFixed(1) + ' MB). Convert with: ffmpeg -i threadviewer-showreel.webm -c:v libx264 -crf 18 -c:a aac threadviewer-showreel.mp4';
+    $('rec').textContent = 'Record .webm';
+  };
+  note.hidden = false;
+  note.textContent = 'Recording 1920×1080 in real time. Keep this tab in front until the film ends.';
+  $('rec').textContent = 'Recording…';
+  seekTo(0);
+  recorder.start(250);
+  setPlaying(true);
+}
+
+</script>
+</body>
+</html>

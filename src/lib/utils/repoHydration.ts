@@ -3,11 +3,14 @@ import {
 	fetchReplyParentVisibility,
 	fetchPostThread,
 	fetchPostEngagementCounts,
+	getPostEngagementBatch,
+	asSchedulableError,
 	type PostEngagementProgress,
 	type ReplyParentVisibility
 } from '$lib/api/bluesky';
 import type { ParsedPost } from '$lib/utils/carParser';
 import { parseCarPostsWasm } from '$lib/utils/carParserWasm';
+import { isAbortError, type RequestScheduler } from '$lib/utils/requestScheduler';
 import { resolvePds } from '$lib/utils/pdsResolver';
 import { repoPostsToFeedItems } from '$lib/utils/repoToFeed';
 import { buildThreadsFromFeed } from '$lib/utils/threadWalker';
@@ -290,15 +293,52 @@ async function fetchThreadCandidateCounts(
 	options: {
 		signal?: AbortSignal;
 		threadConcurrency?: number;
+		scheduler?: RequestScheduler;
 		onProgress?: (progress: PostEngagementProgress) => void;
 		totalUris?: number;
 	}
 ): Promise<Map<string, EngagementCounts>> {
-	const { signal, threadConcurrency = 2, onProgress, totalUris = 0 } = options;
+	const { signal, threadConcurrency = 2, scheduler, onProgress, totalUris = 0 } = options;
 	const result = new Map<string, EngagementCounts>();
 	if (candidates.length === 0) return result;
 
 	const totalBatches = candidates.length;
+	if (scheduler) {
+		let settled = 0;
+		await Promise.all(
+			candidates.map(async (candidate, index) => {
+				try {
+					const rawThread = await scheduler.schedule({
+						kind: 'thread',
+						label: `engagement thread ${index + 1}/${totalBatches}`,
+						priority: 1,
+						signal,
+						run: async (taskSignal) => {
+							try {
+								return await fetchPostThread(candidate.fetchUri, undefined, taskSignal);
+							} catch (err) {
+								throw asSchedulableError(err, taskSignal, 'getPostThread network error');
+							}
+						}
+					});
+					harvestThreadCounts(rawThread, candidate.targetUris, result);
+				} catch (err) {
+					if (signal?.aborted || isAbortError(err)) return;
+					// The batched getPosts fallback fills any misses.
+				}
+				settled += 1;
+				onProgress?.({
+					completed: Math.min(result.size, totalUris || result.size),
+					total: totalUris || result.size,
+					batchesCompleted: settled,
+					totalBatches
+				});
+			})
+		);
+		throwIfAborted(signal);
+		return result;
+	}
+
 	const workerCount = Math.min(Math.max(1, Math.floor(threadConcurrency)), candidates.length);
 	let nextIndex = 0;
 	let batchesCompleted = 0;
@@ -440,13 +480,16 @@ export async function loadRepoFeedItems(
 		signal?: AbortSignal;
 		onDownloadProgress?: (progress: RepoDownloadProgress) => void;
 		onParseProgress?: (parsedPosts: number) => void;
+		/** Receives the raw CAR so callers can read other collections without re-downloading. */
+		onCarBytes?: (carBytes: Uint8Array) => void;
 	} = {}
 ): Promise<RepoFeedLoadResult> {
-	const { signal, onDownloadProgress, onParseProgress } = options;
+	const { signal, onDownloadProgress, onParseProgress, onCarBytes } = options;
 	const download = await downloadRepoCar(did, {
 		signal,
 		onDownloadProgress
 	});
+	onCarBytes?.(download.carBytes);
 
 	return parseRepoFeedItemsFromCar(did, author, download.carBytes, {
 		signal,
@@ -611,6 +654,8 @@ export async function hydrateFeedItemsThreadEngagement(
 		signal?: AbortSignal;
 		threadConcurrency?: number;
 		minThreadFetchPosts?: number;
+		/** Queue requests through this scheduler instead of a local worker pool. */
+		scheduler?: RequestScheduler;
 		onProgress?: (progress: PostEngagementProgress) => void;
 	} = {}
 ): Promise<{ hydratedUris: Set<string> }> {
@@ -618,6 +663,7 @@ export async function hydrateFeedItemsThreadEngagement(
 		signal,
 		threadConcurrency = 4,
 		minThreadFetchPosts = MIN_THREAD_FETCH_POSTS,
+		scheduler,
 		onProgress
 	} = options;
 	const candidates = buildThreadFetchCandidates(feedItems, minThreadFetchPosts);
@@ -627,6 +673,7 @@ export async function hydrateFeedItemsThreadEngagement(
 	const countsByUri = await fetchThreadCandidateCounts(candidates, {
 		signal,
 		threadConcurrency,
+		scheduler,
 		onProgress,
 		totalUris
 	});
@@ -642,10 +689,23 @@ export async function hydrateFeedItemsEngagement(
 		concurrency?: number;
 		threadConcurrency?: number;
 		minThreadFetchPosts?: number;
+		/**
+		 * Queue requests through this scheduler instead of local worker pools. URIs whose
+		 * getPosts batch still failed after the scheduler's retries come back in `failedUris`
+		 * (and are not counted as missing) so the caller can retry them later.
+		 */
+		scheduler?: RequestScheduler;
 		onProgress?: (progress: PostEngagementProgress) => void;
 	} = {}
-): Promise<{ hydratedCount: number; missingCount: number }> {
-	const { signal, concurrency, threadConcurrency, minThreadFetchPosts = MIN_THREAD_FETCH_POSTS, onProgress } = options;
+): Promise<{ hydratedCount: number; missingCount: number; failedUris: string[] }> {
+	const {
+		signal,
+		concurrency,
+		threadConcurrency,
+		minThreadFetchPosts = MIN_THREAD_FETCH_POSTS,
+		scheduler,
+		onProgress
+	} = options;
 	const uris = [...new Set(feedItems.map((item) => item?.post?.uri).filter((uri): uri is string => typeof uri === 'string' && uri.length > 0))];
 	const totalUris = uris.length;
 	const countsByUri = new Map<string, EngagementCounts>();
@@ -654,6 +714,7 @@ export async function hydrateFeedItemsEngagement(
 	const threadCountsByUri = await fetchThreadCandidateCounts(threadCandidates, {
 		signal,
 		threadConcurrency,
+		scheduler,
 		onProgress,
 		totalUris
 	});
@@ -665,7 +726,42 @@ export async function hydrateFeedItemsEngagement(
 	const threadBatchCount = threadCandidates.length;
 	const fallbackBatchCount = Math.ceil(fallbackUris.length / ENGAGEMENT_BATCH_SIZE);
 
-	if (fallbackUris.length > 0) {
+	const failedUris: string[] = [];
+
+	if (fallbackUris.length > 0 && scheduler) {
+		const batches: string[][] = [];
+		for (let i = 0; i < fallbackUris.length; i += ENGAGEMENT_BATCH_SIZE) {
+			batches.push(fallbackUris.slice(i, i + ENGAGEMENT_BATCH_SIZE));
+		}
+		const alreadyCounted = countsByUri.size;
+		let completed = 0;
+		let batchesCompleted = 0;
+		await Promise.all(
+			batches.map(async (batch, index) => {
+				try {
+					const counts = await scheduler.schedule({
+						kind: 'posts',
+						label: `engagement ${index + 1}/${batches.length}`,
+						priority: 1,
+						signal,
+						run: (taskSignal) => getPostEngagementBatch(batch, taskSignal)
+					});
+					for (const entry of counts) countsByUri.set(entry.uri, entry);
+				} catch (err) {
+					if (signal?.aborted || isAbortError(err)) return;
+					failedUris.push(...batch);
+				}
+				completed += batch.length;
+				batchesCompleted += 1;
+				onProgress?.({
+					completed: Math.min(alreadyCounted + completed, totalUris),
+					total: totalUris,
+					batchesCompleted: threadBatchCount + batchesCompleted,
+					totalBatches: threadBatchCount + batches.length
+				});
+			})
+		);
+	} else if (fallbackUris.length > 0) {
 		const fallbackCountsByUri = await fetchPostEngagementCounts(fallbackUris, {
 			signal,
 			concurrency,
@@ -695,7 +791,8 @@ export async function hydrateFeedItemsEngagement(
 
 	return {
 		hydratedCount: hydratedUris.size,
-		missingCount: Math.max(0, uris.length - countsByUri.size)
+		missingCount: Math.max(0, uris.length - countsByUri.size - failedUris.length),
+		failedUris
 	};
 }
 

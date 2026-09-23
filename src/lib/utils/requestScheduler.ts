@@ -6,11 +6,17 @@
  * - Requests with the same `key` share one in-flight task. A shared task is only
  *   cancelled once every caller has aborted.
  * - Rate limits (429) halve concurrency and pause the queue for the server's
- *   retry-after, then concurrency grows back one slot at a time.
- * - Retries are bounded, so failures cannot turn into a retry storm.
+ *   retry-after, then concurrency grows back one slot at a time. Browsers usually cannot
+ *   read retry-after (public.api.bsky.app does not expose it through CORS), so without it
+ *   consecutive 429s pause for 5 s, doubling up to 60 s.
+ * - An optional request budget (`rateLimit`) caps how many requests, retries included,
+ *   start in any sliding window, so a long bulk run stays under the server's limit
+ *   instead of discovering it through 429s.
+ * - Retries are bounded, so failures cannot turn into a retry storm. Rate-limited
+ *   attempts have their own, larger bound because every request waits them out together.
  */
 
-export type RequestKind = 'quotes' | 'thread';
+export type RequestKind = 'quotes' | 'thread' | 'posts';
 export type RequestPriority = 0 | 1 | 2;
 
 export type ScheduleOptions<T> = {
@@ -37,6 +43,8 @@ export type SchedulerSnapshot = {
 	concurrency: number;
 	maxConcurrency: number;
 	pausedUntil: number;
+	/** Requests started in the current budget window, when a `rateLimit` is set. */
+	budget: { used: number; limit: number; windowMs: number } | null;
 };
 
 type Task = {
@@ -48,6 +56,7 @@ type Task = {
 	run: (signal: AbortSignal) => Promise<unknown>;
 	retries: number;
 	attempt: number;
+	rateLimitedAttempts: number;
 	controller: AbortController;
 	subscribers: number;
 	state: 'queued' | 'waiting' | 'running' | 'settled';
@@ -55,6 +64,9 @@ type Task = {
 	reject: (error: unknown) => void;
 	promise: Promise<unknown>;
 };
+
+/** 429 retries per request; each one waits out a queue-wide pause of up to 60 s. */
+const RATE_LIMITED_RETRIES = 8;
 
 export function isAbortError(error: unknown): boolean {
 	return (
@@ -99,12 +111,18 @@ export class RequestScheduler {
 	private cancelled = 0;
 	private retried = 0;
 	private disposed = false;
+	private rateLimitStreak = 0;
+	/** Start times inside the current budget window, oldest first (from `startsHead`). */
+	private starts: number[] = [];
+	private startsHead = 0;
 
 	constructor(
 		private readonly options: {
 			maxConcurrency?: number;
 			initialConcurrency?: number;
 			maxRetries?: number;
+			/** At most `requests` starts (retries included) in any `windowMs`. */
+			rateLimit?: { requests: number; windowMs: number };
 			onChange?: () => void;
 		} = {}
 	) {
@@ -172,7 +190,7 @@ export class RequestScheduler {
 	}
 
 	snapshot(): SchedulerSnapshot {
-		const queuedByKind: Record<RequestKind, number> = { quotes: 0, thread: 0 };
+		const queuedByKind: Record<RequestKind, number> = { quotes: 0, thread: 0, posts: 0 };
 		let queued = 0;
 		for (const task of this.waiting) {
 			queuedByKind[task.kind] += 1;
@@ -199,7 +217,14 @@ export class RequestScheduler {
 			retried: this.retried,
 			concurrency: this.concurrency,
 			maxConcurrency: this.maxConcurrency,
-			pausedUntil: this.pausedUntil > Date.now() ? this.pausedUntil : 0
+			pausedUntil: this.pausedUntil > Date.now() ? this.pausedUntil : 0,
+			budget: this.options.rateLimit
+				? {
+						used: this.budgetUsed(Date.now()),
+						limit: this.options.rateLimit.requests,
+						windowMs: this.options.rateLimit.windowMs
+					}
+				: null
 		};
 	}
 
@@ -246,6 +271,7 @@ export class RequestScheduler {
 			run: options.run,
 			retries: options.retries ?? this.options.maxRetries ?? 3,
 			attempt: 0,
+			rateLimitedAttempts: 0,
 			controller: new AbortController(),
 			subscribers: 0,
 			state: 'queued',
@@ -296,19 +322,48 @@ export class RequestScheduler {
 		return undefined;
 	}
 
+	private resumeAt(time: number) {
+		this.resumeTimer ??= setTimeout(() => {
+			this.resumeTimer = null;
+			this.pump();
+		}, Math.max(0, time - Date.now()));
+	}
+
+	/** When the request budget allows the next start (`now` if it already does). */
+	private budgetFreeAt(now: number): number {
+		const limit = this.options.rateLimit;
+		if (!limit) return now;
+		while (this.startsHead < this.starts.length && this.starts[this.startsHead] <= now - limit.windowMs) {
+			this.startsHead += 1;
+		}
+		if (this.startsHead > 1024 && this.startsHead * 2 > this.starts.length) {
+			this.starts = this.starts.slice(this.startsHead);
+			this.startsHead = 0;
+		}
+		if (this.starts.length - this.startsHead < limit.requests) return now;
+		return this.starts[this.startsHead] + limit.windowMs;
+	}
+
+	private budgetUsed(now: number): number {
+		this.budgetFreeAt(now);
+		return this.starts.length - this.startsHead;
+	}
+
 	private pump() {
 		const now = Date.now();
 		if (this.pausedUntil > now) {
-			this.resumeTimer ??= setTimeout(() => {
-				this.resumeTimer = null;
-				this.pump();
-			}, this.pausedUntil - now);
+			this.resumeAt(this.pausedUntil);
 			this.notify();
 			return;
 		}
-		while (this.running.size < this.concurrency) {
-			const task = this.nextTask();
-			if (!task) break;
+		while (this.running.size < this.concurrency && this.queues.some((queue) => queue.length)) {
+			const freeAt = this.budgetFreeAt(now);
+			if (freeAt > now) {
+				this.resumeAt(freeAt);
+				break;
+			}
+			const task = this.nextTask()!;
+			if (this.options.rateLimit) this.starts.push(now);
 			void this.start(task);
 		}
 		this.notify();
@@ -328,7 +383,11 @@ export class RequestScheduler {
 			this.running.delete(task);
 			if (task.controller.signal.aborted || isAbortError(error)) {
 				this.settle(task, 'cancelled', abortError());
-			} else if (isRetryable(error) && task.attempt <= task.retries) {
+			} else if (errorStatus(error) === 429 && task.rateLimitedAttempts < RATE_LIMITED_RETRIES) {
+				task.rateLimitedAttempts += 1;
+				this.onRetryableFailure(error, task);
+				return;
+			} else if (isRetryable(error) && task.attempt - task.rateLimitedAttempts <= task.retries) {
 				this.onRetryableFailure(error, task);
 				return;
 			} else {
@@ -339,6 +398,7 @@ export class RequestScheduler {
 	}
 
 	private onSuccess() {
+		this.rateLimitStreak = 0;
 		this.successStreak += 1;
 		if (this.concurrency < this.maxConcurrency && this.successStreak >= this.concurrency * 4) {
 			this.concurrency += 1;
@@ -350,9 +410,15 @@ export class RequestScheduler {
 		this.retried += 1;
 		this.successStreak = 0;
 		const rateLimited = errorStatus(error) === 429;
-		if (rateLimited) this.concurrency = Math.max(1, Math.floor(this.concurrency / 2));
+		if (rateLimited) {
+			this.concurrency = Math.max(1, Math.floor(this.concurrency / 2));
+			this.rateLimitStreak += 1;
+		}
 		const delay =
-			retryAfterMs(error) ?? Math.min(15_000, 600 * 2 ** (task.attempt - 1)) + Math.random() * 300;
+			retryAfterMs(error) ??
+			(rateLimited
+				? Math.min(60_000, 5_000 * 2 ** (this.rateLimitStreak - 1))
+				: Math.min(15_000, 600 * 2 ** (task.attempt - 1))) + Math.random() * 300;
 		if (rateLimited) {
 			// Everyone waits out a rate limit, not just this request.
 			this.pausedUntil = Math.max(this.pausedUntil, Date.now() + delay);
